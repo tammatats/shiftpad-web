@@ -61,8 +61,29 @@ init();
 
 async function init() {
   bindEvents();
+  initMobileViewportDock();
   await initAuth();
   render();
+}
+
+function initMobileViewportDock() {
+  const updateViewportOffset = () => {
+    const viewport = window.visualViewport;
+    if (!viewport) {
+      document.documentElement.style.setProperty("--keyboard-offset", "0px");
+      return;
+    }
+
+    const keyboardOffset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+    document.documentElement.style.setProperty("--keyboard-offset", `${keyboardOffset}px`);
+  };
+
+  updateViewportOffset();
+  window.visualViewport?.addEventListener("resize", updateViewportOffset);
+  window.visualViewport?.addEventListener("scroll", updateViewportOffset);
+  window.addEventListener("orientationchange", () => {
+    window.setTimeout(updateViewportOffset, 120);
+  });
 }
 
 function bindEvents() {

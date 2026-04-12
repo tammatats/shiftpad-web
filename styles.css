@@ -22,6 +22,7 @@
   --radius-lg: 24px;
   --radius-md: 18px;
   --radius-sm: 14px;
+  --keyboard-offset: 0px;
 }
 
 * {
@@ -1071,9 +1072,25 @@ select:focus {
   }
 
   .quick-tags {
-    top: max(6px, env(safe-area-inset-top));
-    margin-inline: -4px;
-    padding-inline: 4px;
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(env(safe-area-inset-bottom) + var(--keyboard-offset) + 8px);
+    top: auto;
+    margin: 0;
+    padding: 10px;
+    border: 1px solid rgba(96, 76, 55, 0.08);
+    border-radius: 20px;
+    box-shadow: 0 12px 26px rgba(72, 46, 24, 0.12);
+  }
+
+  .note-pad-card {
+    padding-bottom: 96px;
+  }
+
+  .quick-chip {
+    flex: 1 1 calc(50% - 10px);
+    justify-content: center;
   }
 }
 
@@ -1125,6 +1142,17 @@ select:focus {
   .view-tab,
   .scope-pill {
     white-space: nowrap;
+  }
+
+  .quick-tags {
+    left: 10px;
+    right: 10px;
+    bottom: calc(env(safe-area-inset-bottom) + var(--keyboard-offset) + 6px);
+    gap: 8px;
+  }
+
+  .quick-chip {
+    flex-basis: calc(50% - 8px);
   }
 
   .entry-head,
