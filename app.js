@@ -67,22 +67,38 @@ async function init() {
 }
 
 function initMobileViewportDock() {
+  let rafId = 0;
+
   const updateViewportOffset = () => {
     const viewport = window.visualViewport;
     if (!viewport) {
       document.documentElement.style.setProperty("--keyboard-offset", "0px");
+      document.documentElement.style.setProperty("--viewport-offset-top", "0px");
+      document.documentElement.style.setProperty("--viewport-offset-left", "0px");
       return;
     }
 
     const keyboardOffset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
     document.documentElement.style.setProperty("--keyboard-offset", `${keyboardOffset}px`);
+    document.documentElement.style.setProperty("--viewport-offset-top", `${Math.max(0, viewport.offsetTop)}px`);
+    document.documentElement.style.setProperty("--viewport-offset-left", `${Math.max(0, viewport.offsetLeft)}px`);
   };
 
-  updateViewportOffset();
-  window.visualViewport?.addEventListener("resize", updateViewportOffset);
-  window.visualViewport?.addEventListener("scroll", updateViewportOffset);
+  const requestViewportOffsetUpdate = () => {
+    window.cancelAnimationFrame(rafId);
+    rafId = window.requestAnimationFrame(updateViewportOffset);
+  };
+
+  requestViewportOffsetUpdate();
+  window.visualViewport?.addEventListener("resize", requestViewportOffsetUpdate);
+  window.visualViewport?.addEventListener("scroll", requestViewportOffsetUpdate);
+  window.addEventListener("scroll", requestViewportOffsetUpdate, { passive: true });
+  window.addEventListener("focusin", requestViewportOffsetUpdate);
+  window.addEventListener("focusout", () => {
+    window.setTimeout(requestViewportOffsetUpdate, 80);
+  });
   window.addEventListener("orientationchange", () => {
-    window.setTimeout(updateViewportOffset, 120);
+    window.setTimeout(requestViewportOffsetUpdate, 120);
   });
 }
 

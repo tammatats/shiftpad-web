@@ -23,6 +23,8 @@
   --radius-md: 18px;
   --radius-sm: 14px;
   --keyboard-offset: 0px;
+  --viewport-offset-top: 0px;
+  --viewport-offset-left: 0px;
 }
 
 * {
@@ -1077,6 +1079,8 @@ select:focus {
     right: 12px;
     bottom: calc(env(safe-area-inset-bottom) + var(--keyboard-offset) + 8px);
     top: auto;
+    transform: translate3d(var(--viewport-offset-left), var(--viewport-offset-top), 0);
+    will-change: transform, bottom;
     margin: 0;
     padding: 10px;
     border: 1px solid rgba(96, 76, 55, 0.08);
