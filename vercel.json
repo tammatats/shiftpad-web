@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/public-config",
+      "destination": "/api/public-config.js"
+    }
+  ]
+}
