@@ -1838,6 +1838,12 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
       return true;
     }
 
+    if ((key === "Backspace" || key === "Delete") && shouldDeleteEditingTag(token)) {
+      removeTagToken(token);
+      syncEditorDocument();
+      return true;
+    }
+
     const tagType = token.dataset.tag;
     if (tagType === "bed" && (key === " " || key === "Tab")) {
       finalizeTagToken(token, { moveToNewLine: true });
@@ -2059,6 +2065,13 @@ function deleteBackwardAtSelection(editor) {
   restoreEditorSelection(editor);
 
   const activeToken = getActiveTagToken();
+  if (activeToken && shouldDeleteEditingTag(activeToken)) {
+    removeTagToken(activeToken);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return;
+  }
+
   if (activeToken && activeToken.dataset.editing === "true") {
     const textNode = activeToken.firstChild;
     const offset = selection.anchorOffset;
@@ -2110,11 +2123,54 @@ function deleteBackwardAtSelection(editor) {
 
 function removeTagToken(token) {
   if (!token) return;
+  clearBedFinalizeTimer();
   const parent = token.parentNode;
+  const line = findEditorLine(token);
   token.remove();
+  if (parent?.firstChild?.nodeType === Node.TEXT_NODE) {
+    parent.firstChild.textContent = parent.firstChild.textContent.replace(/^\u00a0+/, "");
+  }
   if (parent && parent.textContent.trim() === "") {
     parent.innerHTML = "<br>";
   }
+  if (line) {
+    refreshLineTagClasses(line);
+    placeCaretInsideLine(line);
+  }
+}
+
+function shouldDeleteEditingTag(token) {
+  if (!token || token.dataset.editing !== "true") return false;
+  const selection = window.getSelection();
+  const text = String(token.textContent || "").replace(/\u00a0/g, " ").trim();
+
+  if (token.dataset.tag === "bed") {
+    return text.replace(/^Bed\s*/i, "").trim() === "";
+  }
+
+  if (isTimeLikeTag(token.dataset.tag)) {
+    if (!selection) return text === "" || text === "00.00";
+    const selectedText = String(selection.toString() || "").replace(/\u00a0/g, " ").trim();
+    return text === "" || text === "00.00" || selectedText === text;
+  }
+
+  return text === "";
+}
+
+function refreshLineTagClasses(line) {
+  if (!line) return;
+  line.classList.toggle("timed-line", Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]')));
+  line.classList.toggle("io-line", Boolean(line.querySelector('.tag-token[data-tag="io"]')));
+}
+
+function placeCaretInsideLine(line) {
+  const selection = window.getSelection();
+  if (!line || !selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(line);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function getActiveTagToken() {
@@ -2340,10 +2396,7 @@ function finalizeTagToken(token, { moveToNewLine = false } = {}) {
   token.classList.remove("tag-editing");
 
   const line = findEditorLine(token);
-  if (line) {
-    line.classList.toggle("timed-line", Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]')));
-    line.classList.toggle("io-line", Boolean(line.querySelector('.tag-token[data-tag="io"]')));
-  }
+  refreshLineTagClasses(line);
   if ((token.dataset.tag === "time" || token.dataset.tag === "lab") && line) {
     line.classList.add("timed-line");
   }
