@@ -187,11 +187,13 @@ function bindEvents() {
 
   refs.notesTabBtn.addEventListener("click", () => {
     state.activeView = "notes";
+    uiState.editorFocused = false;
     render();
   });
 
   refs.timelineTabBtn.addEventListener("click", () => {
     state.activeView = "timeline";
+    uiState.editorFocused = false;
     render();
   });
 
@@ -230,8 +232,16 @@ function bindEvents() {
       uiState.editorFocused = true;
       syncMobileKeyboard();
       rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
+      requestAnimationFrame(() => {
+        keepEditorCaretVisible(refs.editorRoot.querySelector("#notepad-editor"));
+      });
+      return;
     }
 
+    if (isCompactMobileLayout()) {
+      uiState.editorFocused = false;
+      syncMobileKeyboard();
+    }
   });
 
   refs.editorRoot.addEventListener("focusin", (event) => {
@@ -303,6 +313,7 @@ function bindEvents() {
     const editor = event.target.closest?.("#notepad-editor");
     if (!editor) return;
     rememberEditorSelection(editor);
+    keepEditorCaretVisible(editor);
   });
 
   refs.editorRoot.addEventListener("change", (event) => {
@@ -467,9 +478,6 @@ function renderEditor() {
   }
   const documentHtml = getNoteDocumentHtml(note);
   const mobileManualKeyboard = isCompactMobileLayout();
-  if (mobileManualKeyboard) {
-    uiState.editorFocused = true;
-  }
 
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
@@ -938,9 +946,11 @@ function syncMobileKeyboard() {
   const keyboard = refs.editorRoot.querySelector("[data-mobile-keyboard]");
   if (!keyboard) return;
 
-  const shouldShow = isCompactMobileLayout() && state.activeView === "notes";
+  const shouldShow = isCompactMobileLayout() && state.activeView === "notes" && uiState.editorFocused;
+  const documentPad = refs.editorRoot.querySelector(".document-pad");
   keyboard.classList.toggle("is-visible", shouldShow);
   keyboard.setAttribute("aria-hidden", String(!shouldShow));
+  documentPad?.classList.toggle("is-mobile-keyboard-active", shouldShow && uiState.editorFocused);
 }
 
 function refreshMobileKeyboardView() {
@@ -984,6 +994,7 @@ function handleMobileKeyboardAction(action, value = "") {
 
   if (action === "backspace") {
     deleteBackwardAtSelection(editor);
+    keepEditorCaretVisible(editor);
     return;
   }
 
@@ -992,6 +1003,7 @@ function handleMobileKeyboardAction(action, value = "") {
     insertTextAtSelection(" ");
     syncEditorDocument();
     rememberEditorSelection(editor);
+    keepEditorCaretVisible(editor);
     return;
   }
 
@@ -1000,6 +1012,7 @@ function handleMobileKeyboardAction(action, value = "") {
     insertParagraphAtSelection();
     syncEditorDocument();
     rememberEditorSelection(editor);
+    keepEditorCaretVisible(editor);
     return;
   }
 
@@ -1016,6 +1029,7 @@ function handleMobileKeyboardAction(action, value = "") {
     insertTextAtSelection(nextValue);
     syncEditorDocument();
     rememberEditorSelection(editor);
+    keepEditorCaretVisible(editor);
     if (uiState.shiftOn && /^[a-z]$/i.test(value)) {
       uiState.shiftOn = false;
       refreshMobileKeyboardView();
@@ -1032,6 +1046,7 @@ function handleMobileKeyboardTag(tag) {
   uiState.mobileKeyboardMode = "alpha";
   uiState.shiftOn = false;
   refreshMobileKeyboardView();
+  keepEditorCaretVisible(editor);
 }
 
 function rememberEditorSelection(editor) {
@@ -1088,6 +1103,21 @@ function setCaretFromPoint(editor, clientX, clientY) {
   selection.addRange(range);
   uiState.savedSelection = range.cloneRange();
   return true;
+}
+
+function keepEditorCaretVisible(editor) {
+  if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
+
+  const line = getCurrentEditorLine();
+  const keyboard = refs.editorRoot.querySelector("[data-mobile-keyboard].is-visible");
+  const keyboardHeight = keyboard ? keyboard.getBoundingClientRect().height : 0;
+  const safeBottom = window.innerHeight - keyboardHeight - 24;
+  const target = line || editor;
+  const rect = target.getBoundingClientRect();
+
+  if (rect.bottom > safeBottom || rect.top < 88) {
+    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+  }
 }
 
 function toggleTaggedLineDone(noteId, tokenId, done) {
