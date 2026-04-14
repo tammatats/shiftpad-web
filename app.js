@@ -60,7 +60,8 @@ const uiState = {
   editorFocused: false,
   mobileKeyboardMode: "alpha",
   shiftOn: false,
-  savedSelection: null
+  savedSelection: null,
+  bedFinalizeTimer: null
 };
 applyUrlOverrides();
 
@@ -262,6 +263,7 @@ function bindEvents() {
     if (!note) return;
 
     maybeFinalizeEditingTimeToken(editor);
+    maybeFinalizeEditingBedToken(editor);
     note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
     note.updatedAt = Date.now();
     rememberEditorSelection(editor);
@@ -1044,6 +1046,7 @@ function handleMobileKeyboardAction(action, value = "") {
     }
     insertTextAtSelection(nextValue);
     syncEditorDocument();
+    maybeFinalizeEditingBedToken(editor);
     rememberEditorSelection(editor);
     keepEditorCaretVisible(editor);
     if (uiState.shiftOn && /^[a-z]$/i.test(value)) {
@@ -1070,6 +1073,13 @@ function rememberEditorSelection(editor) {
   if (!editor || !selection || !selection.rangeCount) return;
   if (!isNodeInsideEditor(editor, selection.anchorNode)) return;
   uiState.savedSelection = selection.getRangeAt(0).cloneRange();
+}
+
+function clearBedFinalizeTimer() {
+  if (uiState.bedFinalizeTimer) {
+    window.clearTimeout(uiState.bedFinalizeTimer);
+    uiState.bedFinalizeTimer = null;
+  }
 }
 
 function restoreEditorSelection(editor) {
@@ -1829,6 +1839,11 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
     }
 
     const tagType = token.dataset.tag;
+    if (tagType === "bed" && (key === " " || key === "Tab")) {
+      finalizeTagToken(token, { moveToNewLine: true });
+      return true;
+    }
+
     if (isTimeLikeTag(tagType) && token.dataset.editing === "true") {
       if (key === " " || key === "Tab") {
         finalizeTagToken(token, { moveToNewLine: false });
@@ -1971,6 +1986,10 @@ function insertTextAtSelection(text) {
   range.collapse(true);
   selection.removeAllRanges();
   selection.addRange(range);
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  if (editor) {
+    rememberEditorSelection(editor);
+  }
 }
 
 function placeCaretInsideTag(node, selectAll = false) {
@@ -2308,6 +2327,9 @@ function getReminderTimesForLine(line) {
 
 function finalizeTagToken(token, { moveToNewLine = false } = {}) {
   if (!token) return;
+  if (token.dataset.tag === "bed") {
+    clearBedFinalizeTimer();
+  }
 
   if (isTimeLikeTag(token.dataset.tag)) {
     token.textContent = normalizeTimeTagValue(token.textContent) || "00.00";
@@ -2371,10 +2393,49 @@ function syncEditorDocument() {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!note || !editor) return;
 
+  const marker = insertSelectionMarker(editor);
   normalizeEditorBlocks(editor);
+  restoreSelectionMarker(marker, editor);
   note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
   note.updatedAt = Date.now();
   saveState();
+}
+
+function insertSelectionMarker(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount) return null;
+  if (!isNodeInsideEditor(editor, selection.anchorNode)) return null;
+
+  const range = selection.getRangeAt(0).cloneRange();
+  range.collapse(true);
+  const marker = document.createElement("span");
+  marker.dataset.caretMarker = "true";
+  marker.setAttribute("aria-hidden", "true");
+  marker.style.display = "inline-block";
+  marker.style.width = "0";
+  marker.style.overflow = "hidden";
+  marker.textContent = "\u200b";
+  range.insertNode(marker);
+  return marker;
+}
+
+function restoreSelectionMarker(marker, editor) {
+  if (!marker) return;
+  const selection = window.getSelection();
+  if (!selection) {
+    marker.remove();
+    return;
+  }
+
+  const range = document.createRange();
+  range.setStartAfter(marker);
+  range.collapse(true);
+  marker.remove();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  if (editor) {
+    rememberEditorSelection(editor);
+  }
 }
 
 function normalizeEditorBlocks(root) {
@@ -2518,6 +2579,38 @@ function maybeFinalizeEditingTimeToken(editor) {
   }
 
   syncEditorDocument();
+  return true;
+}
+
+function maybeFinalizeEditingBedToken(editor) {
+  const token = editor.querySelector('.tag-token[data-editing="true"][data-tag="bed"]');
+  if (!token) {
+    clearBedFinalizeTimer();
+    return false;
+  }
+
+  const bedValue = String(token.textContent || "")
+    .replace(/^Bed\s*/i, "")
+    .replace(/\u00a0/g, " ")
+    .trim();
+
+  if (!bedValue) {
+    clearBedFinalizeTimer();
+    return false;
+  }
+
+  clearBedFinalizeTimer();
+  uiState.bedFinalizeTimer = window.setTimeout(() => {
+    const liveEditor = refs.editorRoot.querySelector("#notepad-editor");
+    const liveToken = liveEditor?.querySelector?.(`[data-token-id="${cssEscape(token.dataset.tokenId || "")}"]`);
+    if (!liveToken || liveToken.dataset.editing !== "true") return;
+    finalizeTagToken(liveToken, { moveToNewLine: true });
+    if (liveEditor) {
+      rememberEditorSelection(liveEditor);
+      keepEditorCaretVisible(liveEditor);
+    }
+  }, 280);
+
   return true;
 }
 
