@@ -598,6 +598,61 @@ select:focus {
   -webkit-backdrop-filter: blur(10px);
 }
 
+.mobile-tag-accessory {
+  display: none;
+}
+
+.mobile-tag-tray,
+.mobile-tag-bar {
+  background: rgba(200, 207, 217, 0.98);
+  box-shadow: 0 10px 24px rgba(72, 46, 24, 0.14);
+}
+
+.mobile-tag-tray {
+  padding: 8px;
+  border-radius: 20px 20px 16px 16px;
+}
+
+.mobile-tag-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 16px;
+}
+
+.mobile-tag-toggle,
+.mobile-tag-close {
+  border: 0;
+  border-radius: 14px;
+  background: rgba(164, 176, 192, 0.98);
+  color: var(--ink);
+  min-height: 46px;
+  padding: 0 16px;
+  font-weight: 700;
+}
+
+.mobile-tag-caption {
+  flex: 1;
+  min-width: 0;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.84);
+  color: var(--muted);
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  font-size: 0.92rem;
+  line-height: 1.25;
+}
+
+.mobile-quick-chip {
+  width: 100%;
+  min-height: 48px;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.95);
+}
+
 .quick-chip {
   padding: 10px 14px;
   background: rgba(255, 245, 238, 0.95);
@@ -1074,22 +1129,41 @@ select:focus {
   }
 
   .quick-tags {
+    display: none;
+  }
+
+  .mobile-tag-accessory {
+    display: block;
     position: fixed;
     left: 12px;
     right: 12px;
     bottom: calc(env(safe-area-inset-bottom) + var(--keyboard-offset) + 8px);
-    top: auto;
     transform: translate3d(var(--viewport-offset-left), var(--viewport-offset-top), 0);
-    will-change: transform, bottom;
-    margin: 0;
-    padding: 10px;
-    border: 1px solid rgba(96, 76, 55, 0.08);
-    border-radius: 20px;
-    box-shadow: 0 12px 26px rgba(72, 46, 24, 0.12);
+    will-change: transform, bottom, opacity;
+    z-index: 40;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease, transform 140ms ease;
+  }
+
+  .mobile-tag-accessory.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .mobile-tag-tray {
+    display: none;
+    margin-bottom: 8px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .mobile-tag-accessory.is-open .mobile-tag-tray {
+    display: grid;
   }
 
   .note-pad-card {
-    padding-bottom: 96px;
+    padding-bottom: 82px;
   }
 
   .quick-chip {
@@ -1148,15 +1222,30 @@ select:focus {
     white-space: nowrap;
   }
 
-  .quick-tags {
+  .mobile-tag-accessory {
     left: 10px;
     right: 10px;
     bottom: calc(env(safe-area-inset-bottom) + var(--keyboard-offset) + 6px);
-    gap: 8px;
   }
 
-  .quick-chip {
-    flex-basis: calc(50% - 8px);
+  .mobile-tag-bar {
+    gap: 6px;
+  }
+
+  .mobile-tag-toggle,
+  .mobile-tag-close {
+    padding: 0 12px;
+    min-height: 44px;
+  }
+
+  .mobile-tag-caption {
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 0.86rem;
+  }
+
+  .mobile-tag-tray {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .entry-head,

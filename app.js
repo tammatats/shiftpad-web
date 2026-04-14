@@ -55,6 +55,10 @@ const authState = {
   isHydrating: false,
   suppressCloudSave: false
 };
+const uiState = {
+  editorFocused: false,
+  mobileTagsOpen: false
+};
 applyUrlOverrides();
 
 init();
@@ -118,7 +122,9 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("mousedown", (event) => {
     const quickButton = event.target.closest("[data-quick-tag]");
-    if (quickButton) {
+    const mobileToggle = event.target.closest("[data-mobile-tag-toggle]");
+    const mobileDismiss = event.target.closest("[data-mobile-tag-dismiss]");
+    if (quickButton || mobileToggle || mobileDismiss) {
       event.preventDefault();
     }
   });
@@ -184,12 +190,47 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
-    const quickButton = event.target.closest("[data-quick-tag]");
-    if (quickButton) {
-      handleQuickTag(quickButton.dataset.quickTag);
+    const mobileToggle = event.target.closest("[data-mobile-tag-toggle]");
+    if (mobileToggle) {
+      uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
+      syncMobileTagDock();
+      refs.editorRoot.querySelector("#notepad-editor")?.focus();
       return;
     }
 
+    const mobileDismiss = event.target.closest("[data-mobile-tag-dismiss]");
+    if (mobileDismiss) {
+      uiState.mobileTagsOpen = false;
+      syncMobileTagDock();
+      refs.editorRoot.querySelector("#notepad-editor")?.focus();
+      return;
+    }
+
+    const quickButton = event.target.closest("[data-quick-tag]");
+    if (quickButton) {
+      handleQuickTag(quickButton.dataset.quickTag);
+      uiState.mobileTagsOpen = false;
+      syncMobileTagDock();
+      return;
+    }
+
+  });
+
+  refs.editorRoot.addEventListener("focusin", (event) => {
+    if (!event.target.closest?.("#notepad-editor")) return;
+    uiState.editorFocused = true;
+    syncMobileTagDock();
+  });
+
+  refs.editorRoot.addEventListener("focusout", (event) => {
+    if (!event.target.closest?.("#notepad-editor")) return;
+    window.setTimeout(() => {
+      uiState.editorFocused = Boolean(document.activeElement?.closest?.("#notepad-editor"));
+      if (!uiState.editorFocused) {
+        uiState.mobileTagsOpen = false;
+      }
+      syncMobileTagDock();
+    }, 50);
   });
 
   refs.editorRoot.addEventListener("input", (event) => {
@@ -317,6 +358,8 @@ function bindEvents() {
     saveState();
     renderTimeline();
   });
+
+  window.addEventListener("resize", syncMobileTagDock, { passive: true });
 }
 
 function render() {
@@ -417,6 +460,28 @@ function renderEditor() {
           ${renderQuickChip("io", "I/O")}
         </div>
 
+        <div
+          class="mobile-tag-accessory"
+          data-mobile-tag-accessory="true"
+          aria-hidden="true"
+        >
+          <div class="mobile-tag-tray">
+            ${renderQuickChip("bed", "Bed", "mobile-quick-chip")}
+            ${renderQuickChip("time", "Time", "mobile-quick-chip")}
+            ${renderQuickChip("lab", "Lab", "mobile-quick-chip")}
+            ${renderQuickChip("io", "I/O", "mobile-quick-chip")}
+          </div>
+          <div class="mobile-tag-bar">
+            <button class="mobile-tag-toggle" type="button" data-mobile-tag-toggle="true">
+              Tags
+            </button>
+            <div class="mobile-tag-caption">Opens Bed, Time, Lab, and I/O right above the keyboard.</div>
+            <button class="mobile-tag-close" type="button" data-mobile-tag-dismiss="true" aria-label="Hide tag tray">
+              Hide
+            </button>
+          </div>
+        </div>
+
         <div class="smart-pad-surface document-pad">
           <p class="helper-copy">Type straight into the notepad. Tag buttons insert highlighted labels at the cursor inside the note itself.</p>
           <div
@@ -433,6 +498,7 @@ function renderEditor() {
 
   requestAnimationFrame(() => {
     refs.editorRoot.querySelector("#notepad-editor")?.focus();
+    syncMobileTagDock();
   });
 }
 
@@ -730,9 +796,9 @@ function renderSummaryTimedSection(items) {
   `;
 }
 
-function renderQuickChip(key, label) {
+function renderQuickChip(key, label, extraClass = "") {
   return `
-    <button class="quick-chip" type="button" data-quick-tag="${escapeHtml(key)}">
+    <button class="quick-chip ${escapeHtml(extraClass)}" type="button" data-quick-tag="${escapeHtml(key)}">
       ${escapeHtml(label)}
     </button>
   `;
@@ -754,6 +820,25 @@ function handleQuickTag(tag) {
   note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
   note.updatedAt = Date.now();
   saveState();
+}
+
+function isCompactMobileLayout() {
+  return window.matchMedia("(max-width: 860px)").matches;
+}
+
+function syncMobileTagDock() {
+  const dock = refs.editorRoot.querySelector("[data-mobile-tag-accessory]");
+  if (!dock) return;
+
+  const shouldShow = isCompactMobileLayout() && state.activeView === "notes" && (uiState.editorFocused || uiState.mobileTagsOpen);
+  dock.classList.toggle("is-visible", shouldShow);
+  dock.classList.toggle("is-open", shouldShow && uiState.mobileTagsOpen);
+  dock.setAttribute("aria-hidden", String(!shouldShow));
+
+  const toggle = dock.querySelector("[data-mobile-tag-toggle]");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", String(shouldShow && uiState.mobileTagsOpen));
+  }
 }
 
 function toggleTaggedLineDone(noteId, tokenId, done) {
