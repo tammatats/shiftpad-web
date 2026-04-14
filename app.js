@@ -57,7 +57,9 @@ const authState = {
 };
 const uiState = {
   editorFocused: false,
-  mobileTagsOpen: false
+  mobileKeyboardMode: "alpha",
+  shiftOn: false,
+  savedSelection: null
 };
 applyUrlOverrides();
 
@@ -122,10 +124,26 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("mousedown", (event) => {
     const quickButton = event.target.closest("[data-quick-tag]");
-    const mobileToggle = event.target.closest("[data-mobile-tag-toggle]");
-    const mobileDismiss = event.target.closest("[data-mobile-tag-dismiss]");
-    if (quickButton || mobileToggle || mobileDismiss) {
+    const keyboardButton = event.target.closest("[data-keyboard-action], [data-keyboard-tag]");
+    if (quickButton || keyboardButton) {
       event.preventDefault();
+    }
+  });
+
+  refs.editorRoot.addEventListener("pointerdown", (event) => {
+    const keyboardButton = event.target.closest("[data-keyboard-action], [data-keyboard-tag]");
+    if (keyboardButton) {
+      event.preventDefault();
+      return;
+    }
+
+    const manualEditor = event.target.closest?.('#notepad-editor[data-manual-keyboard="true"]');
+    if (manualEditor) {
+      event.preventDefault();
+      setCaretFromPoint(manualEditor, event.clientX, event.clientY);
+      uiState.editorFocused = true;
+      syncMobileKeyboard();
+      rememberEditorSelection(manualEditor);
     }
   });
 
@@ -190,28 +208,28 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
-    const mobileToggle = event.target.closest("[data-mobile-tag-toggle]");
-    if (mobileToggle) {
-      uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
-      syncMobileTagDock();
-      refs.editorRoot.querySelector("#notepad-editor")?.focus();
+    const keyboardAction = event.target.closest("[data-keyboard-action]");
+    if (keyboardAction) {
+      handleMobileKeyboardAction(keyboardAction.dataset.keyboardAction, keyboardAction.dataset.keyboardValue || "");
       return;
     }
 
-    const mobileDismiss = event.target.closest("[data-mobile-tag-dismiss]");
-    if (mobileDismiss) {
-      uiState.mobileTagsOpen = false;
-      syncMobileTagDock();
-      refs.editorRoot.querySelector("#notepad-editor")?.focus();
+    const keyboardTag = event.target.closest("[data-keyboard-tag]");
+    if (keyboardTag) {
+      handleMobileKeyboardTag(keyboardTag.dataset.keyboardTag);
       return;
     }
 
     const quickButton = event.target.closest("[data-quick-tag]");
     if (quickButton) {
       handleQuickTag(quickButton.dataset.quickTag);
-      uiState.mobileTagsOpen = false;
-      syncMobileTagDock();
       return;
+    }
+
+    if (event.target.closest("#notepad-editor")) {
+      uiState.editorFocused = true;
+      syncMobileKeyboard();
+      rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
     }
 
   });
@@ -219,17 +237,15 @@ function bindEvents() {
   refs.editorRoot.addEventListener("focusin", (event) => {
     if (!event.target.closest?.("#notepad-editor")) return;
     uiState.editorFocused = true;
-    syncMobileTagDock();
+    syncMobileKeyboard();
+    rememberEditorSelection(event.target.closest("#notepad-editor"));
   });
 
   refs.editorRoot.addEventListener("focusout", (event) => {
     if (!event.target.closest?.("#notepad-editor")) return;
     window.setTimeout(() => {
       uiState.editorFocused = Boolean(document.activeElement?.closest?.("#notepad-editor"));
-      if (!uiState.editorFocused) {
-        uiState.mobileTagsOpen = false;
-      }
-      syncMobileTagDock();
+      syncMobileKeyboard();
     }, 50);
   });
 
@@ -242,6 +258,7 @@ function bindEvents() {
     maybeFinalizeEditingTimeToken(editor);
     note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
     note.updatedAt = Date.now();
+    rememberEditorSelection(editor);
     saveState();
     return;
   });
@@ -254,6 +271,7 @@ function bindEvents() {
 
     note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
     note.updatedAt = Date.now();
+    rememberEditorSelection(editor);
     saveState();
   }, true);
 
@@ -265,6 +283,7 @@ function bindEvents() {
 
     note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
     note.updatedAt = Date.now();
+    rememberEditorSelection(editor);
     saveState();
   });
 
@@ -275,8 +294,15 @@ function bindEvents() {
       if (!note) return;
 
       note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
+      rememberEditorSelection(editor);
       saveState();
     }
+  });
+
+  refs.editorRoot.addEventListener("mouseup", (event) => {
+    const editor = event.target.closest?.("#notepad-editor");
+    if (!editor) return;
+    rememberEditorSelection(editor);
   });
 
   refs.editorRoot.addEventListener("change", (event) => {
@@ -359,7 +385,13 @@ function bindEvents() {
     renderTimeline();
   });
 
-  window.addEventListener("resize", syncMobileTagDock, { passive: true });
+  document.addEventListener("selectionchange", () => {
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    if (!editor) return;
+    rememberEditorSelection(editor);
+  });
+
+  window.addEventListener("resize", syncMobileKeyboard, { passive: true });
 }
 
 function render() {
@@ -434,6 +466,7 @@ function renderEditor() {
     return;
   }
   const documentHtml = getNoteDocumentHtml(note);
+  const mobileManualKeyboard = isCompactMobileLayout();
 
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
@@ -460,45 +493,29 @@ function renderEditor() {
           ${renderQuickChip("io", "I/O")}
         </div>
 
-        <div
-          class="mobile-tag-accessory"
-          data-mobile-tag-accessory="true"
-          aria-hidden="true"
-        >
-          <div class="mobile-tag-tray">
-            ${renderQuickChip("bed", "Bed", "mobile-quick-chip")}
-            ${renderQuickChip("time", "Time", "mobile-quick-chip")}
-            ${renderQuickChip("lab", "Lab", "mobile-quick-chip")}
-            ${renderQuickChip("io", "I/O", "mobile-quick-chip")}
-          </div>
-          <div class="mobile-tag-bar">
-            <button class="mobile-tag-toggle" type="button" data-mobile-tag-toggle="true">
-              Tags
-            </button>
-            <div class="mobile-tag-caption">Opens Bed, Time, Lab, and I/O right above the keyboard.</div>
-            <button class="mobile-tag-close" type="button" data-mobile-tag-dismiss="true" aria-label="Hide tag tray">
-              Hide
-            </button>
-          </div>
-        </div>
-
         <div class="smart-pad-surface document-pad">
-          <p class="helper-copy">Type straight into the notepad. Tag buttons insert highlighted labels at the cursor inside the note itself.</p>
+          <p class="helper-copy">${mobileManualKeyboard ? "Type with the custom iPhone-style keyboard below. The Tags key opens Bed, Time, Lab, and I/O." : "Type straight into the notepad. Tag buttons insert highlighted labels at the cursor inside the note itself."}</p>
           <div
             id="notepad-editor"
             class="notepad-editor"
             contenteditable="true"
             spellcheck="true"
             aria-label="Main notepad"
+            ${mobileManualKeyboard ? 'inputmode="none" virtualkeyboardpolicy="manual" autocapitalize="sentences" data-manual-keyboard="true"' : ""}
           >${documentHtml}</div>
         </div>
+
+        <div id="mobile-keyboard-shell">${renderMobileKeyboard()}</div>
       </section>
     </div>
   `;
 
   requestAnimationFrame(() => {
-    refs.editorRoot.querySelector("#notepad-editor")?.focus();
-    syncMobileTagDock();
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    if (!mobileManualKeyboard) {
+      editor?.focus();
+    }
+    syncMobileKeyboard();
   });
 }
 
@@ -804,6 +821,89 @@ function renderQuickChip(key, label, extraClass = "") {
   `;
 }
 
+function renderMobileKeyboard() {
+  const alphaRows = [
+    ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+    ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
+    ["z", "x", "c", "v", "b", "n", "m"]
+  ];
+  const numericRows = [
+    ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+    ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""],
+    [".", ",", "?", "!", "'"]
+  ];
+  const useUppercase = uiState.shiftOn;
+  const mode = uiState.mobileKeyboardMode;
+
+  return `
+    <div class="mobile-keyboard" data-mobile-keyboard="true" aria-hidden="true">
+      ${
+        mode === "tags"
+          ? `
+            <div class="mobile-keyboard-tags">
+              <button class="mobile-key ${"wide"}" type="button" data-keyboard-tag="bed">Bed</button>
+              <button class="mobile-key ${"wide"}" type="button" data-keyboard-tag="time">Time</button>
+              <button class="mobile-key ${"wide"}" type="button" data-keyboard-tag="lab">Lab</button>
+              <button class="mobile-key ${"wide"}" type="button" data-keyboard-tag="io">I/O</button>
+            </div>
+          `
+          : `
+            <div class="mobile-keyboard-rows">
+              ${renderKeyboardRow((mode === "numeric" ? numericRows[0] : alphaRows[0]).map((key) => ({
+                label: mode === "numeric" ? key : useUppercase ? key.toUpperCase() : key,
+                value: key
+              })))}
+              ${renderKeyboardRow((mode === "numeric" ? numericRows[1] : alphaRows[1]).map((key) => ({
+                label: mode === "numeric" ? key : useUppercase ? key.toUpperCase() : key,
+                value: key
+              })), mode === "numeric" ? "" : "offset")}
+              ${renderKeyboardRow([
+                ...(mode === "numeric"
+                  ? [{ label: "#+=", action: "noop", className: "mobile-key-mod muted" }]
+                  : [{ label: useUppercase ? "Shift" : "shift", action: "shift", className: `mobile-key-mod ${uiState.shiftOn ? "is-active" : ""}` }]),
+                ...((mode === "numeric" ? numericRows[2] : alphaRows[2]).map((key) => ({
+                  label: mode === "numeric" ? key : useUppercase ? key.toUpperCase() : key,
+                  value: key
+                }))),
+                { label: "⌫", action: "backspace", className: "mobile-key-mod" }
+              ], "wide-edges")}
+            </div>
+          `
+      }
+      <div class="mobile-keyboard-bottom">
+        <button class="mobile-key mobile-key-mod" type="button" data-keyboard-action="${mode === "numeric" ? "mode-alpha" : "mode-numeric"}">
+          ${mode === "numeric" ? "ABC" : "123"}
+        </button>
+        <button class="mobile-key mobile-key-mod" type="button" data-keyboard-action="${mode === "tags" ? "mode-alpha" : "mode-tags"}">
+          Tags
+        </button>
+        <button class="mobile-key mobile-key-space" type="button" data-keyboard-action="space">space</button>
+        <button class="mobile-key mobile-key-mod mobile-key-return" type="button" data-keyboard-action="enter">return</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderKeyboardRow(keys, extraClass = "") {
+  return `
+    <div class="mobile-keyboard-row ${extraClass}">
+      ${keys
+        .map((key) => {
+          if (key.action) {
+            return `<button class="mobile-key ${escapeHtml(key.className || "")}" type="button" data-keyboard-action="${escapeHtml(
+              key.action
+            )}">${escapeHtml(key.label)}</button>`;
+          }
+
+          return `<button class="mobile-key" type="button" data-keyboard-action="insert" data-keyboard-value="${escapeHtml(
+            key.value
+          )}">${escapeHtml(key.label)}</button>`;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function renderEntryChip(label, extraClass = "") {
   return `<span class="entry-chip ${escapeHtml(extraClass)}">${escapeHtml(label)}</span>`;
 }
@@ -814,31 +914,177 @@ function handleQuickTag(tag) {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!editor) return;
 
-  editor.focus();
+  if (shouldUseManualKeyboard(editor)) {
+    restoreEditorSelection(editor);
+  } else {
+    editor.focus();
+  }
   insertTagIntoEditor(editor, tag);
 
   note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
   note.updatedAt = Date.now();
   saveState();
+  rememberEditorSelection(editor);
 }
 
 function isCompactMobileLayout() {
   return window.matchMedia("(max-width: 860px)").matches;
 }
 
-function syncMobileTagDock() {
-  const dock = refs.editorRoot.querySelector("[data-mobile-tag-accessory]");
-  if (!dock) return;
+function syncMobileKeyboard() {
+  const keyboard = refs.editorRoot.querySelector("[data-mobile-keyboard]");
+  if (!keyboard) return;
 
-  const shouldShow = isCompactMobileLayout() && state.activeView === "notes" && (uiState.editorFocused || uiState.mobileTagsOpen);
-  dock.classList.toggle("is-visible", shouldShow);
-  dock.classList.toggle("is-open", shouldShow && uiState.mobileTagsOpen);
-  dock.setAttribute("aria-hidden", String(!shouldShow));
+  const shouldShow = isCompactMobileLayout() && state.activeView === "notes" && uiState.editorFocused;
+  keyboard.classList.toggle("is-visible", shouldShow);
+  keyboard.setAttribute("aria-hidden", String(!shouldShow));
+}
 
-  const toggle = dock.querySelector("[data-mobile-tag-toggle]");
-  if (toggle) {
-    toggle.setAttribute("aria-expanded", String(shouldShow && uiState.mobileTagsOpen));
+function refreshMobileKeyboardView() {
+  const shell = refs.editorRoot.querySelector("#mobile-keyboard-shell");
+  if (!shell) return;
+  shell.innerHTML = renderMobileKeyboard();
+  syncMobileKeyboard();
+}
+
+function handleMobileKeyboardAction(action, value = "") {
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  if (!editor) return;
+
+  if (action === "mode-tags") {
+    uiState.mobileKeyboardMode = "tags";
+    refreshMobileKeyboardView();
+    return;
   }
+
+  if (action === "mode-alpha") {
+    uiState.mobileKeyboardMode = "alpha";
+    uiState.shiftOn = false;
+    refreshMobileKeyboardView();
+    return;
+  }
+
+  if (action === "mode-numeric") {
+    uiState.mobileKeyboardMode = "numeric";
+    uiState.shiftOn = false;
+    refreshMobileKeyboardView();
+    return;
+  }
+
+  restoreEditorSelection(editor);
+
+  if (action === "shift") {
+    uiState.shiftOn = !uiState.shiftOn;
+    refreshMobileKeyboardView();
+    return;
+  }
+
+  if (action === "backspace") {
+    deleteBackwardAtSelection(editor);
+    return;
+  }
+
+  if (action === "space") {
+    if (handleEditorSpecialKey(" ")) return;
+    insertTextAtSelection(" ");
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return;
+  }
+
+  if (action === "enter") {
+    if (handleEditorSpecialKey("Enter")) return;
+    insertParagraphAtSelection();
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return;
+  }
+
+  if (action === "insert") {
+    if (!value) return;
+    const nextValue = uiState.mobileKeyboardMode === "alpha" && uiState.shiftOn ? value.toUpperCase() : value;
+    if (handleEditorSpecialKey(nextValue)) {
+      if (uiState.shiftOn && /^[a-z]$/i.test(value)) {
+        uiState.shiftOn = false;
+        refreshMobileKeyboardView();
+      }
+      return;
+    }
+    insertTextAtSelection(nextValue);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    if (uiState.shiftOn && /^[a-z]$/i.test(value)) {
+      uiState.shiftOn = false;
+      refreshMobileKeyboardView();
+    }
+  }
+}
+
+function handleMobileKeyboardTag(tag) {
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  if (!editor) return;
+
+  restoreEditorSelection(editor);
+  handleQuickTag(tag);
+  uiState.mobileKeyboardMode = "alpha";
+  uiState.shiftOn = false;
+  refreshMobileKeyboardView();
+}
+
+function rememberEditorSelection(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount) return;
+  if (!isNodeInsideEditor(editor, selection.anchorNode)) return;
+  uiState.savedSelection = selection.getRangeAt(0).cloneRange();
+}
+
+function restoreEditorSelection(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection) return false;
+
+  if (uiState.savedSelection) {
+    selection.removeAllRanges();
+    selection.addRange(uiState.savedSelection.cloneRange());
+    return true;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  uiState.savedSelection = range.cloneRange();
+  return true;
+}
+
+function shouldUseManualKeyboard(editor) {
+  return Boolean(editor?.dataset.manualKeyboard === "true");
+}
+
+function setCaretFromPoint(editor, clientX, clientY) {
+  const selection = window.getSelection();
+  if (!editor || !selection) return false;
+
+  let range = null;
+  if (document.caretRangeFromPoint) {
+    range = document.caretRangeFromPoint(clientX, clientY);
+  } else if (document.caretPositionFromPoint) {
+    const position = document.caretPositionFromPoint(clientX, clientY);
+    if (position) {
+      range = document.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+    }
+  }
+
+  if (!range || !isNodeInsideEditor(editor, range.startContainer)) {
+    return restoreEditorSelection(editor);
+  }
+
+  selection.removeAllRanges();
+  selection.addRange(range);
+  uiState.savedSelection = range.cloneRange();
+  return true;
 }
 
 function toggleTaggedLineDone(noteId, tokenId, done) {
@@ -1510,52 +1756,57 @@ function convertEntriesToDocumentHtml(entries) {
 }
 
 function handleNotepadKeydown(event) {
+  if (handleEditorSpecialKey(event.key, { shiftKey: event.shiftKey, keyboardEvent: event })) {
+    event.preventDefault();
+  }
+}
+
+function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } = {}) {
   const token = getActiveTagToken();
   if (token) {
-    if (event.key === "Escape") {
-      event.preventDefault();
+    if (key === "Escape") {
       removeTagToken(token);
-      return;
+      syncEditorDocument();
+      return true;
     }
 
     const tagType = token.dataset.tag;
     if (isTimeLikeTag(tagType) && token.dataset.editing === "true") {
-      if (event.key === " " || event.key === "Tab") {
-        event.preventDefault();
+      if (key === " " || key === "Tab") {
         finalizeTagToken(token, { moveToNewLine: false });
-        return;
+        return true;
       }
 
-      if (isPrintableKey(event) && !isTimeEditingCharacter(event.key)) {
-        event.preventDefault();
+      const isPrintable = keyboardEvent ? isPrintableKey(keyboardEvent) : key.length === 1;
+      if (isPrintable && !isTimeEditingCharacter(key)) {
         finalizeTagToken(token, { moveToNewLine: false });
-        insertTextAtSelection(event.key);
+        insertTextAtSelection(key);
         syncEditorDocument();
-        return;
+        return true;
       }
     }
 
-    if (tagType === "bed" && event.key === "Enter") {
-      event.preventDefault();
+    if (tagType === "bed" && key === "Enter") {
       finalizeTagToken(token, { moveToNewLine: true });
-      return;
+      return true;
     }
 
-    if (isTimeLikeTag(tagType) && event.key === "Enter") {
-      event.preventDefault();
+    if (isTimeLikeTag(tagType) && key === "Enter") {
       finalizeTagToken(token, { moveToNewLine: true });
-      return;
+      return true;
     }
   }
 
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (key === "Enter" && !shiftKey) {
     const currentLine = getCurrentEditorLine();
     if (currentLine?.classList.contains("timed-line") || currentLine?.classList.contains("io-line")) {
-      event.preventDefault();
       placeCaretOnNewLine(currentLine);
       syncEditorDocument();
+      return true;
     }
   }
+
+  return false;
 }
 
 function insertTagIntoEditor(editor, tag) {
@@ -1650,6 +1901,20 @@ function insertHtmlAtSelection(html) {
   selection.addRange(range);
 }
 
+function insertTextAtSelection(text) {
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) return;
+
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+  const node = document.createTextNode(text);
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function placeCaretInsideTag(node, selectAll = false) {
   if (!node) return;
   const selection = window.getSelection();
@@ -1678,7 +1943,91 @@ function placeCaretAfterNode(node, insertSpace = false) {
   selection.addRange(range);
 
   if (insertSpace) {
-    document.execCommand("insertText", false, " ");
+    insertTextAtSelection(" ");
+  }
+}
+
+function insertParagraphAtSelection() {
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) return;
+
+  const range = selection.getRangeAt(0);
+  let line = getCurrentEditorLine();
+  if (!line) {
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    if (!editor) return;
+    line = document.createElement("div");
+    line.innerHTML = "<br>";
+    editor.appendChild(line);
+  }
+
+  const newLine = document.createElement("div");
+  newLine.innerHTML = "<br>";
+
+  if (line.nextSibling) {
+    line.parentNode.insertBefore(newLine, line.nextSibling);
+  } else {
+    line.parentNode.appendChild(newLine);
+  }
+
+  range.selectNodeContents(newLine);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function deleteBackwardAtSelection(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection) return;
+  restoreEditorSelection(editor);
+
+  const activeToken = getActiveTagToken();
+  if (activeToken && activeToken.dataset.editing === "true") {
+    const textNode = activeToken.firstChild;
+    const offset = selection.anchorOffset;
+    if (textNode?.nodeType === Node.TEXT_NODE && offset > 0) {
+      textNode.textContent = `${textNode.textContent.slice(0, offset - 1)}${textNode.textContent.slice(offset)}`;
+      const range = document.createRange();
+      range.setStart(textNode, Math.max(0, offset - 1));
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      syncEditorDocument();
+      rememberEditorSelection(editor);
+      return;
+    }
+  }
+
+  if (!selection.isCollapsed) {
+    selection.deleteFromDocument();
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return;
+  }
+
+  if (typeof selection.modify === "function") {
+    selection.modify("extend", "backward", "character");
+    if (!selection.isCollapsed) {
+      selection.deleteFromDocument();
+      syncEditorDocument();
+      rememberEditorSelection(editor);
+      return;
+    }
+  }
+
+  const currentLine = getCurrentEditorLine();
+  if (currentLine && currentLine.previousSibling) {
+    const previousLine = currentLine.previousSibling;
+    const mergedText = currentLine.innerHTML === "<br>" ? "" : currentLine.innerHTML;
+    if (previousLine.innerHTML === "<br>") {
+      previousLine.innerHTML = mergedText || "<br>";
+    } else if (mergedText) {
+      previousLine.insertAdjacentHTML("beforeend", mergedText);
+    }
+    currentLine.remove();
+    placeCaretAfterNode(previousLine.lastChild || previousLine);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
   }
 }
 
