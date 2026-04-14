@@ -467,6 +467,9 @@ function renderEditor() {
   }
   const documentHtml = getNoteDocumentHtml(note);
   const mobileManualKeyboard = isCompactMobileLayout();
+  if (mobileManualKeyboard) {
+    uiState.editorFocused = true;
+  }
 
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
@@ -935,7 +938,7 @@ function syncMobileKeyboard() {
   const keyboard = refs.editorRoot.querySelector("[data-mobile-keyboard]");
   if (!keyboard) return;
 
-  const shouldShow = isCompactMobileLayout() && state.activeView === "notes" && uiState.editorFocused;
+  const shouldShow = isCompactMobileLayout() && state.activeView === "notes";
   keyboard.classList.toggle("is-visible", shouldShow);
   keyboard.setAttribute("aria-hidden", String(!shouldShow));
 }
