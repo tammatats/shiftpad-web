@@ -38,6 +38,7 @@ const refs = {
   notesView: document.getElementById("notes-view"),
   timelineView: document.getElementById("timeline-view"),
   editorRoot: document.getElementById("editor-root"),
+  mobileKeyboardRoot: document.getElementById("mobile-keyboard-root"),
   timelineRoot: document.getElementById("timeline-root"),
   timelineScope: document.getElementById("timeline-scope"),
   workspace: document.querySelector(".workspace")
@@ -124,19 +125,12 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("mousedown", (event) => {
     const quickButton = event.target.closest("[data-quick-tag]");
-    const keyboardButton = event.target.closest("[data-keyboard-action], [data-keyboard-tag]");
-    if (quickButton || keyboardButton) {
+    if (quickButton) {
       event.preventDefault();
     }
   });
 
   refs.editorRoot.addEventListener("pointerdown", (event) => {
-    const keyboardButton = event.target.closest("[data-keyboard-action], [data-keyboard-tag]");
-    if (keyboardButton) {
-      event.preventDefault();
-      return;
-    }
-
     const manualEditor = event.target.closest?.('#notepad-editor[data-manual-keyboard="true"]');
     if (manualEditor) {
       event.preventDefault();
@@ -144,6 +138,20 @@ function bindEvents() {
       uiState.editorFocused = true;
       syncMobileKeyboard();
       rememberEditorSelection(manualEditor);
+    }
+  });
+
+  refs.mobileKeyboardRoot?.addEventListener("mousedown", (event) => {
+    const keyboardButton = event.target.closest("[data-keyboard-action], [data-keyboard-tag]");
+    if (keyboardButton) {
+      event.preventDefault();
+    }
+  });
+
+  refs.mobileKeyboardRoot?.addEventListener("pointerdown", (event) => {
+    const keyboardButton = event.target.closest("[data-keyboard-action], [data-keyboard-tag]");
+    if (keyboardButton) {
+      event.preventDefault();
     }
   });
 
@@ -210,18 +218,6 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
-    const keyboardAction = event.target.closest("[data-keyboard-action]");
-    if (keyboardAction) {
-      handleMobileKeyboardAction(keyboardAction.dataset.keyboardAction, keyboardAction.dataset.keyboardValue || "");
-      return;
-    }
-
-    const keyboardTag = event.target.closest("[data-keyboard-tag]");
-    if (keyboardTag) {
-      handleMobileKeyboardTag(keyboardTag.dataset.keyboardTag);
-      return;
-    }
-
     const quickButton = event.target.closest("[data-quick-tag]");
     if (quickButton) {
       handleQuickTag(quickButton.dataset.quickTag);
@@ -344,6 +340,19 @@ function bindEvents() {
     }
   });
 
+  refs.mobileKeyboardRoot?.addEventListener("click", (event) => {
+    const keyboardAction = event.target.closest("[data-keyboard-action]");
+    if (keyboardAction) {
+      handleMobileKeyboardAction(keyboardAction.dataset.keyboardAction, keyboardAction.dataset.keyboardValue || "");
+      return;
+    }
+
+    const keyboardTag = event.target.closest("[data-keyboard-tag]");
+    if (keyboardTag) {
+      handleMobileKeyboardTag(keyboardTag.dataset.keyboardTag);
+    }
+  });
+
   refs.timelineRoot.addEventListener("change", (event) => {
     const bedEditor = event.target.closest("[data-bed-editor]");
     if (bedEditor) {
@@ -421,6 +430,7 @@ function render() {
   renderWardRail();
   renderEditor();
   renderTimeline();
+  refreshMobileKeyboardView();
 }
 
 function renderSummary() {
@@ -516,7 +526,6 @@ function renderEditor() {
           >${documentHtml}</div>
         </div>
 
-        <div id="mobile-keyboard-shell">${renderMobileKeyboard()}</div>
       </section>
     </div>
   `;
@@ -943,7 +952,7 @@ function isCompactMobileLayout() {
 }
 
 function syncMobileKeyboard() {
-  const keyboard = refs.editorRoot.querySelector("[data-mobile-keyboard]");
+  const keyboard = refs.mobileKeyboardRoot?.querySelector("[data-mobile-keyboard]");
   if (!keyboard) return;
 
   const shouldShow = isCompactMobileLayout() && state.activeView === "notes" && uiState.editorFocused;
@@ -954,9 +963,8 @@ function syncMobileKeyboard() {
 }
 
 function refreshMobileKeyboardView() {
-  const shell = refs.editorRoot.querySelector("#mobile-keyboard-shell");
-  if (!shell) return;
-  shell.innerHTML = renderMobileKeyboard();
+  if (!refs.mobileKeyboardRoot) return;
+  refs.mobileKeyboardRoot.innerHTML = renderMobileKeyboard();
   syncMobileKeyboard();
 }
 
@@ -1109,7 +1117,7 @@ function keepEditorCaretVisible(editor) {
   if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
 
   const line = getCurrentEditorLine();
-  const keyboard = refs.editorRoot.querySelector("[data-mobile-keyboard].is-visible");
+  const keyboard = refs.mobileKeyboardRoot?.querySelector("[data-mobile-keyboard].is-visible");
   const keyboardHeight = keyboard ? keyboard.getBoundingClientRect().height : 0;
   const safeBottom = window.innerHeight - keyboardHeight - 24;
   const target = line || editor;
