@@ -861,10 +861,10 @@ function renderMobileKeyboard() {
         mode === "tags"
           ? `
             <div class="mobile-keyboard-tags">
-              <button class="mobile-key ${"wide"}" type="button" data-keyboard-tag="bed">Bed</button>
-              <button class="mobile-key ${"wide"}" type="button" data-keyboard-tag="time">Time</button>
-              <button class="mobile-key ${"wide"}" type="button" data-keyboard-tag="lab">Lab</button>
-              <button class="mobile-key ${"wide"}" type="button" data-keyboard-tag="io">I/O</button>
+              <button class="mobile-key mobile-key-dark wide" type="button" data-keyboard-tag="bed">Bed</button>
+              <button class="mobile-key mobile-key-dark wide" type="button" data-keyboard-tag="time">Time</button>
+              <button class="mobile-key mobile-key-dark wide" type="button" data-keyboard-tag="lab">Lab</button>
+              <button class="mobile-key mobile-key-dark wide" type="button" data-keyboard-tag="io">I/O</button>
             </div>
           `
           : `
@@ -879,26 +879,27 @@ function renderMobileKeyboard() {
               })), mode === "numeric" ? "" : "offset")}
               ${renderKeyboardRow([
                 ...(mode === "numeric"
-                  ? [{ label: "#+=", action: "noop", className: "mobile-key-mod muted" }]
-                  : [{ label: useUppercase ? "Shift" : "shift", action: "shift", className: `mobile-key-mod ${uiState.shiftOn ? "is-active" : ""}` }]),
+                  ? [{ label: "#+=", action: "noop", className: "mobile-key-side muted" }]
+                  : [{ label: "⇧", action: "shift", className: `mobile-key-side ${uiState.shiftOn ? "is-active" : ""}` }]),
                 ...((mode === "numeric" ? numericRows[2] : alphaRows[2]).map((key) => ({
                   label: mode === "numeric" ? key : useUppercase ? key.toUpperCase() : key,
                   value: key
                 }))),
-                { label: "⌫", action: "backspace", className: "mobile-key-mod" }
+                { label: "⌫", action: "backspace", className: "mobile-key-side" }
               ], "wide-edges")}
             </div>
           `
       }
       <div class="mobile-keyboard-bottom">
-        <button class="mobile-key mobile-key-mod" type="button" data-keyboard-action="${mode === "numeric" ? "mode-alpha" : "mode-numeric"}">
+        <button class="mobile-key mobile-key-side" type="button" data-keyboard-action="${mode === "numeric" ? "mode-alpha" : "mode-numeric"}">
           ${mode === "numeric" ? "ABC" : "123"}
         </button>
-        <button class="mobile-key mobile-key-mod" type="button" data-keyboard-action="${mode === "tags" ? "mode-alpha" : "mode-tags"}">
+        <button class="mobile-key mobile-key-side" type="button" data-keyboard-action="${mode === "tags" ? "mode-alpha" : "mode-tags"}">
           Tags
         </button>
-        <button class="mobile-key mobile-key-space" type="button" data-keyboard-action="space">space</button>
-        <button class="mobile-key mobile-key-mod mobile-key-return" type="button" data-keyboard-action="enter">return</button>
+        <button class="mobile-key mobile-key-space" type="button" data-keyboard-action="space" aria-label="Space"></button>
+        <button class="mobile-key mobile-key-side mobile-key-dot" type="button" data-keyboard-action="insert" data-keyboard-value=".">.</button>
+        <button class="mobile-key mobile-key-enter" type="button" data-keyboard-action="enter" aria-label="Return">→</button>
       </div>
     </div>
   `;
@@ -1007,7 +1008,10 @@ function handleMobileKeyboardAction(action, value = "") {
   }
 
   if (action === "space") {
-    if (handleEditorSpecialKey(" ")) return;
+    if (handleEditorSpecialKey(" ")) {
+      keepEditorCaretVisible(editor);
+      return;
+    }
     insertTextAtSelection(" ");
     syncEditorDocument();
     rememberEditorSelection(editor);
@@ -1016,7 +1020,10 @@ function handleMobileKeyboardAction(action, value = "") {
   }
 
   if (action === "enter") {
-    if (handleEditorSpecialKey("Enter")) return;
+    if (handleEditorSpecialKey("Enter")) {
+      keepEditorCaretVisible(editor);
+      return;
+    }
     insertParagraphAtSelection();
     syncEditorDocument();
     rememberEditorSelection(editor);
@@ -1028,6 +1035,7 @@ function handleMobileKeyboardAction(action, value = "") {
     if (!value) return;
     const nextValue = uiState.mobileKeyboardMode === "alpha" && uiState.shiftOn ? value.toUpperCase() : value;
     if (handleEditorSpecialKey(nextValue)) {
+      keepEditorCaretVisible(editor);
       if (uiState.shiftOn && /^[a-z]$/i.test(value)) {
         uiState.shiftOn = false;
         refreshMobileKeyboardView();
@@ -1116,15 +1124,24 @@ function setCaretFromPoint(editor, clientX, clientY) {
 function keepEditorCaretVisible(editor) {
   if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
 
+  const viewport = window.visualViewport;
   const line = getCurrentEditorLine();
   const keyboard = refs.mobileKeyboardRoot?.querySelector("[data-mobile-keyboard].is-visible");
   const keyboardHeight = keyboard ? keyboard.getBoundingClientRect().height : 0;
-  const safeBottom = window.innerHeight - keyboardHeight - 24;
   const target = line || editor;
   const rect = target.getBoundingClientRect();
+  const viewportHeight = viewport?.height || window.innerHeight;
+  const viewportTop = viewport?.offsetTop || 0;
+  const contentHeight = Math.max(120, viewportHeight - keyboardHeight);
+  const desiredCenterY = viewportTop + contentHeight * 0.72;
+  const currentCenterY = rect.top + rect.height / 2;
+  const delta = currentCenterY - desiredCenterY;
 
-  if (rect.bottom > safeBottom || rect.top < 88) {
-    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+  if (Math.abs(delta) > 18) {
+    window.scrollTo({
+      top: Math.max(0, window.scrollY + delta),
+      left: window.scrollX
+    });
   }
 }
 
