@@ -15,9 +15,6 @@ const refs = {
   singleWardToggle: document.getElementById("single-ward-toggle"),
   addWardBtn: document.getElementById("add-ward-btn"),
   newNoteBtn: document.getElementById("new-note-btn"),
-  summaryDate: document.getElementById("summary-date"),
-  summaryOpenCount: document.getElementById("summary-open-count"),
-  summaryBedCount: document.getElementById("summary-bed-count"),
   authGate: document.getElementById("auth-gate"),
   authForm: document.getElementById("auth-form"),
   authEmail: document.getElementById("auth-email"),
@@ -449,21 +446,10 @@ function render() {
   refs.notesView.classList.toggle("hidden", state.activeView !== "notes");
   refs.timelineView.classList.toggle("hidden", state.activeView !== "timeline");
 
-  renderSummary();
   renderWardRail();
   renderEditor();
   renderTimeline();
   refreshMobileTagDock();
-}
-
-function renderSummary() {
-  const summary = buildSummaryGroups("all");
-  const timed = summary.timed;
-  const openCount = timed.filter((item) => !item.entry.done).length;
-
-  refs.summaryDate.textContent = formatLongDate(Date.now());
-  refs.summaryOpenCount.textContent = `${openCount} active`;
-  refs.summaryBedCount.textContent = `${summary.byBed.length} tagged`;
 }
 
 function renderWardRail() {
