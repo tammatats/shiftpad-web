@@ -513,13 +513,6 @@ function renderEditor() {
 
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
-      <section class="editor-top">
-        <label class="field-card full">
-          <span class="field-label">Ward tab name</span>
-          <input type="text" data-field="ward-name" value="${escapeAttribute(ward.name)}" />
-        </label>
-      </section>
-
       <section class="note-pad-card">
         <div class="stack-head">
           <div>
@@ -537,7 +530,6 @@ function renderEditor() {
         </div>
 
         <div class="smart-pad-surface document-pad">
-          <p class="helper-copy">Type straight into the notepad. Tag controls insert highlighted labels at the cursor inside the note itself.</p>
           <div
             id="notepad-editor"
             class="notepad-editor"

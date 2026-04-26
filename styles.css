@@ -221,7 +221,6 @@ h2 {
 .summary-card,
 .ward-rail,
 .note-stack-panel,
-.editor-panel,
 .timeline-panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -354,7 +353,6 @@ h2 {
 
 .ward-rail,
 .note-stack-panel,
-.editor-panel,
 .timeline-panel {
   border-radius: var(--radius-xl);
 }
@@ -473,9 +471,15 @@ h2 {
 }
 
 .note-stack-panel,
-.editor-panel,
 .timeline-panel {
   padding: 18px;
+}
+
+.editor-panel {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .note-card {
@@ -528,23 +532,22 @@ h2 {
 
 .editor-shell {
   display: grid;
-  gap: 18px;
-}
-
-.editor-top {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
 .field-card,
-.note-pad-card,
 .empty-card,
 .timeline-empty {
   border: 1px solid var(--line);
   border-radius: 24px;
   background: var(--panel-strong);
   padding: 16px;
+}
+
+.note-pad-card {
+  display: grid;
+  gap: 14px;
+  width: 100%;
 }
 
 .field-card.full {
@@ -627,27 +630,10 @@ select:focus {
   line-height: 1.45;
 }
 
-.note-pad-card {
-  display: grid;
-  gap: 14px;
-}
-
 .smart-pad-surface {
-  border: 1px solid rgba(130, 98, 66, 0.14);
-  border-radius: 28px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 252, 0.99), rgba(255, 251, 246, 0.95));
-  padding: 18px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
-}
-
-.smart-pad-surface.has-bed-context {
-  background:
-    linear-gradient(180deg, rgba(255, 249, 243, 0.99), rgba(255, 240, 231, 0.94));
-}
-
-.smart-pad-surface.has-time-context {
-  border-color: rgba(94, 156, 255, 0.24);
+  width: 100%;
+  background: transparent;
+  padding: 0;
 }
 
 .pad-stream {
@@ -759,7 +745,7 @@ select:focus {
 
 .notepad-editor {
   margin-top: 12px;
-  min-height: 420px;
+  min-height: min(70dvh, 760px);
   border-radius: 0;
   border-width: 0;
   background: transparent;
@@ -1060,10 +1046,6 @@ select:focus {
     padding-bottom: 4px;
   }
 
-  .editor-top {
-    grid-template-columns: 1fr;
-  }
-
   .field-card.full {
     grid-column: auto;
   }
@@ -1210,7 +1192,6 @@ select:focus {
   .switch-card,
   .summary-card,
   .note-stack-panel,
-  .editor-panel,
   .timeline-panel,
   .ward-rail {
     border-radius: 22px;
