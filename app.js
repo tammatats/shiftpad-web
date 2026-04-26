@@ -58,7 +58,9 @@ const uiState = {
   mobileTagsOpen: false,
   savedSelection: null,
   bedFinalizeTimer: null,
-  editorTapScroll: null
+  editorTapScroll: null,
+  suppressNextDeleteInput: false,
+  pendingTagInsertions: new Map()
 };
 applyUrlOverrides();
 
@@ -1028,6 +1030,11 @@ function restoreEditorSelection(editor) {
   const selection = window.getSelection();
   if (!editor || !selection) return false;
 
+  if (selection.rangeCount && isNodeInsideEditor(editor, selection.anchorNode)) {
+    uiState.savedSelection = selection.getRangeAt(0).cloneRange();
+    return true;
+  }
+
   if (uiState.savedSelection) {
     selection.removeAllRanges();
     selection.addRange(uiState.savedSelection.cloneRange());
@@ -1781,6 +1788,11 @@ function handleNotepadBeforeInput(event) {
   }
 
   if (inputType === "deleteContentBackward" || inputType === "deleteContentForward") {
+    if (uiState.suppressNextDeleteInput) {
+      uiState.suppressNextDeleteInput = false;
+      return true;
+    }
+
     const activeToken = getActiveTagToken();
     if (activeToken && shouldDeleteEditingTag(activeToken)) {
       removeTagToken(activeToken);
@@ -1808,12 +1820,6 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
       return true;
     }
 
-    if ((key === "Backspace" || key === "Delete") && isEditingBedLineEmpty(editingBedLine)) {
-      removeEditingBedLine(editingBedLine);
-      syncEditorDocument();
-      return true;
-    }
-
     if (key === "Enter" || key === "Tab") {
       finalizeEditingBedLine(editingBedLine);
       return true;
@@ -1823,12 +1829,6 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
   const token = getActiveTagToken();
   if (token) {
     if (key === "Escape") {
-      removeTagToken(token);
-      syncEditorDocument();
-      return true;
-    }
-
-    if ((key === "Backspace" || key === "Delete") && shouldDeleteEditingTag(token)) {
       removeTagToken(token);
       syncEditorDocument();
       return true;
@@ -1892,6 +1892,7 @@ function insertTagIntoEditor(editor, tag) {
     selection?.removeAllRanges();
     selection?.addRange(range);
   }
+  const insertionPoint = getEditorSelectionPoint(editor);
 
   if (tag === "bed") {
     const tokenId = createId("tag");
@@ -1901,6 +1902,7 @@ function insertTagIntoEditor(editor, tag) {
         tokenId
       )}" data-editing="true">Bed</span>&nbsp;`
     );
+    rememberPendingTagInsertion(tokenId, editor, insertionPoint);
     placeCaretAtEndOfLine(line);
     rememberEditorSelection(editor);
     return;
@@ -1914,6 +1916,7 @@ function insertTagIntoEditor(editor, tag) {
       )}" data-done="false" data-editing="true">00.00</span>&nbsp;`
     );
     const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
+    rememberPendingTagInsertion(tokenId, editor, insertionPoint);
     placeCaretInsideTag(inserted, true);
     return;
   }
@@ -1988,6 +1991,48 @@ function insertEditorLine(editor, html) {
 
   editor.appendChild(line);
   return line;
+}
+
+function getEditorSelectionPoint(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount) return null;
+  if (!isNodeInsideEditor(editor, selection.anchorNode)) return null;
+
+  const line = getCurrentEditorLine();
+  return {
+    node: selection.anchorNode,
+    offset: selection.anchorOffset,
+    line,
+    lineHtml: line?.innerHTML || "",
+    textOffset: line ? getTextOffsetWithinLine(line, selection.anchorNode, selection.anchorOffset) : 0
+  };
+}
+
+function rememberPendingTagInsertion(tokenId, editor, point) {
+  if (!tokenId || !editor || !point?.node) return;
+  uiState.pendingTagInsertions.set(tokenId, {
+    editor,
+    node: point.node,
+    offset: point.offset,
+    line: point.line,
+    lineHtml: point.lineHtml,
+    textOffset: point.textOffset
+  });
+}
+
+function getTextOffsetWithinLine(line, anchorNode, anchorOffset) {
+  if (!line || !anchorNode) return 0;
+  let offset = 0;
+  const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    if (node === anchorNode) {
+      return offset + Math.min(anchorOffset, node.textContent.length);
+    }
+    offset += node.textContent.length;
+    node = walker.nextNode();
+  }
+  return offset;
 }
 
 function insertTextAtSelection(text) {
@@ -2136,6 +2181,10 @@ function removeTagToken(token) {
   clearBedFinalizeTimer();
   const parent = token.parentNode;
   const line = findEditorLine(token);
+  const pendingInsertion = consumePendingTagInsertion(token);
+  if (pendingInsertion) {
+    removeInsertedTagSpacer(token);
+  }
   token.remove();
   if (parent?.firstChild?.nodeType === Node.TEXT_NODE) {
     parent.firstChild.textContent = parent.firstChild.textContent.replace(/^\u00a0+/, "");
@@ -2145,7 +2194,106 @@ function removeTagToken(token) {
   }
   if (line) {
     refreshLineTagClasses(line);
+    if (pendingInsertion && restorePendingTagInsertionCaret(pendingInsertion)) {
+      return;
+    }
     placeCaretInsideLine(line);
+  }
+}
+
+function consumePendingTagInsertion(token) {
+  const tokenId = token?.dataset?.tokenId;
+  if (!tokenId || !uiState.pendingTagInsertions.has(tokenId)) return null;
+  const pending = uiState.pendingTagInsertions.get(tokenId);
+  uiState.pendingTagInsertions.delete(tokenId);
+  return pending;
+}
+
+function discardPendingTagInsertion(token) {
+  const pending = consumePendingTagInsertion(token);
+  pending?.marker?.remove();
+}
+
+function restorePendingTagInsertionCaret(pending) {
+  const selection = window.getSelection();
+  if (!selection || !pending?.editor || !pending?.node) return false;
+  if (!document.contains(pending.editor)) return false;
+  if (!document.contains(pending.node)) return false;
+
+  try {
+    const range = document.createRange();
+    if (pending.node.nodeType === Node.TEXT_NODE) {
+      range.setStart(pending.node, Math.min(pending.offset, pending.node.textContent.length));
+    } else {
+      range.setStart(pending.node, Math.min(pending.offset, pending.node.childNodes.length));
+    }
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    rememberEditorSelection(pending.editor);
+    schedulePendingTagDeleteRepair(pending);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function schedulePendingTagDeleteRepair(pending) {
+  if (!pending?.line || !document.contains(pending.line) || !pending.lineHtml) return;
+
+  window.setTimeout(() => {
+    if (!document.contains(pending.line)) return;
+    const currentText = String(pending.line.textContent || "").replace(/\u200b/g, "");
+    const expected = getPlainTextFromHtml(pending.lineHtml);
+    if (currentText === expected) return;
+
+    pending.line.innerHTML = pending.lineHtml;
+    placeCaretAtTextOffset(pending.line, pending.textOffset);
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    if (editor) {
+      syncEditorDocument();
+      rememberEditorSelection(editor);
+    }
+  }, 0);
+}
+
+function getPlainTextFromHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html || "";
+  template.content.querySelectorAll?.("[data-pending-tag-marker], [data-caret-marker]").forEach((marker) => marker.remove());
+  return String(template.content.textContent || "").replace(/\u200b/g, "");
+}
+
+function placeCaretAtTextOffset(line, targetOffset) {
+  const selection = window.getSelection();
+  if (!line || !selection) return;
+
+  let remaining = Math.max(0, targetOffset);
+  const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    const length = node.textContent.length;
+    if (remaining <= length) {
+      const range = document.createRange();
+      range.setStart(node, remaining);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+    remaining -= length;
+    node = walker.nextNode();
+  }
+
+  placeCaretAtEndOfLine(line);
+}
+
+function removeInsertedTagSpacer(token) {
+  const next = token?.nextSibling;
+  if (next?.nodeType !== Node.TEXT_NODE) return;
+  next.textContent = String(next.textContent || "").replace(/^[\u00a0 ]/, "");
+  if (!next.textContent) {
+    next.remove();
   }
 }
 
@@ -2216,8 +2364,10 @@ function getEditableTextFromLine(line) {
 
 function isEditorLineEmpty(line) {
   if (!line) return true;
-  const text = String(line.textContent || "").replace(/\u00a0/g, " ").trim();
-  return !text || line.innerHTML.trim() === "<br>";
+  const clone = line.cloneNode(true);
+  clone.querySelectorAll("[data-pending-tag-marker], [data-caret-marker]").forEach((marker) => marker.remove());
+  const text = String(clone.textContent || "").replace(/\u00a0/g, " ").trim();
+  return !text || clone.innerHTML.trim() === "<br>";
 }
 
 function finalizeEditingBedLine(line) {
@@ -2245,17 +2395,23 @@ function finalizeEditingBedLine(line) {
 function removeEditingBedLine(line) {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!line || !editor) return;
+  const token = getEditingBedToken(line);
+  const pendingInsertion = consumePendingTagInsertion(token);
 
   const nextLine = line.nextElementSibling;
   const previousLine = line.previousElementSibling;
   if (editor.children.length <= 1) {
     line.innerHTML = "<br>";
-    placeCaretInsideLine(line);
+    if (!pendingInsertion || !restorePendingTagInsertionCaret(pendingInsertion)) {
+      placeCaretInsideLine(line);
+    }
     return;
   }
 
   line.remove();
-  placeCaretInsideLine(nextLine || previousLine || editor);
+  if (!pendingInsertion || !restorePendingTagInsertionCaret(pendingInsertion)) {
+    placeCaretInsideLine(nextLine || previousLine || editor);
+  }
 }
 
 function getActiveTagToken() {
@@ -2479,6 +2635,7 @@ function finalizeTagToken(token, { moveToNewLine = false } = {}) {
   token.setAttribute("contenteditable", "false");
   token.dataset.editing = "false";
   token.classList.remove("tag-editing");
+  discardPendingTagInsertion(token);
 
   const line = findEditorLine(token);
   refreshLineTagClasses(line);
@@ -2578,6 +2735,8 @@ function restoreSelectionMarker(marker, editor) {
 
 function normalizeEditorBlocks(root) {
   if (!root) return;
+
+  root.querySelectorAll?.("[data-pending-tag-marker], [data-caret-marker]").forEach((marker) => marker.remove());
 
   const childNodes = Array.from(root.childNodes);
   if (!childNodes.length) {
