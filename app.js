@@ -60,7 +60,8 @@ const uiState = {
   editorFocused: false,
   mobileTagsOpen: false,
   savedSelection: null,
-  bedFinalizeTimer: null
+  bedFinalizeTimer: null,
+  editorTapScroll: null
 };
 applyUrlOverrides();
 
@@ -129,6 +130,18 @@ function bindEvents() {
       event.preventDefault();
     }
   });
+
+  refs.editorRoot.addEventListener("pointerdown", (event) => {
+    const editor = event.target.closest?.("#notepad-editor");
+    if (!editor) return;
+    rememberEditorTapScroll();
+  }, { passive: true });
+
+  refs.editorRoot.addEventListener("touchstart", (event) => {
+    const editor = event.target.closest?.("#notepad-editor");
+    if (!editor) return;
+    rememberEditorTapScroll();
+  }, { passive: true });
 
   refs.singleWardToggle.addEventListener("change", (event) => {
     state.preferences.singleWardMode = event.target.checked;
@@ -202,9 +215,11 @@ function bindEvents() {
     }
 
     if (event.target.closest("#notepad-editor")) {
+      const editor = refs.editorRoot.querySelector("#notepad-editor");
       uiState.editorFocused = true;
       syncMobileTagDock();
-      rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
+      rememberEditorSelection(editor);
+      stabilizeEditorTapScroll(editor);
       return;
     }
 
@@ -217,9 +232,11 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("focusin", (event) => {
     if (!event.target.closest?.("#notepad-editor")) return;
+    const editor = event.target.closest("#notepad-editor");
     uiState.editorFocused = true;
     syncMobileTagDock();
-    rememberEditorSelection(event.target.closest("#notepad-editor"));
+    rememberEditorSelection(editor);
+    stabilizeEditorTapScroll(editor);
   });
 
   refs.editorRoot.addEventListener("focusout", (event) => {
@@ -288,6 +305,7 @@ function bindEvents() {
     const editor = event.target.closest?.("#notepad-editor");
     if (!editor) return;
     rememberEditorSelection(editor);
+    stabilizeEditorTapScroll(editor);
   });
 
   refs.editorRoot.addEventListener("change", (event) => {
@@ -413,6 +431,7 @@ function bindEvents() {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
     if (!editor) return;
     rememberEditorSelection(editor);
+    stabilizeEditorTapScroll(editor);
   });
 
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
@@ -959,6 +978,65 @@ function rememberEditorSelection(editor) {
   if (!editor || !selection || !selection.rangeCount) return;
   if (!isNodeInsideEditor(editor, selection.anchorNode)) return;
   uiState.savedSelection = selection.getRangeAt(0).cloneRange();
+}
+
+function rememberEditorTapScroll() {
+  if (!isCompactMobileLayout()) return;
+  const viewport = window.visualViewport;
+  uiState.editorTapScroll = {
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    viewportHeight: viewport?.height || window.innerHeight,
+    viewportTop: viewport?.offsetTop || 0,
+    timestamp: performance.now()
+  };
+}
+
+function stabilizeEditorTapScroll(editor, attempt = 0) {
+  const snapshot = uiState.editorTapScroll;
+  if (!editor || !snapshot || !isCompactMobileLayout()) return;
+
+  window.requestAnimationFrame(() => {
+    const viewport = window.visualViewport;
+    const now = performance.now();
+    const viewportHeight = viewport?.height || window.innerHeight;
+    const viewportTop = viewport?.offsetTop || 0;
+    const viewportChanged =
+      Math.abs(viewportHeight - snapshot.viewportHeight) > 36 ||
+      Math.abs(viewportTop - snapshot.viewportTop) > 36;
+    const scrollDelta = Math.abs(window.scrollY - snapshot.scrollY);
+
+    if (now - snapshot.timestamp > 900 || viewportChanged || scrollDelta < 48) {
+      if (attempt >= 1) {
+        uiState.editorTapScroll = null;
+      }
+      return;
+    }
+
+    const caretRect = getCaretRect() || getCurrentEditorLine()?.getBoundingClientRect();
+    if (caretRect && wouldCaretBeVisibleAfterScroll(caretRect, snapshot.scrollY, viewportHeight, viewportTop)) {
+      window.scrollTo({
+        top: snapshot.scrollY,
+        left: snapshot.scrollX
+      });
+      uiState.editorTapScroll = null;
+      return;
+    }
+
+    if (attempt < 4) {
+      window.setTimeout(() => stabilizeEditorTapScroll(editor, attempt + 1), 60);
+    } else {
+      uiState.editorTapScroll = null;
+    }
+  });
+}
+
+function wouldCaretBeVisibleAfterScroll(rect, targetScrollY, viewportHeight, viewportTop) {
+  const projectedTop = rect.top + (window.scrollY - targetScrollY);
+  const projectedBottom = rect.bottom + (window.scrollY - targetScrollY);
+  const topLimit = viewportTop + 64;
+  const bottomLimit = viewportTop + viewportHeight - 132;
+  return projectedTop >= topLimit && projectedBottom <= bottomLimit;
 }
 
 function clearBedFinalizeTimer() {
