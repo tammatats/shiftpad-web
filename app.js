@@ -631,14 +631,20 @@ async function initAuth() {
   });
   authState.configured = true;
 
-  const {
-    data: { session }
-  } = await authState.client.auth.getSession();
-  await applySession(session);
+  try {
+    const {
+      data: { session }
+    } = await authState.client.auth.getSession();
+    await applySession(session);
+  } catch (error) {
+    authState.ready = true;
+    setAuthMessage(formatSupabaseError(error, "Session load failed."));
+    renderAuthUi();
+  }
 
   authState.client.auth.onAuthStateChange((_event, sessionUpdate) => {
     applySession(sessionUpdate).catch((error) => {
-      setAuthMessage(error.message || "Auth update failed.");
+      setAuthMessage(formatSupabaseError(error, "Auth update failed."));
     });
   });
 }
@@ -662,9 +668,14 @@ async function signInWithPassword() {
   setAuthMessage("Signing in...");
   const email = String(refs.authEmail?.value || "").trim();
   const password = String(refs.authPassword?.value || "");
-  const { error } = await authState.client.auth.signInWithPassword({ email, password });
-  if (error) {
-    setAuthMessage(error.message);
+  try {
+    const { error } = await authState.client.auth.signInWithPassword({ email, password });
+    if (error) {
+      setAuthMessage(formatSupabaseError(error, "Sign in failed."));
+      return;
+    }
+  } catch (error) {
+    setAuthMessage(formatSupabaseError(error, "Sign in failed."));
     return;
   }
   setAuthMessage("");
@@ -676,17 +687,22 @@ async function signUpWithPassword() {
   const email = String(refs.authEmail?.value || "").trim();
   const password = String(refs.authPassword?.value || "");
   const displayName = String(refs.authName?.value || "").trim();
-  const { error } = await authState.client.auth.signUp({
-    email,
-    password,
-    options: {
-      data: {
-        display_name: displayName
+  try {
+    const { error } = await authState.client.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          display_name: displayName
+        }
       }
+    });
+    if (error) {
+      setAuthMessage(formatSupabaseError(error, "Account creation failed."));
+      return;
     }
-  });
-  if (error) {
-    setAuthMessage(error.message);
+  } catch (error) {
+    setAuthMessage(formatSupabaseError(error, "Account creation failed."));
     return;
   }
   setAuthMessage("Account created. Check your inbox if email confirmation is enabled, then sign in.");
@@ -694,7 +710,12 @@ async function signUpWithPassword() {
 
 async function signOutCurrentUser() {
   if (!authState.client) return;
-  await authState.client.auth.signOut();
+  try {
+    await authState.client.auth.signOut();
+  } catch (error) {
+    setAuthMessage(formatSupabaseError(error, "Sign out failed."));
+    return;
+  }
   setAuthMessage("");
 }
 
@@ -707,11 +728,19 @@ async function hydrateStateFromCloud() {
   const fallback = loadStateForUser(authState.user.id) || loadLegacyLocalState() || createSeedState();
   authState.suppressCloudSave = true;
 
-  const { data, error } = await authState.client
-    .from(CLOUD_STATE_TABLE)
-    .select("state_json")
-    .eq("user_id", authState.user.id)
-    .maybeSingle();
+  let data = null;
+  let error = null;
+  try {
+    const response = await authState.client
+      .from(CLOUD_STATE_TABLE)
+      .select("state_json")
+      .eq("user_id", authState.user.id)
+      .maybeSingle();
+    data = response.data;
+    error = response.error;
+  } catch (requestError) {
+    error = requestError;
+  }
 
   if (error) {
     console.error("Cloud state load failed:", error);
@@ -719,6 +748,7 @@ async function hydrateStateFromCloud() {
     authState.isHydrating = false;
     authState.suppressCloudSave = false;
     saveState({ skipCloud: true });
+    setAuthMessage(formatSupabaseError(error, "Cloud note load failed."));
     render();
     return;
   }
@@ -742,6 +772,16 @@ function setAuthMessage(message) {
   if (refs.authMessage) {
     refs.authMessage.textContent = message || "";
   }
+}
+
+function formatSupabaseError(error, fallback) {
+  const rawMessage = String(error?.message || error?.error_description || error || fallback || "Supabase request failed.");
+  if (/load failed|failed to fetch|networkerror|fetch failed|network request failed/i.test(rawMessage)) {
+    const configuredUrl = String(window.SHIFTPAD_PUBLIC_CONFIG?.supabaseUrl || "").trim();
+    const suffix = configuredUrl ? ` Current SUPABASE_URL is ${configuredUrl}.` : "";
+    return `Cannot reach Supabase. Check that Vercel SUPABASE_URL is the exact Project URL from Supabase.${suffix}`;
+  }
+  return rawMessage;
 }
 
 function renderTimelineItem(item) {
