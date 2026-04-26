@@ -598,93 +598,15 @@ select:focus {
   -webkit-backdrop-filter: blur(10px);
 }
 
-.mobile-keyboard {
-  display: none;
-}
-
-#mobile-keyboard-root {
+#mobile-tag-root {
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 120;
 }
 
-.mobile-keyboard-row,
-.mobile-keyboard-bottom,
-.mobile-keyboard-tags {
-  display: grid;
-  gap: 10px;
-}
-
-.mobile-keyboard-row {
-  grid-template-columns: repeat(10, minmax(0, 1fr));
-}
-
-.mobile-keyboard-row.offset {
-  padding-inline: 30px;
-}
-
-.mobile-keyboard-row.wide-edges {
-  grid-template-columns: 1.35fr repeat(7, minmax(0, 1fr)) 1.35fr;
-}
-
-.mobile-keyboard-bottom {
-  grid-template-columns: 0.86fr 0.96fr 2.75fr 0.78fr 1.28fr;
-}
-
-.mobile-keyboard-tags {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.mobile-key {
-  border: 0;
-  border-radius: 16px;
-  min-height: 50px;
-  background: rgba(108, 104, 112, 0.72);
-  color: rgba(255, 255, 255, 0.96);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.07) inset,
-    0 1px 0 rgba(0, 0, 0, 0.18);
-  font-size: 1.02rem;
-  font-weight: 500;
-  line-height: 1;
-  touch-action: manipulation;
-  backdrop-filter: blur(18px) saturate(110%);
-  -webkit-backdrop-filter: blur(18px) saturate(110%);
-}
-
-.mobile-key-side {
-  background: rgba(125, 132, 142, 0.82);
-}
-
-.mobile-key-side.is-active {
-  background: rgba(151, 157, 167, 0.96);
-}
-
-.mobile-key-space {
-  background: rgba(124, 120, 128, 0.76);
-}
-
-.mobile-key-dark {
-  background: rgba(87, 83, 91, 0.82);
-}
-
-.mobile-key-enter {
-  background: #1278ff;
-  color: #ffffff;
-  font-size: 1.65rem;
-  font-weight: 600;
-}
-
-.mobile-keyboard-tags .mobile-key,
-.mobile-key.wide {
-  min-height: 52px;
-  font-weight: 700;
-}
-
-.document-pad.is-mobile-keyboard-active .notepad-editor {
-  padding-bottom: 230px;
-  scroll-padding-bottom: 230px;
+.mobile-tag-dock {
+  display: none;
 }
 
 .quick-chip {
@@ -1166,37 +1088,88 @@ select:focus {
     display: none;
   }
 
-.mobile-keyboard {
-  display: block;
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  will-change: bottom, opacity;
-  z-index: 50;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 140ms ease;
-  padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
-  background:
-    linear-gradient(90deg, rgba(45, 27, 39, 0.92), rgba(40, 46, 45, 0.92)),
-    rgba(34, 32, 39, 0.94);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: 0 -14px 38px rgba(18, 14, 22, 0.34);
-}
+  .mobile-tag-dock {
+    display: flex;
+    position: fixed;
+    left: calc(12px + var(--viewport-offset-left));
+    right: 12px;
+    bottom: calc(var(--keyboard-offset) + env(safe-area-inset-bottom) + 8px);
+    z-index: 120;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+    transition:
+      opacity 140ms ease,
+      transform 140ms ease;
+  }
 
-  .mobile-keyboard.is-visible {
+  .mobile-tag-dock.is-visible {
     opacity: 1;
     pointer-events: auto;
+    transform: translateY(0);
   }
 
-  .mobile-keyboard-rows {
-    display: grid;
+  .mobile-tag-tray {
+    display: none;
+    width: min(100%, 380px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
+    padding: 10px;
+    border: 1px solid rgba(96, 76, 55, 0.14);
+    border-radius: 22px;
+    background: rgba(255, 252, 248, 0.96);
+    box-shadow: 0 16px 36px rgba(72, 46, 24, 0.18);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
   }
 
-  .mobile-keyboard-tags {
-    margin-bottom: 8px;
+  .mobile-tag-dock.is-open .mobile-tag-tray {
+    display: grid;
+  }
+
+  .mobile-tag-fab,
+  .mobile-tag-option {
+    min-height: 46px;
+    border: 1px solid rgba(96, 76, 55, 0.12);
+    border-radius: 999px;
+    background: rgba(255, 252, 248, 0.98);
+    color: var(--ink);
+    box-shadow: 0 8px 20px rgba(72, 46, 24, 0.14);
+    font: inherit;
+    font-weight: 800;
+    touch-action: manipulation;
+  }
+
+  .mobile-tag-fab {
+    min-width: 86px;
+    padding: 0 18px;
+    background: rgba(36, 28, 22, 0.92);
+    color: #fffaf4;
+  }
+
+  .mobile-tag-option {
+    padding: 0 14px;
+  }
+
+  .mobile-tag-option.bed {
+    background: #fff452;
+  }
+
+  .mobile-tag-option.timed {
+    background: var(--time-highlight);
+  }
+
+  .mobile-tag-option.io {
+    background: #dcecff;
+  }
+
+  .mobile-tag-option.muted {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    background: rgba(245, 239, 231, 0.92);
   }
 
   .note-pad-card {
@@ -1254,27 +1227,21 @@ select:focus {
     white-space: nowrap;
   }
 
-  .mobile-keyboard {
-    padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  .mobile-tag-dock {
+    left: calc(10px + var(--viewport-offset-left));
+    right: 10px;
+    bottom: calc(var(--keyboard-offset) + env(safe-area-inset-bottom) + 6px);
   }
 
-  .mobile-key {
+  .mobile-tag-tray {
+    width: 100%;
+    border-radius: 20px;
+  }
+
+  .mobile-tag-fab,
+  .mobile-tag-option {
     min-height: 44px;
     font-size: 0.96rem;
-    border-radius: 14px;
-  }
-
-  .mobile-keyboard-row.offset {
-    padding-inline: 18px;
-  }
-
-  .mobile-keyboard-bottom {
-    grid-template-columns: 0.85fr 0.95fr 2.2fr 0.68fr 1.1fr;
-  }
-
-  .document-pad.is-mobile-keyboard-active .notepad-editor {
-    padding-bottom: 214px;
-    scroll-padding-bottom: 214px;
   }
 
   .entry-head,

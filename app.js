@@ -38,7 +38,7 @@ const refs = {
   notesView: document.getElementById("notes-view"),
   timelineView: document.getElementById("timeline-view"),
   editorRoot: document.getElementById("editor-root"),
-  mobileKeyboardRoot: document.getElementById("mobile-keyboard-root"),
+  mobileTagRoot: document.getElementById("mobile-tag-root"),
   timelineRoot: document.getElementById("timeline-root"),
   timelineScope: document.getElementById("timeline-scope"),
   workspace: document.querySelector(".workspace")
@@ -58,8 +58,7 @@ const authState = {
 };
 const uiState = {
   editorFocused: false,
-  mobileKeyboardMode: "alpha",
-  shiftOn: false,
+  mobileTagsOpen: false,
   savedSelection: null,
   bedFinalizeTimer: null
 };
@@ -131,31 +130,6 @@ function bindEvents() {
     }
   });
 
-  refs.editorRoot.addEventListener("pointerdown", (event) => {
-    const manualEditor = event.target.closest?.('#notepad-editor[data-manual-keyboard="true"]');
-    if (manualEditor) {
-      event.preventDefault();
-      setCaretFromPoint(manualEditor, event.clientX, event.clientY);
-      uiState.editorFocused = true;
-      syncMobileKeyboard();
-      rememberEditorSelection(manualEditor);
-    }
-  });
-
-  refs.mobileKeyboardRoot?.addEventListener("mousedown", (event) => {
-    const keyboardButton = event.target.closest("[data-keyboard-action], [data-keyboard-tag]");
-    if (keyboardButton) {
-      event.preventDefault();
-    }
-  });
-
-  refs.mobileKeyboardRoot?.addEventListener("pointerdown", (event) => {
-    const keyboardButton = event.target.closest("[data-keyboard-action], [data-keyboard-tag]");
-    if (keyboardButton) {
-      event.preventDefault();
-    }
-  });
-
   refs.singleWardToggle.addEventListener("change", (event) => {
     state.preferences.singleWardMode = event.target.checked;
     saveState();
@@ -197,12 +171,14 @@ function bindEvents() {
   refs.notesTabBtn.addEventListener("click", () => {
     state.activeView = "notes";
     uiState.editorFocused = false;
+    uiState.mobileTagsOpen = false;
     render();
   });
 
   refs.timelineTabBtn.addEventListener("click", () => {
     state.activeView = "timeline";
     uiState.editorFocused = false;
+    uiState.mobileTagsOpen = false;
     render();
   });
 
@@ -227,7 +203,7 @@ function bindEvents() {
 
     if (event.target.closest("#notepad-editor")) {
       uiState.editorFocused = true;
-      syncMobileKeyboard();
+      syncMobileTagDock();
       rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
       requestAnimationFrame(() => {
         keepEditorCaretVisible(refs.editorRoot.querySelector("#notepad-editor"));
@@ -237,14 +213,15 @@ function bindEvents() {
 
     if (isCompactMobileLayout()) {
       uiState.editorFocused = false;
-      syncMobileKeyboard();
+      uiState.mobileTagsOpen = false;
+      syncMobileTagDock();
     }
   });
 
   refs.editorRoot.addEventListener("focusin", (event) => {
     if (!event.target.closest?.("#notepad-editor")) return;
     uiState.editorFocused = true;
-    syncMobileKeyboard();
+    syncMobileTagDock();
     rememberEditorSelection(event.target.closest("#notepad-editor"));
   });
 
@@ -252,7 +229,10 @@ function bindEvents() {
     if (!event.target.closest?.("#notepad-editor")) return;
     window.setTimeout(() => {
       uiState.editorFocused = Boolean(document.activeElement?.closest?.("#notepad-editor"));
-      syncMobileKeyboard();
+      if (!uiState.editorFocused) {
+        uiState.mobileTagsOpen = false;
+      }
+      syncMobileTagDock();
     }, 50);
   });
 
@@ -342,16 +322,34 @@ function bindEvents() {
     }
   });
 
-  refs.mobileKeyboardRoot?.addEventListener("click", (event) => {
-    const keyboardAction = event.target.closest("[data-keyboard-action]");
-    if (keyboardAction) {
-      handleMobileKeyboardAction(keyboardAction.dataset.keyboardAction, keyboardAction.dataset.keyboardValue || "");
+  refs.mobileTagRoot?.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest("[data-mobile-tag-dock]")) return;
+    event.preventDefault();
+  });
+
+  refs.mobileTagRoot?.addEventListener("click", (event) => {
+    const toggle = event.target.closest("[data-mobile-tag-toggle]");
+    if (toggle) {
+      uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
+      restoreEditorFocusAndSelection();
+      syncMobileTagDock();
       return;
     }
 
-    const keyboardTag = event.target.closest("[data-keyboard-tag]");
-    if (keyboardTag) {
-      handleMobileKeyboardTag(keyboardTag.dataset.keyboardTag);
+    const close = event.target.closest("[data-mobile-tag-close]");
+    if (close) {
+      uiState.mobileTagsOpen = false;
+      restoreEditorFocusAndSelection();
+      syncMobileTagDock();
+      return;
+    }
+
+    const tagButton = event.target.closest("[data-mobile-tag]");
+    if (tagButton) {
+      restoreEditorFocusAndSelection();
+      handleQuickTag(tagButton.dataset.mobileTag);
+      uiState.mobileTagsOpen = false;
+      syncMobileTagDock();
     }
   });
 
@@ -413,7 +411,7 @@ function bindEvents() {
     rememberEditorSelection(editor);
   });
 
-  window.addEventListener("resize", syncMobileKeyboard, { passive: true });
+  window.addEventListener("resize", syncMobileTagDock, { passive: true });
 }
 
 function render() {
@@ -432,7 +430,7 @@ function render() {
   renderWardRail();
   renderEditor();
   renderTimeline();
-  refreshMobileKeyboardView();
+  refreshMobileTagDock();
 }
 
 function renderSummary() {
@@ -489,7 +487,6 @@ function renderEditor() {
     return;
   }
   const documentHtml = getNoteDocumentHtml(note);
-  const mobileManualKeyboard = isCompactMobileLayout();
 
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
@@ -517,14 +514,14 @@ function renderEditor() {
         </div>
 
         <div class="smart-pad-surface document-pad">
-          <p class="helper-copy">${mobileManualKeyboard ? "Type with the custom iPhone-style keyboard below. The Tags key opens Bed, Time, Lab, and I/O." : "Type straight into the notepad. Tag buttons insert highlighted labels at the cursor inside the note itself."}</p>
+          <p class="helper-copy">Type straight into the notepad. Tag controls insert highlighted labels at the cursor inside the note itself.</p>
           <div
             id="notepad-editor"
             class="notepad-editor"
             contenteditable="true"
             spellcheck="true"
             aria-label="Main notepad"
-            ${mobileManualKeyboard ? 'inputmode="none" virtualkeyboardpolicy="manual" autocapitalize="sentences" data-manual-keyboard="true"' : ""}
+            autocapitalize="sentences"
           >${documentHtml}</div>
         </div>
 
@@ -534,10 +531,10 @@ function renderEditor() {
 
   requestAnimationFrame(() => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
-    if (!mobileManualKeyboard) {
+    if (!isCompactMobileLayout()) {
       editor?.focus();
     }
-    syncMobileKeyboard();
+    syncMobileTagDock();
   });
 }
 
@@ -843,86 +840,20 @@ function renderQuickChip(key, label, extraClass = "") {
   `;
 }
 
-function renderMobileKeyboard() {
-  const alphaRows = [
-    ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
-    ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
-    ["z", "x", "c", "v", "b", "n", "m"]
-  ];
-  const numericRows = [
-    ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
-    ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""],
-    [".", ",", "?", "!", "'"]
-  ];
-  const useUppercase = uiState.shiftOn;
-  const mode = uiState.mobileKeyboardMode;
-
+function renderMobileTagDock() {
+  const expanded = uiState.mobileTagsOpen ? "true" : "false";
   return `
-    <div class="mobile-keyboard" data-mobile-keyboard="true" aria-hidden="true">
-      ${
-        mode === "tags"
-          ? `
-            <div class="mobile-keyboard-tags">
-              <button class="mobile-key mobile-key-dark wide" type="button" data-keyboard-tag="bed">Bed</button>
-              <button class="mobile-key mobile-key-dark wide" type="button" data-keyboard-tag="time">Time</button>
-              <button class="mobile-key mobile-key-dark wide" type="button" data-keyboard-tag="lab">Lab</button>
-              <button class="mobile-key mobile-key-dark wide" type="button" data-keyboard-tag="io">I/O</button>
-            </div>
-          `
-          : `
-            <div class="mobile-keyboard-rows">
-              ${renderKeyboardRow((mode === "numeric" ? numericRows[0] : alphaRows[0]).map((key) => ({
-                label: mode === "numeric" ? key : useUppercase ? key.toUpperCase() : key,
-                value: key
-              })))}
-              ${renderKeyboardRow((mode === "numeric" ? numericRows[1] : alphaRows[1]).map((key) => ({
-                label: mode === "numeric" ? key : useUppercase ? key.toUpperCase() : key,
-                value: key
-              })), mode === "numeric" ? "" : "offset")}
-              ${renderKeyboardRow([
-                ...(mode === "numeric"
-                  ? [{ label: "#+=", action: "noop", className: "mobile-key-side muted" }]
-                  : [{ label: "⇧", action: "shift", className: `mobile-key-side ${uiState.shiftOn ? "is-active" : ""}` }]),
-                ...((mode === "numeric" ? numericRows[2] : alphaRows[2]).map((key) => ({
-                  label: mode === "numeric" ? key : useUppercase ? key.toUpperCase() : key,
-                  value: key
-                }))),
-                { label: "⌫", action: "backspace", className: "mobile-key-side" }
-              ], "wide-edges")}
-            </div>
-          `
-      }
-      <div class="mobile-keyboard-bottom">
-        <button class="mobile-key mobile-key-side" type="button" data-keyboard-action="${mode === "numeric" ? "mode-alpha" : "mode-numeric"}">
-          ${mode === "numeric" ? "ABC" : "123"}
-        </button>
-        <button class="mobile-key mobile-key-side" type="button" data-keyboard-action="${mode === "tags" ? "mode-alpha" : "mode-tags"}">
-          Tags
-        </button>
-        <button class="mobile-key mobile-key-space" type="button" data-keyboard-action="space" aria-label="Space"></button>
-        <button class="mobile-key mobile-key-side mobile-key-dot" type="button" data-keyboard-action="insert" data-keyboard-value=".">.</button>
-        <button class="mobile-key mobile-key-enter" type="button" data-keyboard-action="enter" aria-label="Return">→</button>
+    <div class="mobile-tag-dock" data-mobile-tag-dock="true" aria-hidden="true">
+      <div class="mobile-tag-tray" role="menu" aria-label="Insert tag">
+        <button class="mobile-tag-option bed" type="button" data-mobile-tag="bed">Bed</button>
+        <button class="mobile-tag-option timed" type="button" data-mobile-tag="time">Time</button>
+        <button class="mobile-tag-option timed" type="button" data-mobile-tag="lab">Lab</button>
+        <button class="mobile-tag-option io" type="button" data-mobile-tag="io">I/O</button>
+        <button class="mobile-tag-option muted" type="button" data-mobile-tag-close="true">Cancel</button>
       </div>
-    </div>
-  `;
-}
-
-function renderKeyboardRow(keys, extraClass = "") {
-  return `
-    <div class="mobile-keyboard-row ${extraClass}">
-      ${keys
-        .map((key) => {
-          if (key.action) {
-            return `<button class="mobile-key ${escapeHtml(key.className || "")}" type="button" data-keyboard-action="${escapeHtml(
-              key.action
-            )}">${escapeHtml(key.label)}</button>`;
-          }
-
-          return `<button class="mobile-key" type="button" data-keyboard-action="insert" data-keyboard-value="${escapeHtml(
-            key.value
-          )}">${escapeHtml(key.label)}</button>`;
-        })
-        .join("")}
+      <button class="mobile-tag-fab" type="button" data-mobile-tag-toggle="true" aria-expanded="${expanded}">
+        Tags
+      </button>
     </div>
   `;
 }
@@ -937,11 +868,8 @@ function handleQuickTag(tag) {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!editor) return;
 
-  if (shouldUseManualKeyboard(editor)) {
-    restoreEditorSelection(editor);
-  } else {
-    editor.focus();
-  }
+  editor.focus({ preventScroll: true });
+  restoreEditorSelection(editor);
   insertTagIntoEditor(editor, tag);
 
   note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
@@ -954,118 +882,32 @@ function isCompactMobileLayout() {
   return window.matchMedia("(max-width: 860px)").matches;
 }
 
-function syncMobileKeyboard() {
-  const keyboard = refs.mobileKeyboardRoot?.querySelector("[data-mobile-keyboard]");
-  if (!keyboard) return;
+function syncMobileTagDock() {
+  const dock = refs.mobileTagRoot?.querySelector("[data-mobile-tag-dock]");
+  if (!dock) return;
 
   const shouldShow = isCompactMobileLayout() && state.activeView === "notes" && uiState.editorFocused;
-  const documentPad = refs.editorRoot.querySelector(".document-pad");
-  keyboard.classList.toggle("is-visible", shouldShow);
-  keyboard.setAttribute("aria-hidden", String(!shouldShow));
-  documentPad?.classList.toggle("is-mobile-keyboard-active", shouldShow && uiState.editorFocused);
+  const isOpen = shouldShow && uiState.mobileTagsOpen;
+  dock.classList.toggle("is-visible", shouldShow);
+  dock.classList.toggle("is-open", isOpen);
+  dock.setAttribute("aria-hidden", String(!shouldShow));
+  dock.querySelector("[data-mobile-tag-toggle]")?.setAttribute("aria-expanded", String(isOpen));
 }
 
-function refreshMobileKeyboardView() {
-  if (!refs.mobileKeyboardRoot) return;
-  refs.mobileKeyboardRoot.innerHTML = renderMobileKeyboard();
-  syncMobileKeyboard();
+function refreshMobileTagDock() {
+  if (!refs.mobileTagRoot) return;
+  refs.mobileTagRoot.innerHTML = renderMobileTagDock();
+  syncMobileTagDock();
 }
 
-function handleMobileKeyboardAction(action, value = "") {
+function restoreEditorFocusAndSelection() {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
-  if (!editor) return;
-
-  if (action === "mode-tags") {
-    uiState.mobileKeyboardMode = "tags";
-    refreshMobileKeyboardView();
-    return;
-  }
-
-  if (action === "mode-alpha") {
-    uiState.mobileKeyboardMode = "alpha";
-    uiState.shiftOn = false;
-    refreshMobileKeyboardView();
-    return;
-  }
-
-  if (action === "mode-numeric") {
-    uiState.mobileKeyboardMode = "numeric";
-    uiState.shiftOn = false;
-    refreshMobileKeyboardView();
-    return;
-  }
-
+  if (!editor) return null;
+  editor.focus({ preventScroll: true });
   restoreEditorSelection(editor);
-
-  if (action === "shift") {
-    uiState.shiftOn = !uiState.shiftOn;
-    refreshMobileKeyboardView();
-    return;
-  }
-
-  if (action === "backspace") {
-    deleteBackwardAtSelection(editor);
-    keepEditorCaretVisible(editor);
-    return;
-  }
-
-  if (action === "space") {
-    if (handleEditorSpecialKey(" ")) {
-      keepEditorCaretVisible(editor);
-      return;
-    }
-    insertTextAtSelection(" ");
-    syncEditorDocument();
-    rememberEditorSelection(editor);
-    keepEditorCaretVisible(editor);
-    return;
-  }
-
-  if (action === "enter") {
-    if (handleEditorSpecialKey("Enter")) {
-      keepEditorCaretVisible(editor);
-      return;
-    }
-    insertParagraphAtSelection();
-    syncEditorDocument();
-    rememberEditorSelection(editor);
-    keepEditorCaretVisible(editor);
-    return;
-  }
-
-  if (action === "insert") {
-    if (!value) return;
-    const nextValue = uiState.mobileKeyboardMode === "alpha" && uiState.shiftOn ? value.toUpperCase() : value;
-    if (handleEditorSpecialKey(nextValue)) {
-      keepEditorCaretVisible(editor);
-      if (uiState.shiftOn && /^[a-z]$/i.test(value)) {
-        uiState.shiftOn = false;
-        refreshMobileKeyboardView();
-      }
-      return;
-    }
-    insertTextAtSelection(nextValue);
-    syncEditorDocument();
-    maybeFinalizeEditingBedToken(editor);
-    rememberEditorSelection(editor);
-    keepEditorCaretVisible(editor);
-    if (uiState.shiftOn && /^[a-z]$/i.test(value)) {
-      uiState.shiftOn = false;
-      refreshMobileKeyboardView();
-    }
-  }
-}
-
-function handleMobileKeyboardTag(tag) {
-  const editor = refs.editorRoot.querySelector("#notepad-editor");
-  if (!editor) return;
-
-  restoreEditorSelection(editor);
-  handleQuickTag(tag);
-  uiState.mobileKeyboardMode = "alpha";
-  uiState.shiftOn = false;
-  refreshMobileKeyboardView();
-  keepEditorCaretVisible(editor);
+  uiState.editorFocused = true;
+  rememberEditorSelection(editor);
+  return editor;
 }
 
 function rememberEditorSelection(editor) {
@@ -1101,48 +943,19 @@ function restoreEditorSelection(editor) {
   return true;
 }
 
-function shouldUseManualKeyboard(editor) {
-  return Boolean(editor?.dataset.manualKeyboard === "true");
-}
-
-function setCaretFromPoint(editor, clientX, clientY) {
-  const selection = window.getSelection();
-  if (!editor || !selection) return false;
-
-  let range = null;
-  if (document.caretRangeFromPoint) {
-    range = document.caretRangeFromPoint(clientX, clientY);
-  } else if (document.caretPositionFromPoint) {
-    const position = document.caretPositionFromPoint(clientX, clientY);
-    if (position) {
-      range = document.createRange();
-      range.setStart(position.offsetNode, position.offset);
-      range.collapse(true);
-    }
-  }
-
-  if (!range || !isNodeInsideEditor(editor, range.startContainer)) {
-    return restoreEditorSelection(editor);
-  }
-
-  selection.removeAllRanges();
-  selection.addRange(range);
-  uiState.savedSelection = range.cloneRange();
-  return true;
-}
-
 function keepEditorCaretVisible(editor) {
   if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
 
   const viewport = window.visualViewport;
   const line = getCurrentEditorLine();
-  const keyboard = refs.mobileKeyboardRoot?.querySelector("[data-mobile-keyboard].is-visible");
-  const keyboardHeight = keyboard ? keyboard.getBoundingClientRect().height : 0;
+  const keyboardOffset = Number.parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue("--keyboard-offset")
+  ) || 0;
   const target = line || editor;
   const rect = target.getBoundingClientRect();
   const viewportHeight = viewport?.height || window.innerHeight;
   const viewportTop = viewport?.offsetTop || 0;
-  const contentHeight = Math.max(120, viewportHeight - keyboardHeight);
+  const contentHeight = Math.max(120, viewportHeight - keyboardOffset);
   const desiredCenterY = viewportTop + contentHeight * 0.72;
   const currentCenterY = rect.top + rect.height / 2;
   const delta = currentCenterY - desiredCenterY;
