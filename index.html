@@ -45,37 +45,41 @@
     <main class="app-shell">
       <section class="phone-frame">
         <header class="app-header">
-          <div>
+          <div class="app-title">
             <p class="eyebrow">Shift Note Workspace</p>
             <h1>ShiftPad</h1>
-            <p class="tagline">iPhone-style handover notes with bed tags and timed reminders.</p>
+            <p class="tagline">Fast handover notes with bed tags and reminders.</p>
           </div>
 
-          <div class="header-actions">
+          <div class="account-actions">
             <div class="account-chip">
               <strong id="account-label">Offline mode</strong>
               <small id="sync-status">Local only</small>
             </div>
-            <label class="switch-card" for="single-ward-toggle">
-              <span>Single-ward shift</span>
-              <span class="switch">
-                <input id="single-ward-toggle" type="checkbox" />
-                <span class="switch-track"></span>
-              </span>
-            </label>
-
-            <button id="add-ward-btn" class="ghost-btn" type="button">Add ward</button>
-            <button id="new-note-btn" class="accent-btn" type="button">New note</button>
-            <button id="logout-btn" class="ghost-btn hidden" type="button">Log out</button>
+            <button id="logout-btn" class="account-logout hidden" type="button">Log out</button>
           </div>
         </header>
+
+        <section class="app-toolbar" aria-label="Shift controls">
+          <label class="switch-card" for="single-ward-toggle">
+            <span>Single-ward shift</span>
+            <span class="switch">
+              <input id="single-ward-toggle" type="checkbox" />
+              <span class="switch-track"></span>
+            </span>
+          </label>
+          <div class="toolbar-actions">
+            <button id="add-ward-btn" class="ghost-btn" type="button">Add ward</button>
+            <button id="new-note-btn" class="accent-btn" type="button">New note</button>
+          </div>
+        </section>
 
         <div class="workspace">
           <aside id="ward-rail" class="ward-rail">
             <div class="rail-head">
               <div>
                 <p class="section-kicker">Wards</p>
-                <h2>On your side</h2>
+                <h2>Active lists</h2>
               </div>
               <button id="ward-collapse-btn" class="ghost-btn rail-toggle-btn" type="button" aria-expanded="true">
                 Collapse

@@ -126,11 +126,11 @@ button {
   flex-direction: column;
   justify-content: center;
   gap: 2px;
-  min-width: 160px;
-  padding: 12px 14px;
-  border-radius: 18px;
-  background: rgba(255, 252, 248, 0.84);
-  border: 1px solid var(--line);
+  min-width: 180px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 252, 248, 0.68);
+  border: 1px solid rgba(96, 76, 55, 0.1);
 }
 
 .account-chip small {
@@ -162,6 +162,7 @@ button {
 }
 
 .app-header,
+.app-toolbar,
 .workspace {
   width: 100%;
 }
@@ -169,8 +170,12 @@ button {
 .app-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 18px;
+}
+
+.app-title {
+  min-width: 0;
 }
 
 .eyebrow,
@@ -193,8 +198,8 @@ p {
 
 h1 {
   margin-top: 6px;
-  font-size: clamp(2rem, 4vw, 3.15rem);
-  letter-spacing: -0.04em;
+  font-size: clamp(2rem, 4vw, 3rem);
+  letter-spacing: -0.03em;
 }
 
 h2 {
@@ -209,11 +214,42 @@ h2 {
   line-height: 1.45;
 }
 
-.header-actions {
+.account-actions {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  gap: 10px;
+}
+
+.account-logout {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 250, 244, 0.78);
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.account-logout:hover {
+  color: var(--ink);
+  background: rgba(255, 252, 248, 0.96);
+}
+
+.app-toolbar {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(96, 76, 55, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.toolbar-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .switch-card,
@@ -229,8 +265,8 @@ h2 {
   display: inline-flex;
   align-items: center;
   gap: 14px;
-  padding: 14px 16px;
-  border-radius: 18px;
+  padding: 10px 12px;
+  border-radius: 14px;
   color: var(--ink);
 }
 
@@ -277,6 +313,7 @@ h2 {
 
 .accent-btn,
 .ghost-btn,
+.account-logout,
 .quick-chip,
 .view-tab,
 .scope-pill,
@@ -312,6 +349,7 @@ h2 {
 
 .accent-btn:hover,
 .ghost-btn:hover,
+.account-logout:hover,
 .quick-chip:hover,
 .view-tab:hover,
 .scope-pill:hover,
@@ -1026,20 +1064,22 @@ select:focus {
     grid-column: auto;
   }
 
-  .header-actions {
+  .app-toolbar {
     width: 100%;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    justify-content: stretch;
+    align-items: stretch;
   }
 
-  .header-actions .switch-card {
-    grid-column: 1 / -1;
+  .app-toolbar .switch-card {
     justify-content: space-between;
   }
 
-  .header-actions .accent-btn,
-  .header-actions .ghost-btn {
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .toolbar-actions .accent-btn,
+  .toolbar-actions .ghost-btn {
     width: 100%;
   }
 
@@ -1151,14 +1191,24 @@ select:focus {
     overflow-x: clip;
   }
 
-  .header-actions {
-    grid-template-columns: 1fr;
+  .app-header,
+  .app-toolbar {
+    align-items: stretch;
   }
 
-  .header-actions .switch-card,
-  .header-actions .accent-btn,
-  .header-actions .ghost-btn {
-    grid-column: auto;
+  .account-actions {
+    justify-content: space-between;
+  }
+
+  .account-chip {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .app-toolbar,
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .phone-frame {
