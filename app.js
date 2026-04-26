@@ -205,9 +205,6 @@ function bindEvents() {
       uiState.editorFocused = true;
       syncMobileTagDock();
       rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
-      requestAnimationFrame(() => {
-        keepEditorCaretVisible(refs.editorRoot.querySelector("#notepad-editor"));
-      });
       return;
     }
 
@@ -243,11 +240,11 @@ function bindEvents() {
     if (!note) return;
 
     maybeFinalizeEditingTimeToken(editor);
-    maybeFinalizeEditingBedToken(editor);
     note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
     note.updatedAt = Date.now();
     rememberEditorSelection(editor);
     saveState();
+    requestAnimationFrame(() => keepEditorCaretVisible(editor));
     return;
   });
 
@@ -291,7 +288,6 @@ function bindEvents() {
     const editor = event.target.closest?.("#notepad-editor");
     if (!editor) return;
     rememberEditorSelection(editor);
-    keepEditorCaretVisible(editor);
   });
 
   refs.editorRoot.addEventListener("change", (event) => {
@@ -319,6 +315,14 @@ function bindEvents() {
   refs.editorRoot.addEventListener("keydown", (event) => {
     if (event.target.closest?.("#notepad-editor")) {
       handleNotepadKeydown(event);
+    }
+  });
+
+  refs.editorRoot.addEventListener("beforeinput", (event) => {
+    const editor = event.target.closest?.("#notepad-editor");
+    if (!editor) return;
+    if (handleNotepadBeforeInput(event)) {
+      event.preventDefault();
     }
   });
 
@@ -987,25 +991,46 @@ function keepEditorCaretVisible(editor) {
   if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
 
   const viewport = window.visualViewport;
-  const line = getCurrentEditorLine();
-  const keyboardOffset = Number.parseFloat(
-    getComputedStyle(document.documentElement).getPropertyValue("--keyboard-offset")
-  ) || 0;
-  const target = line || editor;
-  const rect = target.getBoundingClientRect();
-  const viewportHeight = viewport?.height || window.innerHeight;
+  const rect = getCaretRect() || getCurrentEditorLine()?.getBoundingClientRect() || editor.getBoundingClientRect();
   const viewportTop = viewport?.offsetTop || 0;
-  const contentHeight = Math.max(120, viewportHeight - keyboardOffset);
-  const desiredCenterY = viewportTop + contentHeight * 0.72;
-  const currentCenterY = rect.top + rect.height / 2;
-  const delta = currentCenterY - desiredCenterY;
+  const viewportHeight = viewport?.height || window.innerHeight;
+  const visibleTop = viewportTop + 72;
+  const visibleBottom = viewportTop + viewportHeight - 132;
 
-  if (Math.abs(delta) > 18) {
+  if (rect.bottom > visibleBottom) {
     window.scrollTo({
-      top: Math.max(0, window.scrollY + delta),
+      top: Math.max(0, window.scrollY + rect.bottom - visibleBottom),
+      left: window.scrollX
+    });
+    return;
+  }
+
+  if (rect.top < visibleTop) {
+    window.scrollTo({
+      top: Math.max(0, window.scrollY + rect.top - visibleTop),
       left: window.scrollX
     });
   }
+}
+
+function getCaretRect() {
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) return null;
+  const range = selection.getRangeAt(0).cloneRange();
+  range.collapse(true);
+
+  const rect = Array.from(range.getClientRects()).find((item) => item.width || item.height);
+  if (rect) return rect;
+
+  const marker = document.createElement("span");
+  marker.textContent = "\u200b";
+  const savedRange = selection.getRangeAt(0).cloneRange();
+  range.insertNode(marker);
+  const markerRect = marker.getBoundingClientRect();
+  marker.remove();
+  selection.removeAllRanges();
+  selection.addRange(savedRange);
+  return markerRect;
 }
 
 function toggleTaggedLineDone(noteId, tokenId, done) {
@@ -1682,7 +1707,63 @@ function handleNotepadKeydown(event) {
   }
 }
 
+function handleNotepadBeforeInput(event) {
+  const inputType = event.inputType || "";
+
+  if (inputType === "insertParagraph") {
+    const activeToken = getActiveTagToken();
+    if (activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true") {
+      finalizeTagToken(activeToken, { moveToNewLine: true });
+      return true;
+    }
+
+    const bedLine = getCurrentEditingBedLine();
+    if (bedLine) {
+      finalizeEditingBedLine(bedLine);
+      return true;
+    }
+  }
+
+  if (inputType === "deleteContentBackward" || inputType === "deleteContentForward") {
+    const activeToken = getActiveTagToken();
+    if (activeToken && shouldDeleteEditingTag(activeToken)) {
+      removeTagToken(activeToken);
+      syncEditorDocument();
+      return true;
+    }
+
+    const bedLine = getCurrentEditingBedLine();
+    if (bedLine && isEditingBedLineEmpty(bedLine)) {
+      removeEditingBedLine(bedLine);
+      syncEditorDocument();
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } = {}) {
+  const editingBedLine = getCurrentEditingBedLine();
+  if (editingBedLine) {
+    if (key === "Escape") {
+      removeEditingBedLine(editingBedLine);
+      syncEditorDocument();
+      return true;
+    }
+
+    if ((key === "Backspace" || key === "Delete") && isEditingBedLineEmpty(editingBedLine)) {
+      removeEditingBedLine(editingBedLine);
+      syncEditorDocument();
+      return true;
+    }
+
+    if (key === "Enter" || key === "Tab") {
+      finalizeEditingBedLine(editingBedLine);
+      return true;
+    }
+  }
+
   const token = getActiveTagToken();
   if (token) {
     if (key === "Escape") {
@@ -1758,13 +1839,14 @@ function insertTagIntoEditor(editor, tag) {
 
   if (tag === "bed") {
     const tokenId = createId("tag");
-    insertHtmlAtSelection(
-      `<div><span class="tag-token tag-bed tag-editing" data-tag="bed" data-token-id="${escapeAttribute(
+    const line = insertEditorLine(
+      editor,
+      `<span class="tag-token tag-bed tag-editing" contenteditable="false" data-tag="bed" data-token-id="${escapeAttribute(
         tokenId
-      )}" data-editing="true">Bed </span></div>`
+      )}" data-editing="true">Bed</span>&nbsp;`
     );
-    const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
-    placeCaretInsideTag(inserted);
+    placeCaretAtEndOfLine(line);
+    rememberEditorSelection(editor);
     return;
   }
 
@@ -1831,6 +1913,25 @@ function insertHtmlAtSelection(html) {
   range.collapse(true);
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+function insertEditorLine(editor, html) {
+  const line = document.createElement("div");
+  line.innerHTML = html || "<br>";
+
+  const currentLine = getCurrentEditorLine();
+  if (currentLine && currentLine.parentNode === editor) {
+    if (isEditorLineEmpty(currentLine)) {
+      currentLine.replaceWith(line);
+      return line;
+    }
+
+    editor.insertBefore(line, currentLine.nextSibling);
+    return line;
+  }
+
+  editor.appendChild(line);
+  return line;
 }
 
 function insertTextAtSelection(text) {
@@ -2024,6 +2125,81 @@ function placeCaretInsideLine(line) {
   range.collapse(true);
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+function placeCaretAtEndOfLine(line) {
+  const selection = window.getSelection();
+  if (!line || !selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(line);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function getCurrentEditingBedLine() {
+  const line = getCurrentEditorLine();
+  if (!line) return null;
+  return line.querySelector('.tag-token[data-tag="bed"][data-editing="true"]') ? line : null;
+}
+
+function getEditingBedToken(line) {
+  return line?.querySelector?.('.tag-token[data-tag="bed"][data-editing="true"]') || null;
+}
+
+function isEditingBedLineEmpty(line) {
+  return getEditableTextFromLine(line).trim() === "";
+}
+
+function getEditableTextFromLine(line) {
+  if (!line) return "";
+  const clone = line.cloneNode(true);
+  clone.querySelectorAll(".tag-token").forEach((token) => token.remove());
+  return String(clone.textContent || "").replace(/\u00a0/g, " ");
+}
+
+function isEditorLineEmpty(line) {
+  if (!line) return true;
+  const text = String(line.textContent || "").replace(/\u00a0/g, " ").trim();
+  return !text || line.innerHTML.trim() === "<br>";
+}
+
+function finalizeEditingBedLine(line) {
+  const token = getEditingBedToken(line);
+  if (!token) return;
+
+  const bedValue = getEditableTextFromLine(line).trim();
+  if (!bedValue) {
+    removeEditingBedLine(line);
+    syncEditorDocument();
+    return;
+  }
+
+  clearBedFinalizeTimer();
+  token.textContent = `Bed ${bedValue}`;
+  token.setAttribute("contenteditable", "false");
+  token.dataset.editing = "false";
+  token.classList.remove("tag-editing");
+  line.replaceChildren(token);
+  refreshLineTagClasses(line);
+  placeCaretOnNewLine(line);
+  syncEditorDocument();
+}
+
+function removeEditingBedLine(line) {
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  if (!line || !editor) return;
+
+  const nextLine = line.nextElementSibling;
+  const previousLine = line.previousElementSibling;
+  if (editor.children.length <= 1) {
+    line.innerHTML = "<br>";
+    placeCaretInsideLine(line);
+    return;
+  }
+
+  line.remove();
+  placeCaretInsideLine(nextLine || previousLine || editor);
 }
 
 function getActiveTagToken() {
