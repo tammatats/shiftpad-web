@@ -790,30 +790,36 @@ function formatSupabaseError(error, fallback) {
 
 function renderTimelineItem(item) {
   const { ward, note, entry } = item;
+  const reminderText = getReminderEditorText(entry);
+  const typeLabel = getReminderTypeLabel(entry.reminderType);
   return `
-    <article class="timeline-item reminder-card ${entry.done ? "is-done" : ""}">
-      <div class="timeline-head">
-        <div>
-          <strong>${escapeHtml(entry.reminderTime || "No time")}</strong>
-          <p class="timeline-subhead">${escapeHtml(buildReminderSubhead(item))}</p>
-        </div>
-        <label class="entry-check">
-          <input
-            type="checkbox"
+    <article class="timeline-item reminder-row ${entry.done ? "is-done" : ""}">
+      <label class="reminder-check" aria-label="${entry.done ? "Mark reminder open" : "Mark reminder done"}">
+        <input
+          type="checkbox"
+          data-note-id="${escapeHtml(note.id)}"
+          data-token-id="${escapeHtml(item.tokenId || "")}"
+          ${entry.done ? "checked" : ""}
+        />
+        <span class="reminder-checkmark"></span>
+      </label>
+      <div class="reminder-main">
+        <div class="reminder-line">
+          <textarea
+            class="summary-editor reminder-editor"
+            data-summary-editor="true"
             data-note-id="${escapeHtml(note.id)}"
-            data-token-id="${escapeHtml(item.tokenId || "")}"
-            ${entry.done ? "checked" : ""}
-          />
-          <span>${entry.done ? "Done" : "Open"}</span>
-        </label>
+            data-line-index="${item.lineIndex}"
+            aria-label="Reminder text"
+          >${escapeHtml(reminderText)}</textarea>
+          <span class="reminder-time-pill">${escapeHtml(entry.reminderTime || "No time")}</span>
+        </div>
+        <div class="reminder-meta">
+          <span>${escapeHtml(ward.name)}</span>
+          ${entry.bedTag ? `<span>Bed ${escapeHtml(entry.bedTag.toUpperCase())}</span>` : ""}
+          ${typeLabel ? `<span>${escapeHtml(typeLabel)}</span>` : ""}
+        </div>
       </div>
-      <textarea
-        class="summary-editor reminder-editor"
-        data-summary-editor="true"
-        data-note-id="${escapeHtml(note.id)}"
-        data-line-index="${item.lineIndex}"
-        aria-label="Reminder text"
-      >${escapeHtml(getReminderEditorText(entry))}</textarea>
     </article>
   `;
 }
@@ -866,14 +872,50 @@ function renderSummaryTimedSection(items) {
     `;
   }
 
+  const openItems = items.filter((item) => !item.entry.done);
+  const doneItems = items.filter((item) => item.entry.done);
+
   return `
-    <section class="timeline-group">
-      <h3>Reminders</h3>
-      <div class="timeline-list">
-        ${items.map((item) => renderTimelineItem(item)).join("")}
-      </div>
+    <section class="timeline-group reminders-board">
+      ${renderReminderListGroup("Open", openItems, `${openItems.length} active`)}
+      ${doneItems.length ? renderReminderListGroup("Completed", doneItems, `${doneItems.length} done`) : ""}
     </section>
   `;
+}
+
+function renderReminderListGroup(title, items, countLabel) {
+  if (!items.length) {
+    return `
+      <div class="reminder-section">
+        <div class="reminder-section-head">
+          <h3>${escapeHtml(title)}</h3>
+          <span>${escapeHtml(countLabel)}</span>
+        </div>
+        <div class="reminder-list empty">
+          <p class="helper-copy">No open reminders.</p>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="reminder-section">
+      <div class="reminder-section-head">
+        <h3>${escapeHtml(title)}</h3>
+        <span>${escapeHtml(countLabel)}</span>
+      </div>
+      <div class="reminder-list">
+        ${items.map((item) => renderTimelineItem(item)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function getReminderTypeLabel(type) {
+  if (type === "time") return "Time";
+  if (type === "lab") return "Lab";
+  if (type === "io") return "I/O";
+  return KIND_META[type]?.label || "";
 }
 
 function renderQuickChip(key, label, extraClass = "") {
