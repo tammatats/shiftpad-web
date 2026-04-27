@@ -1793,8 +1793,10 @@ function handleNotepadKeydown(event) {
 
 function handleNotepadBeforeInput(event) {
   const inputType = event.inputType || "";
+  const isDeleteInput = inputType === "deleteContentBackward" || inputType === "deleteContentForward";
 
   if (inputType === "insertParagraph") {
+    discardFreshFinalizedTagInsertions();
     const activeToken = getActiveTagToken();
     if (activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true") {
       finalizeTagToken(activeToken, { moveToNewLine: true });
@@ -1808,7 +1810,7 @@ function handleNotepadBeforeInput(event) {
     }
   }
 
-  if (inputType === "deleteContentBackward" || inputType === "deleteContentForward") {
+  if (isDeleteInput) {
     if (uiState.suppressNextDeleteInput) {
       uiState.suppressNextDeleteInput = false;
       return true;
@@ -1821,12 +1823,23 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
+    const freshToken = getFreshFinalizedTagForDelete(event.target.closest?.("#notepad-editor"), inputType);
+    if (freshToken) {
+      const pendingInsertion = getPendingTagInsertion(freshToken);
+      removeTagToken(freshToken, { restoreRepair: false });
+      syncEditorDocument();
+      restorePendingInsertionTextOffset(pendingInsertion);
+      return true;
+    }
+
     const bedLine = getCurrentEditingBedLine();
     if (bedLine && isEditingBedLineEmpty(bedLine)) {
       removeEditingBedLine(bedLine);
       syncEditorDocument();
       return true;
     }
+  } else if (inputType.startsWith("insert") || inputType === "formatSetBlockTextDirection") {
+    discardFreshFinalizedTagInsertions();
   }
 
   return false;
@@ -1956,6 +1969,7 @@ function insertTagIntoEditor(editor, tag) {
       )}" data-done="false">I/O</span>&nbsp;`
     );
     const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
+    rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
     placeCaretAfterNode(inserted, true);
     syncEditorDocument();
     return;
@@ -2044,7 +2058,7 @@ function getEditorSelectionPoint(editor) {
   };
 }
 
-function rememberPendingTagInsertion(tokenId, editor, point) {
+function rememberPendingTagInsertion(tokenId, editor, point, options = {}) {
   if (!tokenId || !editor || !point?.node) return;
   uiState.pendingTagInsertions.set(tokenId, {
     editor,
@@ -2052,7 +2066,8 @@ function rememberPendingTagInsertion(tokenId, editor, point) {
     offset: point.offset,
     line: point.line,
     lineHtml: point.lineHtml,
-    textOffset: point.textOffset
+    textOffset: point.textOffset,
+    finalized: Boolean(options.finalized)
   });
 }
 
@@ -2252,9 +2267,131 @@ function consumePendingTagInsertion(token) {
   return pending;
 }
 
+function getPendingTagInsertion(token) {
+  const tokenId = token?.dataset?.tokenId;
+  if (!tokenId || !uiState.pendingTagInsertions.has(tokenId)) return null;
+  return uiState.pendingTagInsertions.get(tokenId);
+}
+
 function discardPendingTagInsertion(token) {
   const pending = consumePendingTagInsertion(token);
   pending?.marker?.remove();
+}
+
+function discardFreshFinalizedTagInsertions() {
+  Array.from(uiState.pendingTagInsertions.entries()).forEach(([tokenId, pending]) => {
+    if (pending?.finalized) {
+      uiState.pendingTagInsertions.delete(tokenId);
+    }
+  });
+}
+
+function getFreshFinalizedTagForDelete(editor, inputType) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return null;
+  if (!isNodeInsideEditor(editor, selection.anchorNode)) return null;
+
+  const searchBackward = inputType !== "deleteContentForward";
+  let node = selection.anchorNode;
+  let offset = selection.anchorOffset;
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node.textContent || "";
+    if (searchBackward && text.slice(0, offset).replace(/[\s\u00a0\u200b]/g, "")) return null;
+    if (!searchBackward && text.slice(offset).replace(/[\s\u00a0\u200b]/g, "")) return null;
+  }
+
+  let candidate = searchBackward
+    ? getPreviousMeaningfulNode(node, offset, editor)
+    : getNextMeaningfulNode(node, offset, editor);
+  if (candidate?.nodeType === Node.TEXT_NODE && !candidate.textContent.replace(/[\s\u00a0\u200b]/g, "")) {
+    candidate = searchBackward
+      ? getPreviousMeaningfulNode(candidate, 0, editor)
+      : getNextMeaningfulNode(candidate, candidate.textContent.length, editor);
+  }
+  if (candidate?.nodeType === Node.TEXT_NODE && candidate.parentElement?.classList?.contains("tag-token")) {
+    candidate = candidate.parentElement;
+  }
+
+  if (!candidate?.classList?.contains("tag-token")) return null;
+  const tokenId = candidate.dataset.tokenId;
+  const pending = tokenId ? uiState.pendingTagInsertions.get(tokenId) : null;
+  return pending?.finalized ? candidate : null;
+}
+
+function getPreviousMeaningfulNode(node, offset, editor) {
+  let current = node;
+  let childOffset = offset;
+
+  while (current && current !== editor) {
+    if (current.nodeType === Node.TEXT_NODE) {
+      if (childOffset > 0) {
+        return current;
+      }
+    } else if (current.childNodes?.length && childOffset > 0) {
+      return getDeepestRightNode(current.childNodes[childOffset - 1]);
+    }
+
+    if (current.previousSibling) {
+      return getDeepestRightNode(current.previousSibling);
+    }
+    childOffset = Array.prototype.indexOf.call(current.parentNode?.childNodes || [], current);
+    current = current.parentNode;
+  }
+
+  return null;
+}
+
+function getNextMeaningfulNode(node, offset, editor) {
+  let current = node;
+  let childOffset = offset;
+
+  while (current && current !== editor) {
+    if (current.nodeType === Node.TEXT_NODE) {
+      if (childOffset < current.textContent.length) {
+        return current;
+      }
+    } else if (current.childNodes?.length && childOffset < current.childNodes.length) {
+      return getDeepestLeftNode(current.childNodes[childOffset]);
+    }
+
+    if (current.nextSibling) {
+      return getDeepestLeftNode(current.nextSibling);
+    }
+    childOffset = Array.prototype.indexOf.call(current.parentNode?.childNodes || [], current) + 1;
+    current = current.parentNode;
+  }
+
+  return null;
+}
+
+function getDeepestRightNode(node) {
+  let current = node;
+  while (current?.lastChild) {
+    current = current.lastChild;
+  }
+  return current;
+}
+
+function getDeepestLeftNode(node) {
+  let current = node;
+  while (current?.firstChild) {
+    current = current.firstChild;
+  }
+  return current;
+}
+
+function restorePendingInsertionTextOffset(pending) {
+  if (!pending?.line || !document.contains(pending.line)) return;
+  const currentText = String(pending.line.textContent || "").replace(/\u00a0/g, " ").trimEnd();
+  const expectedText = getPlainTextFromHtml(pending.lineHtml).replace(/\u00a0/g, " ").trimEnd();
+  if (currentText === expectedText && pending.line.innerHTML !== pending.lineHtml) {
+    pending.line.innerHTML = pending.lineHtml || "<br>";
+  }
+  placeCaretAtTextOffset(pending.line, pending.textOffset);
+  if (pending.editor && document.contains(pending.editor)) {
+    rememberEditorSelection(pending.editor);
+  }
 }
 
 function restorePendingTagInsertionCaret(pending, { scheduleRepair = true } = {}) {
@@ -2343,7 +2480,7 @@ function placeCaretAtTextOffset(line, targetOffset) {
 function removeInsertedTagSpacer(token) {
   const next = token?.nextSibling;
   if (next?.nodeType !== Node.TEXT_NODE) return;
-  next.textContent = String(next.textContent || "").replace(/^[\u00a0 ]/, "");
+  next.textContent = String(next.textContent || "").replace(/^[\u00a0 ]+/, "");
   if (!next.textContent) {
     next.remove();
   }
