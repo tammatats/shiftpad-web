@@ -2,7 +2,7 @@ const STORAGE_KEY = "shiftpad-ios-state-v1";
 const LEGACY_STORAGE_KEY = STORAGE_KEY;
 const STORAGE_NAMESPACE = "shiftpad-ios-state-v2";
 const WARD_COLORS = ["#f28b67", "#6ea8fe", "#6fc48d", "#b490ff", "#f0b95c", "#ff7aa2"];
-const REMINDER_TAGS = ["time", "lab", "io"];
+const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
 const CLOUD_SAVE_DEBOUNCE_MS = 700;
 const KIND_META = {
@@ -12,6 +12,7 @@ const KIND_META = {
 };
 
 const refs = {
+  menuBtn: document.getElementById("menu-btn"),
   singleWardToggle: document.getElementById("single-ward-toggle"),
   addWardBtn: document.getElementById("add-ward-btn"),
   newNoteBtn: document.getElementById("new-note-btn"),
@@ -35,6 +36,7 @@ const refs = {
   notesView: document.getElementById("notes-view"),
   timelineView: document.getElementById("timeline-view"),
   editorRoot: document.getElementById("editor-root"),
+  drawerRoot: document.getElementById("drawer-root"),
   mobileTagRoot: document.getElementById("mobile-tag-root"),
   timelineRoot: document.getElementById("timeline-root"),
   timelineScope: document.getElementById("timeline-scope"),
@@ -60,6 +62,7 @@ const uiState = {
   bedFinalizeTimer: null,
   editorTapScroll: null,
   suppressNextDeleteInput: false,
+  drawerOpen: false,
   pendingTagInsertions: new Map()
 };
 applyUrlOverrides();
@@ -121,6 +124,61 @@ function bindEvents() {
 
   refs.logoutBtn?.addEventListener("click", async () => {
     await signOutCurrentUser();
+  });
+
+  refs.menuBtn?.addEventListener("click", () => {
+    uiState.drawerOpen = true;
+    renderDrawer();
+  });
+
+  refs.drawerRoot?.addEventListener("click", async (event) => {
+    const close = event.target.closest("[data-drawer-close]");
+    if (close) {
+      uiState.drawerOpen = false;
+      renderDrawer();
+      return;
+    }
+
+    const action = event.target.closest("[data-drawer-action]");
+    if (action) {
+      await handleDrawerAction(action.dataset.drawerAction);
+      return;
+    }
+
+    const removeCustomTag = event.target.closest("[data-remove-custom-tag]");
+    if (removeCustomTag) {
+      removeCustomTagDefinition(removeCustomTag.dataset.removeCustomTag);
+      return;
+    }
+  });
+
+  refs.drawerRoot?.addEventListener("change", (event) => {
+    const delayInput = event.target.closest("[data-tag-delay]");
+    if (delayInput) {
+      updateTagDelay(delayInput.dataset.tagDelay, delayInput.value);
+      return;
+    }
+
+    const checkbox = event.target.closest("[data-custom-reminder-toggle]");
+    if (checkbox) {
+      const row = checkbox.closest("[data-custom-tag-row]");
+      updateCustomTagDefinition(row?.dataset.customTagRow, { hasReminder: checkbox.checked });
+    }
+  });
+
+  refs.drawerRoot?.addEventListener("input", (event) => {
+    const customDelay = event.target.closest("[data-custom-delay]");
+    if (customDelay) {
+      const row = customDelay.closest("[data-custom-tag-row]");
+      updateCustomTagDefinition(row?.dataset.customTagRow, { delayMinutes: customDelay.value });
+    }
+  });
+
+  refs.drawerRoot?.addEventListener("submit", (event) => {
+    const form = event.target.closest("[data-custom-tag-form]");
+    if (!form) return;
+    event.preventDefault();
+    addCustomTagFromForm(form);
   });
 
   refs.editorRoot.addEventListener("mousedown", (event) => {
@@ -452,7 +510,102 @@ function render() {
   renderWardRail();
   renderEditor();
   renderTimeline();
+  renderDrawer();
   refreshMobileTagDock();
+}
+
+function renderDrawer() {
+  if (!refs.drawerRoot) return;
+  const open = Boolean(uiState.drawerOpen);
+  refs.menuBtn?.setAttribute("aria-expanded", String(open));
+  refs.drawerRoot.innerHTML = `
+    <div class="drawer-layer ${open ? "is-open" : ""}" aria-hidden="${open ? "false" : "true"}">
+      <button class="drawer-scrim" type="button" data-drawer-close="true" aria-label="Close menu"></button>
+      <aside class="side-drawer" aria-label="App menu">
+        <div class="drawer-head">
+          <div>
+            <p class="section-kicker">Menu</p>
+            <h2>ShiftPad</h2>
+          </div>
+          <button class="drawer-close" type="button" data-drawer-close="true" aria-label="Close menu">Close</button>
+        </div>
+        ${renderAccountMenu()}
+        ${renderSettingsMenu()}
+      </aside>
+    </div>
+  `;
+}
+
+function renderAccountMenu() {
+  return `
+    <section class="drawer-section">
+      <h3>Account</h3>
+      <div class="drawer-actions">
+        <button class="ghost-btn" type="button" data-drawer-action="logout">Log out</button>
+        <button class="ghost-btn" type="button" data-drawer-action="change-account">Change account</button>
+        <button class="ghost-btn" type="button" data-drawer-action="change-password">Change password</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderSettingsMenu() {
+  const preferences = getPreferences();
+  const customTags = getCustomTagDefinitions();
+  return `
+    <section class="drawer-section">
+      <h3>Settings</h3>
+      <div class="settings-grid">
+        ${renderDelayField("time", "Time tag delay", preferences.tagDelays.time)}
+        ${renderDelayField("lab", "Lab delay", preferences.tagDelays.lab)}
+        ${renderDelayField("io", "I/O delay", preferences.tagDelays.io)}
+      </div>
+      <p class="drawer-help">I/O uses the note creation time: before 14:30 gives 14:00 and 22:00; after 14:30 gives 22:00 only.</p>
+    </section>
+    <section class="drawer-section">
+      <h3>Custom tags</h3>
+      <form class="custom-tag-form" data-custom-tag-form="true">
+        <input name="label" type="text" maxlength="18" placeholder="Tag name" aria-label="Tag name" />
+        <label class="mini-check">
+          <input name="hasReminder" type="checkbox" />
+          <span>Reminder</span>
+        </label>
+        <input name="delayMinutes" type="number" min="0" step="5" value="0" aria-label="Delay minutes" />
+        <button class="accent-btn" type="submit">Add</button>
+      </form>
+      <div class="custom-tag-list">
+        ${customTags.length ? customTags.map(renderCustomTagSettingRow).join("") : `<p class="drawer-help">No custom tags yet.</p>`}
+      </div>
+    </section>
+    <section class="drawer-section danger-zone">
+      <h3>Reset</h3>
+      <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Reset all notes</button>
+    </section>
+  `;
+}
+
+function renderDelayField(key, label, value) {
+  return `
+    <label class="setting-field">
+      <span>${escapeHtml(label)}</span>
+      <input type="number" min="-720" max="720" step="5" value="${escapeHtml(String(value || 0))}" data-tag-delay="${escapeHtml(key)}" />
+      <small>minutes</small>
+    </label>
+  `;
+}
+
+function renderCustomTagSettingRow(tag) {
+  return `
+    <div class="custom-tag-row" data-custom-tag-row="${escapeHtml(tag.id)}">
+      <strong>${escapeHtml(tag.label)}</strong>
+      <label class="mini-check">
+        <input type="checkbox" data-custom-reminder-toggle="true" ${tag.hasReminder ? "checked" : ""} />
+        <span>Reminder</span>
+      </label>
+      <input type="number" min="0" step="5" value="${escapeHtml(String(tag.delayMinutes || 0))}" data-custom-delay="true" aria-label="Custom tag delay" />
+      <button class="ghost-btn tiny-btn" type="button" data-remove-custom-tag="${escapeHtml(tag.id)}">Remove</button>
+    </div>
+  `;
 }
 
 function renderWardRail() {
@@ -512,10 +665,7 @@ function renderEditor() {
         </div>
 
         <div class="quick-tags">
-          ${renderQuickChip("bed", "Bed")}
-          ${renderQuickChip("time", "Time")}
-          ${renderQuickChip("lab", "Lab")}
-          ${renderQuickChip("io", "I/O")}
+          ${getAvailableQuickTags().map((tag) => renderQuickChip(tag.key, tag.label)).join("")}
         </div>
 
         <div class="smart-pad-surface document-pad">
@@ -584,7 +734,7 @@ function renderAuthUi() {
   const hasUser = Boolean(authState.user);
   document.body.classList.toggle("auth-locked", !hasUser);
   refs.authGate?.classList.toggle("hidden", hasUser);
-  refs.logoutBtn?.classList.toggle("hidden", !hasUser);
+  refs.logoutBtn?.classList.add("hidden");
   [refs.authEmail, refs.authPassword, refs.authName, refs.authSigninBtn, refs.authSignupBtn].forEach((node) => {
     if (!node) return;
     node.disabled = !authState.configured;
@@ -812,7 +962,7 @@ function renderTimelineItem(item) {
             data-line-index="${item.lineIndex}"
             aria-label="Reminder text"
           >${escapeHtml(reminderText)}</textarea>
-          <span class="reminder-time-pill">${escapeHtml(entry.reminderTime || "No time")}</span>
+          <span class="reminder-time-pill">${escapeHtml(formatReminderTimeLabel(entry.reminderTime || "No time"))}</span>
         </div>
         <div class="reminder-meta">
           <span>${escapeHtml(ward.name)}</span>
@@ -915,7 +1065,11 @@ function getReminderTypeLabel(type) {
   if (type === "time") return "Time";
   if (type === "lab") return "Lab";
   if (type === "io") return "I/O";
-  return KIND_META[type]?.label || "";
+  return getKindMeta(type)?.label || "";
+}
+
+function formatReminderTimeLabel(value) {
+  return String(value || "").replace(".", ":");
 }
 
 function renderQuickChip(key, label, extraClass = "") {
@@ -931,10 +1085,9 @@ function renderMobileTagDock() {
   return `
     <div class="mobile-tag-dock" data-mobile-tag-dock="true" aria-hidden="true">
       <div class="mobile-tag-tray" role="menu" aria-label="Insert tag">
-        <button class="mobile-tag-option bed" type="button" data-mobile-tag="bed">Bed</button>
-        <button class="mobile-tag-option timed" type="button" data-mobile-tag="time">Time</button>
-        <button class="mobile-tag-option timed" type="button" data-mobile-tag="lab">Lab</button>
-        <button class="mobile-tag-option io" type="button" data-mobile-tag="io">I/O</button>
+        ${getAvailableQuickTags()
+          .map((tag) => `<button class="mobile-tag-option ${escapeHtml(tag.className || "")}" type="button" data-mobile-tag="${escapeHtml(tag.key)}">${escapeHtml(tag.label)}</button>`)
+          .join("")}
         <button class="mobile-tag-option muted" type="button" data-mobile-tag-close="true">Cancel</button>
       </div>
       <button class="mobile-tag-fab" type="button" data-mobile-tag-toggle="true" aria-expanded="${expanded}">
@@ -946,6 +1099,99 @@ function renderMobileTagDock() {
 
 function renderEntryChip(label, extraClass = "") {
   return `<span class="entry-chip ${escapeHtml(extraClass)}">${escapeHtml(label)}</span>`;
+}
+
+function getAvailableQuickTags() {
+  return [
+    { key: "bed", label: "Bed", className: "bed" },
+    { key: "time", label: "Time", className: "timed" },
+    { key: "lab", label: "Lab", className: "timed" },
+    { key: "io", label: "I/O", className: "io" },
+    ...getCustomTagDefinitions().map((tag) => ({
+      key: tag.id,
+      label: tag.label,
+      className: tag.hasReminder ? "timed" : ""
+    }))
+  ];
+}
+
+function getPreferences() {
+  state.preferences = normalizePreferences(state.preferences);
+  return state.preferences;
+}
+
+function defaultPreferences() {
+  return {
+    singleWardMode: false,
+    wardListCollapsed: false,
+    tagDelays: {
+      time: 0,
+      lab: 60,
+      io: 0
+    },
+    customTags: []
+  };
+}
+
+function normalizePreferences(input = {}) {
+  const defaults = defaultPreferences();
+  return {
+    singleWardMode: Boolean(input.singleWardMode),
+    wardListCollapsed: Boolean(input.wardListCollapsed),
+    tagDelays: {
+      time: clampDelay(input.tagDelays?.time, defaults.tagDelays.time),
+      lab: clampDelay(input.tagDelays?.lab, defaults.tagDelays.lab),
+      io: clampDelay(input.tagDelays?.io, defaults.tagDelays.io)
+    },
+    customTags: Array.isArray(input.customTags)
+      ? input.customTags
+          .map((tag) => normalizeCustomTag(tag))
+          .filter(Boolean)
+      : []
+  };
+}
+
+function normalizeCustomTag(tag) {
+  const label = String(tag?.label || "").trim().slice(0, 18);
+  if (!label) return null;
+  return {
+    id: String(tag.id || createCustomTagId(label)),
+    label,
+    hasReminder: Boolean(tag.hasReminder),
+    delayMinutes: Math.max(0, clampDelay(tag.delayMinutes, 0))
+  };
+}
+
+function getCustomTagDefinitions() {
+  return getPreferences().customTags;
+}
+
+function getCustomTagDefinition(id) {
+  return getCustomTagDefinitions().find((tag) => tag.id === id) || null;
+}
+
+function getKindMeta(type) {
+  if (KIND_META[type]) return KIND_META[type];
+  try {
+    return getCustomTagDefinition(type) || null;
+  } catch {
+    return null;
+  }
+}
+
+function isReminderTagType(type) {
+  if (CORE_REMINDER_TAGS.includes(type)) return true;
+  try {
+    return Boolean(getCustomTagDefinition(type)?.hasReminder);
+  } catch {
+    return false;
+  }
+}
+
+function clampDelay(value, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(-720, Math.min(720, Math.round(number)));
 }
 
 function handleQuickTag(tag) {
@@ -1320,7 +1566,7 @@ function writeLineText(element, value) {
   const tagNodes = Array.from(element.childNodes).filter(
     (node) => node.nodeType === Node.ELEMENT_NODE && node.classList.contains("tag-token")
   );
-  const reminderNode = tagNodes.find((node) => REMINDER_TAGS.includes(node.dataset.tag));
+  const reminderNode = tagNodes.find((node) => isReminderTagType(node.dataset.tag));
   const leadingTags = tagNodes.filter((node) => node !== reminderNode);
   let textBody = stripLeadingTagMentions(safeText, leadingTags.map((node) => node.textContent || ""));
 
@@ -1374,12 +1620,118 @@ function autoSizeTextarea(textarea) {
   textarea.style.height = `${Math.max(textarea.scrollHeight, 44)}px`;
 }
 
+async function handleDrawerAction(action) {
+  if (action === "logout" || action === "change-account") {
+    await signOutCurrentUser();
+    uiState.drawerOpen = false;
+    render();
+    return;
+  }
+
+  if (action === "change-password") {
+    await changeCurrentPassword();
+    return;
+  }
+
+  if (action === "reset-notes") {
+    resetAllNotes();
+  }
+}
+
+async function changeCurrentPassword() {
+  if (!authState.client || !authState.user) {
+    setAuthMessage("Sign in before changing password.");
+    renderAuthUi();
+    return;
+  }
+
+  const nextPassword = window.prompt("Enter a new password for this account.");
+  if (!nextPassword) return;
+  if (nextPassword.length < 6) {
+    window.alert("Password must be at least 6 characters.");
+    return;
+  }
+
+  const { error } = await authState.client.auth.updateUser({ password: nextPassword });
+  if (error) {
+    setAuthMessage(formatSupabaseError(error, "Password update failed."));
+  } else {
+    setAuthMessage("Password updated.");
+  }
+  renderAuthUi();
+}
+
+function resetAllNotes() {
+  if (!window.confirm("Reset all wards and notes? This cannot be undone.")) return;
+  state = createBlankState();
+  uiState.savedSelection = null;
+  uiState.mobileTagsOpen = false;
+  uiState.drawerOpen = false;
+  saveState();
+  render();
+}
+
+function updateTagDelay(tag, value) {
+  const preferences = getPreferences();
+  if (!["time", "lab", "io"].includes(tag)) return;
+  preferences.tagDelays[tag] = clampDelay(value, preferences.tagDelays[tag]);
+  saveState();
+  renderTimeline();
+  renderDrawer();
+}
+
+function addCustomTagFromForm(form) {
+  const formData = new FormData(form);
+  const label = String(formData.get("label") || "").trim().slice(0, 18);
+  if (!label) return;
+
+  const preferences = getPreferences();
+  preferences.customTags.push({
+    id: createCustomTagId(label),
+    label,
+    hasReminder: formData.get("hasReminder") === "on",
+    delayMinutes: Math.max(0, clampDelay(formData.get("delayMinutes"), 0))
+  });
+  saveState();
+  render();
+  form.reset();
+}
+
+function updateCustomTagDefinition(id, updates) {
+  const tag = getCustomTagDefinition(id);
+  if (!tag) return;
+  if (Object.prototype.hasOwnProperty.call(updates, "hasReminder")) {
+    tag.hasReminder = Boolean(updates.hasReminder);
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "delayMinutes")) {
+    tag.delayMinutes = Math.max(0, clampDelay(updates.delayMinutes, tag.delayMinutes));
+  }
+  saveState();
+  render();
+}
+
+function removeCustomTagDefinition(id) {
+  const preferences = getPreferences();
+  preferences.customTags = preferences.customTags.filter((tag) => tag.id !== id);
+  saveState();
+  render();
+}
+
+function createCustomTagId(label) {
+  const slug = String(label || "tag")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24) || "tag";
+  return `custom-${slug}-${createId("tag").slice(-6)}`;
+}
+
 function buildReminderSubhead(item) {
   const parts = [item.ward.name];
   if (item.entry.bedTag) {
     parts.push(`Bed ${item.entry.bedTag.toUpperCase()}`);
   }
-  const kindLabel = KIND_META[item.entry.reminderType]?.label;
+  const kindLabel = getKindMeta(item.entry.reminderType)?.label;
   if (kindLabel && item.entry.reminderType !== "time" && item.entry.reminderType !== "general") {
     parts.push(kindLabel);
   }
@@ -1387,10 +1739,7 @@ function buildReminderSubhead(item) {
 }
 
 function getReminderEditorText(entry) {
-  if (entry.reminderType === "time" && entry.timeAtStart) {
-    return entry.text || "";
-  }
-  return entry.visibleText || entry.text || "";
+  return entry.text || entry.visibleText || "";
 }
 
 function getScopedWards(scope) {
@@ -1427,7 +1776,7 @@ function buildSummaryGroups(scope) {
         getReminderTimesForLine(line).forEach((reminderTime, index) => {
           timed.push({
             ...item,
-            tokenId: index === 0 ? item.tokenId : `${item.tokenId}-${index}`,
+            tokenId: item.tokenId,
             entry: {
               ...item.entry,
               reminderTime
@@ -1515,7 +1864,7 @@ function createEntry({ bedTag, timeTag, kind, text }) {
     id: createId("entry"),
     bedTag,
     timeTag,
-    kind: KIND_META[kind] ? kind : "general",
+    kind: getKindMeta(kind) ? kind : "general",
     text,
     done: false,
     createdAt: Date.now()
@@ -1554,10 +1903,23 @@ function createSeedState() {
     selectedNoteId: noteA.id,
     timelineScope: "all",
     summaryTab: "beds",
-    preferences: {
-      singleWardMode: false
-    },
+    preferences: defaultPreferences(),
     wards: [wardA, wardB]
+  };
+}
+
+function createBlankState() {
+  const ward = createWard("Ward A", WARD_COLORS[0]);
+  const note = createNote("Ward A handover", "");
+  ward.notes.push(note);
+  return {
+    activeView: "notes",
+    selectedWardId: ward.id,
+    selectedNoteId: note.id,
+    timelineScope: "active",
+    summaryTab: "reminders",
+    preferences: defaultPreferences(),
+    wards: [ward]
   };
 }
 
@@ -1598,7 +1960,7 @@ function normalizeState(input) {
                         id: entry.id || createId("entry"),
                         bedTag: typeof entry.bedTag === "string" ? entry.bedTag : "",
                         timeTag: typeof entry.timeTag === "string" ? entry.timeTag : "",
-                        kind: KIND_META[entry.kind] ? entry.kind : "general",
+                        kind: getKindMeta(entry.kind) ? entry.kind : "general",
                         text: typeof entry.text === "string" ? entry.text : "",
                         done: Boolean(entry.done),
                         createdAt: Number(entry.createdAt) || Date.now()
@@ -1610,7 +1972,7 @@ function normalizeState(input) {
                 id: entry.id || createId("entry"),
                 bedTag: typeof entry.bedTag === "string" ? entry.bedTag : "",
                 timeTag: typeof entry.timeTag === "string" ? entry.timeTag : "",
-                kind: KIND_META[entry.kind] ? entry.kind : "general",
+                kind: getKindMeta(entry.kind) ? entry.kind : "general",
                 text: typeof entry.text === "string" ? entry.text : "",
                 done: Boolean(entry.done),
                 createdAt: Number(entry.createdAt) || Date.now()
@@ -1633,10 +1995,7 @@ function normalizeState(input) {
     selectedNoteId: typeof input.selectedNoteId === "string" ? input.selectedNoteId : wards[0].notes[0]?.id || "",
     timelineScope: input.timelineScope === "active" ? "active" : "all",
     summaryTab: input.summaryTab === "reminders" ? "reminders" : "beds",
-    preferences: {
-      singleWardMode: Boolean(input.preferences?.singleWardMode),
-      wardListCollapsed: Boolean(input.preferences?.wardListCollapsed)
-    },
+    preferences: normalizePreferences(input.preferences),
     wards
   };
 }
@@ -1726,10 +2085,13 @@ function getNextWardName() {
 }
 
 function getShiftLabel(timestamp) {
-  const hour = new Date(timestamp).getHours();
-  if (hour < 12) return "AM shift";
-  if (hour < 18) return "PM shift";
-  return "Night shift";
+  return getShiftDurationHours(timestamp) === 24 ? "24 hr shift" : "16 hr shift";
+}
+
+function getShiftDurationHours(timestamp) {
+  const created = new Date(Number(timestamp) || Date.now());
+  const minutes = created.getHours() * 60 + created.getMinutes();
+  return minutes < 14 * 60 + 30 ? 24 : 16;
 }
 
 function parseTime(value) {
@@ -1750,6 +2112,17 @@ function addHoursToTime(value, hoursToAdd) {
   const parsed = parseTime(value);
   if (parsed === Number.MAX_SAFE_INTEGER) return value;
   return formatTimeFromMinutes(parsed + hoursToAdd * 60);
+}
+
+function addMinutesToTime(value, minutesToAdd) {
+  const parsed = parseTime(value);
+  if (parsed === Number.MAX_SAFE_INTEGER) return value;
+  return formatTimeFromMinutes(parsed + Number(minutesToAdd || 0));
+}
+
+function formatTimeFromTimestamp(timestamp) {
+  const date = new Date(Number(timestamp) || Date.now());
+  return formatTimeFromMinutes(date.getHours() * 60 + date.getMinutes());
 }
 
 function formatClock(timestamp) {
@@ -1810,7 +2183,7 @@ function convertEntriesToDocumentHtml(entries) {
         lineBits.push(
           `<span class="tag-token tag-${escapeAttribute(entry.kind)}" contenteditable="false" data-tag="${escapeAttribute(
             entry.kind
-          )}" data-token-id="${escapeAttribute(createId("tag"))}">${escapeHtml(KIND_META[entry.kind]?.label || entry.kind)}</span>`
+          )}" data-token-id="${escapeAttribute(createId("tag"))}">${escapeHtml(getKindMeta(entry.kind)?.label || entry.kind)}</span>`
         );
       }
       if (entry.timeTag) {
@@ -2018,7 +2391,7 @@ function insertTagIntoEditor(editor, tag) {
   }
 
   const tokenId = createId("tag");
-  const label = KIND_META[tag]?.label || tag;
+  const label = getKindMeta(tag)?.label || tag;
   insertHtmlAtSelection(
     `<span class="tag-token tag-${escapeAttribute(tag)}" contenteditable="false" data-tag="${escapeAttribute(tag)}" data-token-id="${escapeAttribute(
       tokenId
@@ -2721,9 +3094,9 @@ function extractTaggedLines(note) {
       return;
     }
 
-    const reminderTag = line.tags.find((tag) => REMINDER_TAGS.includes(tag.type));
+    const reminderTag = line.tags.find((tag) => isReminderTagType(tag.type));
     const timeTag = reminderTag && reminderTag.type !== "io" ? reminderTag : null;
-    const primaryTag = line.tags.find((tag) => !["bed", ...REMINDER_TAGS].includes(tag.type));
+    const primaryTag = line.tags.find((tag) => tag.type !== "bed" && !isReminderTagType(tag.type));
     const cleanedText = stripTagPrefixes(line.text, line.tags);
     const visibleText = line.visibleText.trim();
     if (!cleanedText && !reminderTag && !primaryTag && !visibleText) {
@@ -2736,6 +3109,7 @@ function extractTaggedLines(note) {
       visibleText,
       bedLabel: currentBed,
       timeTag: timeTag?.text || "",
+      noteCreatedAt: Number(note.createdAt) || Date.now(),
       reminderType: reminderTag?.type || "",
       reminderTokenId: reminderTag?.id || "",
       timeTokenId: timeTag?.id || reminderTag?.id || "",
@@ -2849,14 +3223,21 @@ function formatTimedSummaryLine(line) {
 
 function getReminderTimesForLine(line) {
   if (!line?.reminderType) return [];
+  const preferences = getPreferences();
   if (line.reminderType === "time" && line.timeTag) {
-    return [line.timeTag];
+    return [addMinutesToTime(line.timeTag, preferences.tagDelays.time)];
   }
   if (line.reminderType === "lab" && line.timeTag) {
-    return [addHoursToTime(line.timeTag, 1)];
+    return [addMinutesToTime(line.timeTag, preferences.tagDelays.lab)];
   }
   if (line.reminderType === "io") {
-    return ["14.00", "22.00"];
+    const baseTimes = getShiftDurationHours(line.noteCreatedAt) === 24 ? ["14.00", "22.00"] : ["22.00"];
+    return baseTimes.map((time) => addMinutesToTime(time, preferences.tagDelays.io));
+  }
+  const customTag = getCustomTagDefinition(line.reminderType);
+  if (customTag?.hasReminder) {
+    const startTime = formatTimeFromTimestamp(line.noteCreatedAt);
+    return [addMinutesToTime(startTime, customTag.delayMinutes)];
   }
   return [];
 }
