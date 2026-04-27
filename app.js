@@ -126,6 +126,7 @@ function bindEvents() {
   refs.editorRoot.addEventListener("mousedown", (event) => {
     const quickButton = event.target.closest("[data-quick-tag]");
     if (quickButton) {
+      rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
       event.preventDefault();
     }
   });
@@ -912,7 +913,7 @@ function handleQuickTag(tag) {
   if (!editor) return;
 
   editor.focus({ preventScroll: true });
-  restoreEditorSelection(editor);
+  restoreSavedEditorSelection(editor);
   insertTagIntoEditor(editor, tag);
 
   note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
@@ -947,7 +948,7 @@ function restoreEditorFocusAndSelection() {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!editor) return null;
   editor.focus({ preventScroll: true });
-  restoreEditorSelection(editor);
+  restoreSavedEditorSelection(editor);
   uiState.editorFocused = true;
   rememberEditorSelection(editor);
   return editor;
@@ -986,10 +987,17 @@ function stabilizeEditorTapScroll(editor, attempt = 0) {
       Math.abs(viewportTop - snapshot.viewportTop) > 36;
     const scrollDelta = Math.abs(window.scrollY - snapshot.scrollY);
 
-    if (now - snapshot.timestamp > 900 || viewportChanged || scrollDelta < 48) {
-      if (attempt >= 1) {
-        uiState.editorTapScroll = null;
+    if (now - snapshot.timestamp > 900 || viewportChanged) {
+      uiState.editorTapScroll = null;
+      return;
+    }
+
+    if (scrollDelta < 48) {
+      if (attempt < 1) {
+        window.setTimeout(() => stabilizeEditorTapScroll(editor, attempt + 1), 60);
+        return;
       }
+      uiState.editorTapScroll = null;
       return;
     }
 
@@ -1048,6 +1056,19 @@ function restoreEditorSelection(editor) {
   selection.addRange(range);
   uiState.savedSelection = range.cloneRange();
   return true;
+}
+
+function restoreSavedEditorSelection(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection) return false;
+
+  if (uiState.savedSelection) {
+    selection.removeAllRanges();
+    selection.addRange(uiState.savedSelection.cloneRange());
+    return true;
+  }
+
+  return restoreEditorSelection(editor);
 }
 
 function keepEditorCaretVisible(editor) {
@@ -1848,6 +1869,12 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
 
       const isPrintable = keyboardEvent ? isPrintableKey(keyboardEvent) : key.length === 1;
       if (isPrintable && !isTimeEditingCharacter(key)) {
+        if (isDefaultEditingTimeToken(token)) {
+          removeTagToken(token, { restoreRepair: false });
+          insertTextAtSelection(key);
+          syncEditorDocument();
+          return true;
+        }
         finalizeTagToken(token, { moveToNewLine: false });
         insertTextAtSelection(key);
         syncEditorDocument();
@@ -1960,16 +1987,25 @@ function insertHtmlAtSelection(html) {
   if (!selection || !selection.rangeCount) return;
 
   const range = selection.getRangeAt(0);
-  range.deleteContents();
+  const currentLine = getCurrentEditorLine();
+  if (currentLine && isEditorLineEmpty(currentLine)) {
+    currentLine.innerHTML = "";
+    range.selectNodeContents(currentLine);
+    range.collapse(true);
+  } else {
+    range.deleteContents();
+  }
   const template = document.createElement("template");
   template.innerHTML = html;
   const fragment = template.content;
-  const lastNode = fragment.lastChild;
+  const marker = document.createTextNode("");
+  fragment.appendChild(marker);
   range.insertNode(fragment);
-  if (!lastNode) return;
 
-  range.setStartAfter(lastNode);
+  if (!marker.parentNode) return;
+  range.setStartBefore(marker);
   range.collapse(true);
+  marker.remove();
   selection.removeAllRanges();
   selection.addRange(range);
 }
@@ -2040,7 +2076,14 @@ function insertTextAtSelection(text) {
   if (!selection || !selection.rangeCount) return;
 
   const range = selection.getRangeAt(0);
-  range.deleteContents();
+  const currentLine = getCurrentEditorLine();
+  if (currentLine && isEditorLineEmpty(currentLine)) {
+    currentLine.innerHTML = "";
+    range.selectNodeContents(currentLine);
+    range.collapse(true);
+  } else {
+    range.deleteContents();
+  }
   const node = document.createTextNode(text);
   range.insertNode(node);
   range.setStartAfter(node);
@@ -2176,7 +2219,7 @@ function deleteBackwardAtSelection(editor) {
   }
 }
 
-function removeTagToken(token) {
+function removeTagToken(token, { restoreRepair = true } = {}) {
   if (!token) return;
   clearBedFinalizeTimer();
   const parent = token.parentNode;
@@ -2194,7 +2237,7 @@ function removeTagToken(token) {
   }
   if (line) {
     refreshLineTagClasses(line);
-    if (pendingInsertion && restorePendingTagInsertionCaret(pendingInsertion)) {
+    if (pendingInsertion && restorePendingTagInsertionCaret(pendingInsertion, { scheduleRepair: restoreRepair })) {
       return;
     }
     placeCaretInsideLine(line);
@@ -2214,7 +2257,7 @@ function discardPendingTagInsertion(token) {
   pending?.marker?.remove();
 }
 
-function restorePendingTagInsertionCaret(pending) {
+function restorePendingTagInsertionCaret(pending, { scheduleRepair = true } = {}) {
   const selection = window.getSelection();
   if (!selection || !pending?.editor || !pending?.node) return false;
   if (!document.contains(pending.editor)) return false;
@@ -2231,7 +2274,9 @@ function restorePendingTagInsertionCaret(pending) {
     selection.removeAllRanges();
     selection.addRange(range);
     rememberEditorSelection(pending.editor);
-    schedulePendingTagDeleteRepair(pending);
+    if (scheduleRepair) {
+      schedulePendingTagDeleteRepair(pending);
+    }
     return true;
   } catch {
     return false;
@@ -2245,7 +2290,14 @@ function schedulePendingTagDeleteRepair(pending) {
     if (!document.contains(pending.line)) return;
     const currentText = String(pending.line.textContent || "").replace(/\u200b/g, "");
     const expected = getPlainTextFromHtml(pending.lineHtml);
-    if (currentText === expected) return;
+    if (currentText === expected) {
+      placeCaretAtTextOffset(pending.line, pending.textOffset);
+      const editor = refs.editorRoot.querySelector("#notepad-editor");
+      if (editor) {
+        rememberEditorSelection(editor);
+      }
+      return;
+    }
 
     pending.line.innerHTML = pending.lineHtml;
     placeCaretAtTextOffset(pending.line, pending.textOffset);
@@ -2313,6 +2365,13 @@ function shouldDeleteEditingTag(token) {
   }
 
   return text === "";
+}
+
+function isDefaultEditingTimeToken(token) {
+  if (!token || !isTimeLikeTag(token.dataset.tag) || token.dataset.editing !== "true") return false;
+  const text = String(token.textContent || "").replace(/\u00a0/g, " ").trim();
+  const selectedText = String(window.getSelection()?.toString() || "").replace(/\u00a0/g, " ").trim();
+  return text === "00.00" && selectedText === text;
 }
 
 function refreshLineTagClasses(line) {
@@ -2386,6 +2445,7 @@ function finalizeEditingBedLine(line) {
   token.setAttribute("contenteditable", "false");
   token.dataset.editing = "false";
   token.classList.remove("tag-editing");
+  discardPendingTagInsertion(token);
   line.replaceChildren(token);
   refreshLineTagClasses(line);
   placeCaretOnNewLine(line);
@@ -2736,7 +2796,7 @@ function restoreSelectionMarker(marker, editor) {
 function normalizeEditorBlocks(root) {
   if (!root) return;
 
-  root.querySelectorAll?.("[data-pending-tag-marker], [data-caret-marker]").forEach((marker) => marker.remove());
+  root.querySelectorAll?.("[data-pending-tag-marker]").forEach((marker) => marker.remove());
 
   const childNodes = Array.from(root.childNodes);
   if (!childNodes.length) {
