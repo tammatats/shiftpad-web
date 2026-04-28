@@ -1584,7 +1584,34 @@ select:focus {
 
   .app-header {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+  }
+
+  .menu-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 13px;
+  }
+
+  .app-title {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .app-title .eyebrow,
+  .app-title .tagline {
+    display: none;
+  }
+
+  h1 {
+    margin-top: 0;
+    font-size: 1.55rem;
+    line-height: 1;
+    letter-spacing: 0;
   }
 
   .account-actions {
@@ -1606,8 +1633,45 @@ select:focus {
     grid-template-columns: 1fr;
   }
 
+  .app-toolbar {
+    margin-top: 10px;
+    padding-top: 10px;
+    gap: 8px;
+  }
+
+  .switch-card {
+    min-height: 44px;
+    padding: 8px 10px;
+  }
+
+  .switch {
+    width: 48px;
+    height: 28px;
+  }
+
+  .switch-track::after {
+    width: 22px;
+    height: 22px;
+  }
+
+  .switch input:checked + .switch-track::after {
+    transform: translateX(20px);
+  }
+
+  .toolbar-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .accent-btn,
+  .ghost-btn,
+  .view-tab {
+    padding: 9px 10px;
+  }
+
   .phone-frame {
-    padding: 14px;
+    padding: 10px;
+    border-radius: 22px;
   }
 
   .switch-card,
@@ -1622,6 +1686,80 @@ select:focus {
     width: 100%;
     flex-wrap: wrap;
     overflow-x: clip;
+  }
+
+  .view-tabs {
+    margin-top: 8px;
+    padding: 4px;
+    gap: 4px;
+  }
+
+  .view-tab {
+    flex: 1;
+    min-height: 42px;
+  }
+
+  .workspace {
+    margin-top: 10px;
+    gap: 10px;
+  }
+
+  .ward-rail {
+    padding: 10px;
+  }
+
+  .rail-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .rail-head .section-kicker {
+    display: none;
+  }
+
+  .rail-toggle-btn {
+    min-width: 78px;
+    padding: 8px 10px;
+  }
+
+  .ward-list {
+    margin-top: 8px;
+    gap: 6px;
+  }
+
+  .ward-tab {
+    padding: 9px 11px;
+  }
+
+  .notes-editor-panel {
+    margin-top: 8px;
+  }
+
+  .note-pad-card {
+    gap: 8px;
+  }
+
+  .note-pad-card .stack-head {
+    display: grid;
+    gap: 2px;
+  }
+
+  .note-pad-card .section-kicker {
+    display: none;
+  }
+
+  .note-pad-card h2 {
+    font-size: 1.04rem;
+  }
+
+  .note-pad-card .stack-head small {
+    font-size: 0.82rem;
+  }
+
+  .notepad-editor {
+    padding: 10px 8px;
+    border-radius: 12px;
   }
 
   .view-tab,
