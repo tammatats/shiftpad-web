@@ -63,6 +63,7 @@ const uiState = {
   editorTapScroll: null,
   suppressNextDeleteInput: false,
   drawerOpen: false,
+  drawerSections: new Set(),
   pendingTagInsertions: new Map()
 };
 applyUrlOverrides();
@@ -128,7 +129,7 @@ function bindEvents() {
 
   refs.menuBtn?.addEventListener("click", () => {
     uiState.drawerOpen = true;
-    renderDrawer();
+    renderDrawer({ animateOpen: true });
   });
 
   refs.drawerRoot?.addEventListener("click", async (event) => {
@@ -136,6 +137,12 @@ function bindEvents() {
     if (close) {
       uiState.drawerOpen = false;
       renderDrawer();
+      return;
+    }
+
+    const toggle = event.target.closest("[data-drawer-toggle]");
+    if (toggle) {
+      toggleDrawerSection(toggle.dataset.drawerToggle);
       return;
     }
 
@@ -514,74 +521,136 @@ function render() {
   refreshMobileTagDock();
 }
 
-function renderDrawer() {
+function renderDrawer({ animateOpen = false } = {}) {
   if (!refs.drawerRoot) return;
   const open = Boolean(uiState.drawerOpen);
   refs.menuBtn?.setAttribute("aria-expanded", String(open));
   refs.drawerRoot.innerHTML = `
-    <div class="drawer-layer ${open ? "is-open" : ""}" aria-hidden="${open ? "false" : "true"}">
+    <div class="drawer-layer ${open && !animateOpen ? "is-open" : ""}" aria-hidden="${open ? "false" : "true"}">
       <button class="drawer-scrim" type="button" data-drawer-close="true" aria-label="Close menu"></button>
       <aside class="side-drawer" aria-label="App menu">
         <div class="drawer-head">
+          <button class="drawer-close menu-btn" type="button" data-drawer-close="true" aria-label="Close menu">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
           <div>
             <p class="section-kicker">Menu</p>
             <h2>ShiftPad</h2>
           </div>
-          <button class="drawer-close" type="button" data-drawer-close="true" aria-label="Close menu">Close</button>
         </div>
         ${renderAccountMenu()}
         ${renderSettingsMenu()}
       </aside>
     </div>
   `;
+  if (open && animateOpen) {
+    window.requestAnimationFrame(() => {
+      refs.drawerRoot?.querySelector(".drawer-layer")?.classList.add("is-open");
+    });
+  }
 }
 
 function renderAccountMenu() {
+  const open = isDrawerSectionOpen("account");
   return `
-    <section class="drawer-section">
-      <h3>Account</h3>
-      <div class="drawer-actions">
-        <button class="ghost-btn" type="button" data-drawer-action="logout">Log out</button>
-        <button class="ghost-btn" type="button" data-drawer-action="change-account">Change account</button>
-        <button class="ghost-btn" type="button" data-drawer-action="change-password">Change password</button>
+    <section class="drawer-section ${open ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("account", "Account", open)}
+      <div class="drawer-panel">
+        <div class="drawer-account-card">
+          <strong>${escapeHtml(getAccountDisplayName())}</strong>
+          <small>${escapeHtml(getSyncStatusText())}</small>
+        </div>
+        <div class="drawer-actions">
+          <button class="ghost-btn" type="button" data-drawer-action="logout">Log out</button>
+          <button class="ghost-btn" type="button" data-drawer-action="change-account">Change account</button>
+          <button class="ghost-btn" type="button" data-drawer-action="change-password">Change password</button>
+        </div>
       </div>
     </section>
+  `;
+}
+
+function renderDrawerSectionToggle(key, label, open) {
+  return `
+    <button class="drawer-section-toggle" type="button" data-drawer-toggle="${escapeHtml(key)}" aria-expanded="${open}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${open ? "Close" : "Open"}</strong>
+    </button>
   `;
 }
 
 function renderSettingsMenu() {
   const preferences = getPreferences();
   const customTags = getCustomTagDefinitions();
+  const settingsOpen = isDrawerSectionOpen("settings");
+  const customOpen = isDrawerSectionOpen("custom-tags");
+  const resetOpen = isDrawerSectionOpen("reset");
   return `
-    <section class="drawer-section">
-      <h3>Settings</h3>
-      <div class="settings-grid">
-        ${renderDelayField("time", "Time tag delay", preferences.tagDelays.time)}
-        ${renderDelayField("lab", "Lab delay", preferences.tagDelays.lab)}
-        ${renderDelayField("io", "I/O delay", preferences.tagDelays.io)}
-      </div>
-      <p class="drawer-help">I/O uses the note creation time: before 14:30 gives 14:00 and 22:00; after 14:30 gives 22:00 only.</p>
-    </section>
-    <section class="drawer-section">
-      <h3>Custom tags</h3>
-      <form class="custom-tag-form" data-custom-tag-form="true">
-        <input name="label" type="text" maxlength="18" placeholder="Tag name" aria-label="Tag name" />
-        <label class="mini-check">
-          <input name="hasReminder" type="checkbox" />
-          <span>Reminder</span>
-        </label>
-        <input name="delayMinutes" type="number" min="0" step="5" value="0" aria-label="Delay minutes" />
-        <button class="accent-btn" type="submit">Add</button>
-      </form>
-      <div class="custom-tag-list">
-        ${customTags.length ? customTags.map(renderCustomTagSettingRow).join("") : `<p class="drawer-help">No custom tags yet.</p>`}
+    <section class="drawer-section ${settingsOpen ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("settings", "Settings", settingsOpen)}
+      <div class="drawer-panel">
+        <div class="settings-grid">
+          ${renderDelayField("time", "Time tag delay", preferences.tagDelays.time)}
+          ${renderDelayField("lab", "Lab delay", preferences.tagDelays.lab)}
+          ${renderDelayField("io", "I/O delay", preferences.tagDelays.io)}
+        </div>
+        <p class="drawer-help">I/O uses the note creation time: before 14:30 gives 14:00 and 22:00; after 14:30 gives 22:00 only.</p>
       </div>
     </section>
-    <section class="drawer-section danger-zone">
-      <h3>Reset</h3>
-      <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Reset all notes</button>
+    <section class="drawer-section ${customOpen ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("custom-tags", "Custom tags", customOpen)}
+      <div class="drawer-panel">
+        <form class="custom-tag-form" data-custom-tag-form="true">
+          <input name="label" type="text" maxlength="18" placeholder="Tag name" aria-label="Tag name" />
+          <label class="mini-check">
+            <input name="hasReminder" type="checkbox" />
+            <span>Reminder</span>
+          </label>
+          <input name="delayMinutes" type="number" min="0" step="5" value="0" aria-label="Delay minutes" />
+          <button class="accent-btn" type="submit">Add</button>
+        </form>
+        <div class="custom-tag-list">
+          ${customTags.length ? customTags.map(renderCustomTagSettingRow).join("") : `<p class="drawer-help">No custom tags yet.</p>`}
+        </div>
+      </div>
+    </section>
+    <section class="drawer-section danger-zone ${resetOpen ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("reset", "Reset", resetOpen)}
+      <div class="drawer-panel">
+        <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Reset all notes</button>
+      </div>
     </section>
   `;
+}
+
+function getAccountDisplayName() {
+  if (!authState.configured) return "Setup needed";
+  if (!authState.user) return "Signed out";
+  return authState.user.user_metadata?.display_name || authState.user.email || "Signed in";
+}
+
+function getSyncStatusText() {
+  if (!authState.configured) return "Add Supabase env vars";
+  if (!authState.user) return authState.ready ? "Sign in to load cloud notes" : "Checking session...";
+  if (authState.isHydrating) return "Loading cloud notes...";
+  if (authState.isSaving) return "Saving to cloud...";
+  return "Cloud sync on";
+}
+
+function isDrawerSectionOpen(key) {
+  return uiState.drawerSections.has(key);
+}
+
+function toggleDrawerSection(key) {
+  if (!key) return;
+  if (uiState.drawerSections.has(key)) {
+    uiState.drawerSections.delete(key);
+  } else {
+    uiState.drawerSections.add(key);
+  }
+  renderDrawer();
 }
 
 function renderDelayField(key, label, value) {
