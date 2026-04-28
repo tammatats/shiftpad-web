@@ -508,6 +508,7 @@ function render() {
   refs.singleWardToggle.checked = Boolean(state.preferences.singleWardMode);
   refs.workspace.classList.toggle("single-ward", Boolean(state.preferences.singleWardMode));
   refs.wardRail.classList.toggle("hidden", Boolean(state.preferences.singleWardMode));
+  refs.timelineView.classList.toggle("single-ward-summary", Boolean(state.preferences.singleWardMode));
 
   refs.notesTabBtn.classList.toggle("is-active", state.activeView === "notes");
   refs.timelineTabBtn.classList.toggle("is-active", state.activeView === "timeline");

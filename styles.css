@@ -639,6 +639,31 @@ h2 {
   gap: 12px;
 }
 
+.timeline-scope-block {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
+.timeline-scope-label {
+  display: none;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.timeline-view.single-ward-summary .timeline-scope-label {
+  display: block;
+}
+
+.timeline-view.single-ward-summary .scope-toggle {
+  background: rgba(255, 247, 241, 0.92);
+  box-shadow: 0 10px 24px rgba(72, 46, 24, 0.1);
+}
+
 .ward-list,
 .note-list,
 .entry-list,
@@ -1688,6 +1713,15 @@ select:focus {
     overflow-x: clip;
   }
 
+  .timeline-scope-block {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .timeline-scope-label {
+    display: block;
+  }
+
   .view-tabs {
     margin-top: 8px;
     padding: 4px;
@@ -1695,6 +1729,11 @@ select:focus {
   }
 
   .view-tab {
+    flex: 1;
+    min-height: 42px;
+  }
+
+  .scope-pill {
     flex: 1;
     min-height: 42px;
   }
