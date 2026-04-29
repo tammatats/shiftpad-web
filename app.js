@@ -476,11 +476,23 @@ function bindEvents() {
 
   refs.timelineRoot.addEventListener("click", (event) => {
     const tab = event.target.closest("[data-summary-tab]");
-    if (!tab) return;
+    if (tab) {
+      state.summaryTab = tab.dataset.summaryTab === "reminders" ? "reminders" : "beds";
+      saveState();
+      renderTimeline();
+      return;
+    }
 
-    state.summaryTab = tab.dataset.summaryTab === "reminders" ? "reminders" : "beds";
-    saveState();
-    renderTimeline();
+    const emptyAction = event.target.closest("[data-empty-action]");
+    if (!emptyAction) return;
+
+    if (emptyAction.dataset.emptyAction === "notes") {
+      state.activeView = "notes";
+      uiState.editorFocused = false;
+      uiState.mobileTagsOpen = false;
+      saveState();
+      render();
+    }
   });
 
   refs.timelineScope.addEventListener("click", (event) => {
@@ -771,28 +783,15 @@ function renderTimeline() {
   `;
 
   const summary = buildSummaryGroups(scope);
-  const hasSummary = summary.timed.length || summary.byBed.length;
-  if (!hasSummary) {
-    refs.timelineRoot.innerHTML = `
-      <div class="timeline-empty">
-        <h3>No summary yet</h3>
-        <p class="helper-copy">Add bed tags or time tags in the main notepad and they will show up here.</p>
-      </div>
-    `;
-    return;
-  }
+  const openReminderCount = summary.timed.filter((item) => !item.entry.done).length;
 
   refs.timelineRoot.innerHTML = `
-    <div class="timeline-root-top minimal">
-      <div>
-        <p class="section-kicker">Summary</p>
-        <h3>${summaryTab === "beds" ? "Bed Information" : "Reminders"}</h3>
+    <div class="summary-controls-row">
+      <div class="summary-switcher" role="tablist" aria-label="Summary sections">
+        <button class="summary-tab ${summaryTab === "beds" ? "is-active" : ""}" type="button" data-summary-tab="beds">Bed Info</button>
+        <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" data-summary-tab="reminders">Reminders</button>
       </div>
-      <strong>${summary.timed.filter((item) => !item.entry.done).length} open reminders</strong>
-    </div>
-    <div class="summary-switcher" role="tablist" aria-label="Summary sections">
-      <button class="summary-tab ${summaryTab === "beds" ? "is-active" : ""}" type="button" data-summary-tab="beds">Bed Info</button>
-      <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" data-summary-tab="reminders">Reminders</button>
+      <strong class="summary-count">${openReminderCount} open reminder${openReminderCount === 1 ? "" : "s"}</strong>
     </div>
     ${summaryTab === "beds" ? renderSummaryBedSection(summary.byBed) : renderSummaryTimedSection(summary.timed)}
   `;
@@ -1012,6 +1011,12 @@ function renderTimelineItem(item) {
   const { ward, note, entry } = item;
   const reminderText = getReminderEditorText(entry);
   const typeLabel = getReminderTypeLabel(entry.reminderType);
+  const metadata = [
+    ward.name,
+    entry.bedTag ? `Bed ${entry.bedTag.toUpperCase()}` : "",
+    typeLabel
+  ].filter(Boolean);
+
   return `
     <article class="timeline-item reminder-row ${entry.done ? "is-done" : ""}">
       <label class="reminder-check" aria-label="${entry.done ? "Mark reminder open" : "Mark reminder done"}">
@@ -1024,22 +1029,18 @@ function renderTimelineItem(item) {
         <span class="reminder-checkmark"></span>
       </label>
       <div class="reminder-main">
-        <div class="reminder-line">
-          <textarea
-            class="summary-editor reminder-editor"
-            data-summary-editor="true"
-            data-note-id="${escapeHtml(note.id)}"
-            data-line-index="${item.lineIndex}"
-            aria-label="Reminder text"
-          >${escapeHtml(reminderText)}</textarea>
-          <span class="reminder-time-pill">${escapeHtml(formatReminderTimeLabel(entry.reminderTime || "No time"))}</span>
-        </div>
+        <textarea
+          class="summary-editor reminder-editor"
+          data-summary-editor="true"
+          data-note-id="${escapeHtml(note.id)}"
+          data-line-index="${item.lineIndex}"
+          aria-label="Reminder text"
+        >${escapeHtml(reminderText)}</textarea>
         <div class="reminder-meta">
-          <span>${escapeHtml(ward.name)}</span>
-          ${entry.bedTag ? `<span>Bed ${escapeHtml(entry.bedTag.toUpperCase())}</span>` : ""}
-          ${typeLabel ? `<span>${escapeHtml(typeLabel)}</span>` : ""}
+          ${metadata.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
         </div>
       </div>
+      <span class="reminder-time-pill">${escapeHtml(formatReminderTimeLabel(entry.reminderTime || "No time"))}</span>
     </article>
   `;
 }
@@ -1048,10 +1049,7 @@ function renderSummaryBedSection(groups) {
   if (!groups.length) {
     return `
       <section class="timeline-group">
-        <div class="timeline-empty">
-          <h3>No bed information yet</h3>
-          <p class="helper-copy">Add a bed tag in the notepad to collect notes here.</p>
-        </div>
+        ${renderTimelineEmptyState("No bed info in this scope", "Open Notes")}
       </section>
     `;
   }
@@ -1084,10 +1082,7 @@ function renderSummaryTimedSection(items) {
   if (!items.length) {
     return `
       <section class="timeline-group">
-        <div class="timeline-empty">
-          <h3>No reminders yet</h3>
-          <p class="helper-copy">Add a time tag in the notepad to create reminders here.</p>
-        </div>
+        ${renderTimelineEmptyState("No reminders in this scope", "Open Notes")}
       </section>
     `;
   }
@@ -1100,6 +1095,15 @@ function renderSummaryTimedSection(items) {
       ${renderReminderListGroup("Open", openItems, `${openItems.length} active`)}
       ${doneItems.length ? renderReminderListGroup("Completed", doneItems, `${doneItems.length} done`) : ""}
     </section>
+  `;
+}
+
+function renderTimelineEmptyState(title, actionLabel) {
+  return `
+    <div class="timeline-empty">
+      <h3>${escapeHtml(title)}</h3>
+      <button class="ghost-btn empty-action-btn" type="button" data-empty-action="notes">${escapeHtml(actionLabel)}</button>
+    </div>
   `;
 }
 

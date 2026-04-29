@@ -828,6 +828,25 @@ h2 {
   padding: 16px;
 }
 
+.timeline-empty {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  border-style: dashed;
+}
+
+.timeline-empty h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.empty-action-btn {
+  padding: 10px 14px;
+}
+
 .note-pad-card {
   display: grid;
   gap: 14px;
@@ -1179,12 +1198,28 @@ select:focus {
   color: var(--muted);
 }
 
+.timeline-group .timeline-empty h3 {
+  margin-bottom: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .summary-bed-list {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .summary-bed-card {
   min-height: 100%;
+}
+
+.summary-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
 }
 
 .summary-switcher {
@@ -1194,6 +1229,12 @@ select:focus {
   border-radius: 18px;
   background: rgba(255, 250, 245, 0.72);
   border: 1px solid rgba(96, 76, 55, 0.08);
+}
+
+.summary-count {
+  color: var(--muted);
+  font-size: 0.9rem;
+  white-space: nowrap;
 }
 
 .summary-tab {
@@ -1220,7 +1261,7 @@ select:focus {
 
 .reminders-board {
   display: grid;
-  gap: 18px;
+  gap: 20px;
 }
 
 .reminder-section {
@@ -1233,12 +1274,12 @@ select:focus {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 4px;
+  padding: 0 2px;
 }
 
 .reminder-section-head h3 {
   margin: 0;
-  color: var(--ink);
+  color: var(--accent-deep);
   font-size: 1.02rem;
   text-transform: none;
   letter-spacing: 0;
@@ -1252,10 +1293,9 @@ select:focus {
 
 .reminder-list {
   overflow: hidden;
-  border: 1px solid rgba(96, 76, 55, 0.1);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: 0 10px 24px rgba(72, 46, 24, 0.06);
+  border: 1px solid rgba(96, 76, 55, 0.09);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .reminder-list.empty {
@@ -1264,11 +1304,11 @@ select:focus {
 
 .reminder-row {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
   margin: 0;
-  padding: 12px 14px;
+  padding: 11px 14px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1280,7 +1320,7 @@ select:focus {
 }
 
 .reminder-row.is-done {
-  background: rgba(246, 248, 246, 0.72);
+  background: rgba(248, 248, 246, 0.72);
   border-color: rgba(96, 76, 55, 0.09);
 }
 
@@ -1289,8 +1329,7 @@ select:focus {
   display: grid;
   place-items: center;
   width: 28px;
-  height: 32px;
-  margin-top: 2px;
+  height: 34px;
 }
 
 .reminder-check input {
@@ -1318,19 +1357,12 @@ select:focus {
 .reminder-main {
   min-width: 0;
   display: grid;
-  gap: 4px;
-}
-
-.reminder-line {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: start;
+  gap: 3px;
 }
 
 .reminder-time-pill {
   min-width: 58px;
-  padding: 5px 8px;
+  padding: 6px 8px;
   border-radius: 999px;
   background: rgba(230, 125, 89, 0.12);
   color: var(--accent-deep);
@@ -1345,7 +1377,7 @@ select:focus {
   flex-wrap: wrap;
   gap: 5px 10px;
   color: var(--muted);
-  font-size: 0.86rem;
+  font-size: 0.84rem;
   line-height: 1.35;
 }
 
@@ -1799,6 +1831,33 @@ select:focus {
   .notepad-editor {
     padding: 10px 8px;
     border-radius: 12px;
+  }
+
+  .summary-controls-row {
+    display: grid;
+    gap: 8px;
+  }
+
+  .summary-switcher {
+    width: 100%;
+  }
+
+  .summary-tab {
+    flex: 1;
+  }
+
+  .summary-count {
+    justify-self: start;
+  }
+
+  .reminder-row {
+    grid-template-columns: 30px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .reminder-time-pill {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .view-tab,
