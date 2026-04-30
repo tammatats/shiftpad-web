@@ -1,7 +1,8 @@
 module.exports = function handler(_req, res) {
   const config = {
     supabaseUrl: process.env.SUPABASE_URL || "",
-    supabaseAnonKey: process.env.SUPABASE_ANON_KEY || ""
+    supabaseAnonKey: process.env.SUPABASE_ANON_KEY || "",
+    vapidPublicKey: process.env.VAPID_PUBLIC_KEY || ""
   };
 
   res.setHeader("Content-Type", "application/javascript; charset=utf-8");

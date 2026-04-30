@@ -301,7 +301,8 @@ h2 {
 .drawer-head,
 .custom-tag-row,
 .setting-field,
-.custom-tag-form {
+.custom-tag-form,
+.notification-actions {
   display: flex;
   align-items: center;
 }
@@ -394,9 +395,41 @@ h2 {
 
 .drawer-actions,
 .settings-grid,
-.custom-tag-list {
+.custom-tag-list,
+.notification-card {
   display: grid;
   gap: 10px;
+}
+
+.notification-card {
+  padding: 12px;
+  border: 1px solid rgba(96, 76, 55, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.notification-card p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.38;
+}
+
+.notification-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.notification-actions .accent-btn,
+.notification-actions .ghost-btn {
+  min-height: 40px;
+  padding: 9px 12px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
 }
 
 .setting-field {

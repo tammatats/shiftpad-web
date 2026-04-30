@@ -5,6 +5,7 @@ const WARD_COLORS = ["#f28b67", "#6ea8fe", "#6fc48d", "#b490ff", "#f0b95c", "#ff
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
 const CLOUD_SAVE_DEBOUNCE_MS = 700;
+const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
   lab: { label: "Lab", icon: "Lab", className: "kind-lab" },
@@ -64,7 +65,8 @@ const uiState = {
   suppressNextDeleteInput: false,
   drawerOpen: false,
   drawerSections: new Set(),
-  pendingTagInsertions: new Map()
+  pendingTagInsertions: new Map(),
+  notificationStatus: ""
 };
 applyUrlOverrides();
 
@@ -73,6 +75,7 @@ init();
 async function init() {
   bindEvents();
   initMobileViewportDock();
+  registerShiftPadServiceWorker();
   await initAuth();
   render();
 }
@@ -610,6 +613,7 @@ function renderSettingsMenu() {
           ${renderDelayField("io", "I/O delay", preferences.tagDelays.io)}
         </div>
         <p class="drawer-help">I/O uses the note creation time: before 14:30 gives 14:00 and 22:00; after 14:30 gives 22:00 only.</p>
+        ${renderNotificationSettings()}
       </div>
     </section>
     <section class="drawer-section ${customOpen ? "is-open" : ""}">
@@ -635,6 +639,45 @@ function renderSettingsMenu() {
         <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Reset all notes</button>
       </div>
     </section>
+  `;
+}
+
+function renderNotificationSettings() {
+  const support = getNotificationSupport();
+  const permission = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+  const configured = Boolean(window.SHIFTPAD_PUBLIC_CONFIG?.vapidPublicKey);
+  const enabled = permission === "granted";
+  const status =
+    uiState.notificationStatus ||
+    (support.supported
+      ? enabled
+        ? "Notifications are allowed on this device."
+        : "Add ShiftPad to the Home Screen, open it there, then enable notifications."
+      : support.message);
+
+  return `
+    <div class="notification-card">
+      <div>
+        <strong>Notifications</strong>
+        <p>${escapeHtml(status)}</p>
+      </div>
+      <div class="notification-actions">
+        <button
+          class="accent-btn"
+          type="button"
+          data-drawer-action="enable-notifications"
+          ${!support.supported || !configured || !authState.user ? "disabled" : ""}
+        >${enabled ? "Refresh" : "Enable"}</button>
+        <button
+          class="ghost-btn"
+          type="button"
+          data-drawer-action="disable-notifications"
+          ${!support.supported || !authState.user ? "disabled" : ""}
+        >Disable</button>
+      </div>
+      ${configured ? "" : `<p class="drawer-help">Vercel needs VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY before notifications can be enabled.</p>`}
+      ${authState.user ? "" : `<p class="drawer-help">Sign in before enabling notifications.</p>`}
+    </div>
   `;
 }
 
@@ -1707,9 +1750,172 @@ async function handleDrawerAction(action) {
     return;
   }
 
+  if (action === "enable-notifications") {
+    await enablePushNotifications();
+    return;
+  }
+
+  if (action === "disable-notifications") {
+    await disablePushNotifications();
+    return;
+  }
+
   if (action === "reset-notes") {
     resetAllNotes();
   }
+}
+
+function getNotificationSupport() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return {
+      supported: false,
+      message: "This browser cannot receive web push notifications."
+    };
+  }
+
+  const isLikelyIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true;
+  if (isLikelyIos && !isStandalone) {
+    return {
+      supported: false,
+      message: "On iPhone, add ShiftPad to the Home Screen and open it from the icon before enabling notifications."
+    };
+  }
+
+  return { supported: true, message: "" };
+}
+
+async function registerShiftPadServiceWorker() {
+  if (!("serviceWorker" in navigator)) return null;
+  try {
+    return await navigator.serviceWorker.register("/sw.js");
+  } catch (error) {
+    console.warn("Service worker registration failed:", error);
+    uiState.notificationStatus = "Notification setup failed while registering the app worker.";
+    return null;
+  }
+}
+
+async function enablePushNotifications() {
+  const support = getNotificationSupport();
+  if (!support.supported) {
+    uiState.notificationStatus = support.message;
+    renderDrawer();
+    return;
+  }
+
+  if (!authState.session?.access_token) {
+    uiState.notificationStatus = "Sign in before enabling notifications.";
+    renderDrawer();
+    return;
+  }
+
+  const publicKey = window.SHIFTPAD_PUBLIC_CONFIG?.vapidPublicKey;
+  if (!publicKey) {
+    uiState.notificationStatus = "Notification keys are not configured in Vercel yet.";
+    renderDrawer();
+    return;
+  }
+
+  try {
+    uiState.notificationStatus = "Asking iPhone for notification permission...";
+    renderDrawer();
+
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      uiState.notificationStatus = "Notifications were not allowed on this device.";
+      renderDrawer();
+      return;
+    }
+
+    const registration = (await navigator.serviceWorker.ready) || (await registerShiftPadServiceWorker());
+    if (!registration?.pushManager) {
+      uiState.notificationStatus = "Push notifications are not available in this browser.";
+      renderDrawer();
+      return;
+    }
+
+    const existingSubscription = await registration.pushManager.getSubscription();
+    const subscription =
+      existingSubscription ||
+      (await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey)
+      }));
+
+    await savePushSubscription(subscription);
+    uiState.notificationStatus = "Notifications are enabled for this device.";
+  } catch (error) {
+    console.error("Notification setup failed:", error);
+    uiState.notificationStatus = formatPushError(error);
+  }
+
+  renderDrawer();
+}
+
+async function disablePushNotifications() {
+  try {
+    const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.ready : null;
+    const subscription = registration?.pushManager ? await registration.pushManager.getSubscription() : null;
+    if (subscription) {
+      await removePushSubscription(subscription);
+      await subscription.unsubscribe();
+    }
+    uiState.notificationStatus = "Notifications are disabled on this device.";
+  } catch (error) {
+    console.error("Notification disable failed:", error);
+    uiState.notificationStatus = "Could not disable notifications. Try again from the Home Screen app.";
+  }
+  renderDrawer();
+}
+
+async function savePushSubscription(subscription) {
+  const response = await fetch(PUSH_SUBSCRIPTION_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${authState.session.access_token}`
+    },
+    body: JSON.stringify({
+      subscription: subscription.toJSON(),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || ""
+    })
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || "Could not save this device for notifications.");
+  }
+}
+
+async function removePushSubscription(subscription) {
+  if (!authState.session?.access_token) return;
+  await fetch(PUSH_SUBSCRIPTION_ENDPOINT, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${authState.session.access_token}`
+    },
+    body: JSON.stringify({ endpoint: subscription.endpoint })
+  }).catch(() => undefined);
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map((character) => character.charCodeAt(0)));
+}
+
+function formatPushError(error) {
+  const message = String(error?.message || error || "");
+  if (/denied|permission/i.test(message)) {
+    return "Notifications are blocked for this app in iOS Settings.";
+  }
+  if (/vapid|applicationServerKey|subscribe/i.test(message)) {
+    return "Notification keys are not ready yet. Check Vercel VAPID env vars.";
+  }
+  return message || "Notification setup failed.";
 }
 
 async function changeCurrentPassword() {
