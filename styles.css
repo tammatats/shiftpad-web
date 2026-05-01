@@ -296,12 +296,13 @@ h2 {
 }
 
 .side-drawer {
+  --drawer-padding: 18px;
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
   width: min(390px, calc(100vw - 28px));
-  padding: 18px;
+  padding: var(--drawer-padding);
   overflow-y: auto;
   background: rgba(255, 252, 248, 0.98);
   border-right: 1px solid var(--line);
@@ -323,10 +324,6 @@ h2 {
   transform: translateX(102%);
 }
 
-.drawer-head-right {
-  justify-content: space-between;
-}
-
 .drawer-head,
 .custom-tag-row,
 .setting-field,
@@ -340,6 +337,10 @@ h2 {
   justify-content: flex-start;
   gap: 12px;
   margin-bottom: 18px;
+}
+
+.drawer-head.drawer-head-right {
+  justify-content: space-between;
 }
 
 .drawer-close {
