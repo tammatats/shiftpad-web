@@ -14,7 +14,7 @@ const KIND_META = {
 
 const refs = {
   menuBtn: document.getElementById("menu-btn"),
-  addWardBtn: document.getElementById("add-ward-btn"),
+  wardOptionsBtn: document.getElementById("ward-options-btn"),
   newNoteBtn: document.getElementById("new-note-btn"),
   authGate: document.getElementById("auth-gate"),
   authForm: document.getElementById("auth-form"),
@@ -63,6 +63,7 @@ const uiState = {
   editorTapScroll: null,
   suppressNextDeleteInput: false,
   drawerOpen: false,
+  wardOptionsOpen: false,
   drawerSections: new Set(),
   pendingTagInsertions: new Map(),
   notificationStatus: ""
@@ -131,13 +132,21 @@ function bindEvents() {
 
   refs.menuBtn?.addEventListener("click", () => {
     uiState.drawerOpen = true;
-    renderDrawer({ animateOpen: true });
+    uiState.wardOptionsOpen = false;
+    renderDrawer({ animateSide: "left" });
+  });
+
+  refs.wardOptionsBtn?.addEventListener("click", () => {
+    uiState.wardOptionsOpen = true;
+    uiState.drawerOpen = false;
+    renderDrawer({ animateSide: "right" });
   });
 
   refs.drawerRoot?.addEventListener("click", async (event) => {
     const close = event.target.closest("[data-drawer-close]");
     if (close) {
       uiState.drawerOpen = false;
+      uiState.wardOptionsOpen = false;
       renderDrawer();
       return;
     }
@@ -162,9 +171,9 @@ function bindEvents() {
   });
 
   refs.drawerRoot?.addEventListener("change", (event) => {
-    const singleWardSetting = event.target.closest("[data-single-ward-setting]");
-    if (singleWardSetting) {
-      updateSingleWardMode(singleWardSetting.checked);
+    const multipleWardSetting = event.target.closest("[data-multiple-wards-setting]");
+    if (multipleWardSetting) {
+      updateMultipleWardsMode(multipleWardSetting.checked);
       return;
     }
 
@@ -215,18 +224,6 @@ function bindEvents() {
     if (!editor) return;
     rememberEditorTapScroll();
   }, { passive: true });
-
-  refs.addWardBtn.addEventListener("click", () => {
-    const ward = createWard(getNextWardName(), WARD_COLORS[state.wards.length % WARD_COLORS.length]);
-    ward.notes.push(createNote(`${ward.name} handover`, "New patient list"));
-
-    state.wards.push(ward);
-    state.selectedWardId = ward.id;
-    state.selectedNoteId = ward.notes[0].id;
-    state.preferences.singleWardMode = false;
-    saveState();
-    render();
-  });
 
   refs.wardCollapseBtn.addEventListener("click", () => {
     state.preferences.wardListCollapsed = !state.preferences.wardListCollapsed;
@@ -535,12 +532,14 @@ function render() {
   refreshMobileTagDock();
 }
 
-function renderDrawer({ animateOpen = false } = {}) {
+function renderDrawer({ animateSide = "" } = {}) {
   if (!refs.drawerRoot) return;
   const open = Boolean(uiState.drawerOpen);
+  const wardOptionsOpen = Boolean(uiState.wardOptionsOpen);
   refs.menuBtn?.setAttribute("aria-expanded", String(open));
+  refs.wardOptionsBtn?.setAttribute("aria-expanded", String(wardOptionsOpen));
   refs.drawerRoot.innerHTML = `
-    <div class="drawer-layer ${open && !animateOpen ? "is-open" : ""}" aria-hidden="${open ? "false" : "true"}">
+    <div class="drawer-layer ${open && animateSide !== "left" ? "is-open" : ""}" data-drawer-side="left" aria-hidden="${open ? "false" : "true"}">
       <button class="drawer-scrim" type="button" data-drawer-close="true" aria-label="Close menu"></button>
       <aside class="side-drawer" aria-label="App menu">
         <div class="drawer-head">
@@ -558,10 +557,32 @@ function renderDrawer({ animateOpen = false } = {}) {
         ${renderSettingsMenu()}
       </aside>
     </div>
+    <div class="drawer-layer drawer-layer-right ${wardOptionsOpen && animateSide !== "right" ? "is-open" : ""}" data-drawer-side="right" aria-hidden="${wardOptionsOpen ? "false" : "true"}">
+      <button class="drawer-scrim" type="button" data-drawer-close="true" aria-label="Close ward options"></button>
+      <aside class="side-drawer side-drawer-right" aria-label="Ward options">
+        <div class="drawer-head drawer-head-right">
+          <div>
+            <p class="section-kicker">Wards</p>
+            <h2>Ward options</h2>
+          </div>
+          <button class="drawer-close menu-btn" type="button" data-drawer-close="true" aria-label="Close ward options">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+        </div>
+        ${renderWardOptionsMenu()}
+      </aside>
+    </div>
   `;
-  if (open && animateOpen) {
+  if (animateSide) {
     window.requestAnimationFrame(() => {
-      refs.drawerRoot?.querySelector(".drawer-layer")?.classList.add("is-open");
+      refs.drawerRoot?.querySelector(`[data-drawer-side="${animateSide}"]`)?.classList.add("is-open");
+    });
+  }
+  if (wardOptionsOpen && !getPreferences().singleWardMode) {
+    window.requestAnimationFrame(() => {
+      refs.drawerRoot?.querySelector(".ward-add-reveal")?.classList.add("is-open");
     });
   }
 }
@@ -631,7 +652,6 @@ function renderSettingsMenu() {
         </div>
       </div>
     </section>
-    ${renderSingleWardToggleSection(preferences)}
     <section class="drawer-section danger-zone ${resetOpen ? "is-open" : ""}">
       ${renderDrawerSectionToggle("reset", "Reset", resetOpen)}
       <div class="drawer-panel">
@@ -641,21 +661,27 @@ function renderSettingsMenu() {
   `;
 }
 
-function renderSingleWardToggleSection(preferences) {
+function renderWardOptionsMenu() {
+  const preferences = getPreferences();
+  const multipleWardsEnabled = !preferences.singleWardMode;
   return `
-    <section class="drawer-section single-ward-section">
-      <label class="drawer-section-toggle drawer-direct-toggle" for="drawer-single-ward-toggle">
-        <span>Single-ward shift</span>
+    <section class="drawer-section multiple-wards-section">
+      <label class="drawer-section-toggle drawer-direct-toggle" for="multiple-wards-toggle">
+        <span>Multiple wards</span>
+        <strong>${multipleWardsEnabled ? "On" : "Off"}</strong>
         <span class="switch">
           <input
-            id="drawer-single-ward-toggle"
+            id="multiple-wards-toggle"
             type="checkbox"
-            data-single-ward-setting="true"
-            ${preferences.singleWardMode ? "checked" : ""}
+            data-multiple-wards-setting="true"
+            ${multipleWardsEnabled ? "checked" : ""}
           />
           <span class="switch-track"></span>
         </span>
       </label>
+      <div class="ward-add-reveal ${multipleWardsEnabled ? "is-open" : ""}">
+        <button class="accent-btn ward-add-btn" type="button" data-drawer-action="add-ward" ${multipleWardsEnabled ? "" : "disabled"}>Add ward</button>
+      </div>
     </section>
   `;
 }
@@ -1778,6 +1804,11 @@ async function handleDrawerAction(action) {
     return;
   }
 
+  if (action === "add-ward") {
+    addWard();
+    return;
+  }
+
   if (action === "reset-notes") {
     resetAllNotes();
   }
@@ -1965,12 +1996,25 @@ function resetAllNotes() {
   uiState.savedSelection = null;
   uiState.mobileTagsOpen = false;
   uiState.drawerOpen = false;
+  uiState.wardOptionsOpen = false;
   saveState();
   render();
 }
 
-function updateSingleWardMode(enabled) {
-  state.preferences.singleWardMode = Boolean(enabled);
+function addWard() {
+  const ward = createWard(getNextWardName(), WARD_COLORS[state.wards.length % WARD_COLORS.length]);
+  ward.notes.push(createNote(`${ward.name} handover`, "New patient list"));
+
+  state.wards.push(ward);
+  state.selectedWardId = ward.id;
+  state.selectedNoteId = ward.notes[0].id;
+  state.preferences.singleWardMode = false;
+  saveState();
+  render();
+}
+
+function updateMultipleWardsMode(enabled) {
+  state.preferences.singleWardMode = !enabled;
   saveState();
   render();
 }

@@ -196,6 +196,11 @@ button {
 
 .app-title {
   min-width: 0;
+  flex: 1;
+}
+
+.header-options-btn {
+  margin-left: auto;
 }
 
 .eyebrow,
@@ -296,6 +301,19 @@ h2 {
 
 .drawer-layer.is-open .side-drawer {
   transform: translateX(0);
+}
+
+.side-drawer-right {
+  left: auto;
+  right: 0;
+  border-right: 0;
+  border-left: 1px solid var(--line);
+  box-shadow: -24px 0 64px rgba(72, 46, 24, 0.2);
+  transform: translateX(102%);
+}
+
+.drawer-head-right {
+  justify-content: space-between;
 }
 
 .drawer-head,
@@ -586,8 +604,53 @@ button:disabled {
   cursor: pointer;
 }
 
+.drawer-direct-toggle strong {
+  margin-left: auto;
+}
+
 .drawer-direct-toggle .switch {
   flex: 0 0 auto;
+}
+
+.multiple-wards-section {
+  padding-bottom: 12px;
+}
+
+.ward-add-reveal {
+  display: grid;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition:
+    max-height 220ms ease,
+    opacity 180ms ease,
+    transform 220ms ease;
+}
+
+.ward-add-reveal.is-open {
+  max-height: 72px;
+  opacity: 1;
+  transform: translateY(0);
+  animation: ward-add-reveal 220ms ease;
+}
+
+.ward-add-btn {
+  width: 100%;
+  margin-top: 8px;
+}
+
+@keyframes ward-add-reveal {
+  from {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    max-height: 72px;
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .accent-btn,
@@ -1552,7 +1615,7 @@ select:focus {
 
   .toolbar-actions {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .toolbar-actions .accent-btn,
@@ -1675,7 +1738,7 @@ select:focus {
 
   .app-header {
     display: grid;
-    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
     gap: 10px;
     align-items: center;
   }
@@ -1745,7 +1808,7 @@ select:focus {
   }
 
   .toolbar-actions {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
   }
 
