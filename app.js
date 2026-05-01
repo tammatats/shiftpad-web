@@ -28,9 +28,6 @@ const refs = {
   logoutBtn: document.getElementById("logout-btn"),
   accountLabel: document.getElementById("account-label"),
   syncStatus: document.getElementById("sync-status"),
-  wardRail: document.getElementById("ward-rail"),
-  wardCollapseBtn: document.getElementById("ward-collapse-btn"),
-  wardList: document.getElementById("ward-list"),
   notesTabBtn: document.getElementById("notes-tab-btn"),
   timelineTabBtn: document.getElementById("timeline-tab-btn"),
   notesView: document.getElementById("notes-view"),
@@ -39,7 +36,6 @@ const refs = {
   drawerRoot: document.getElementById("drawer-root"),
   mobileTagRoot: document.getElementById("mobile-tag-root"),
   timelineRoot: document.getElementById("timeline-root"),
-  timelineScope: document.getElementById("timeline-scope"),
   workspace: document.querySelector(".workspace")
 };
 
@@ -59,6 +55,8 @@ const uiState = {
   editorFocused: false,
   mobileTagsOpen: false,
   savedSelection: null,
+  bedIndexVisible: false,
+  bedIndexTimer: null,
   bedFinalizeTimer: null,
   editorTapScroll: null,
   suppressNextDeleteInput: false,
@@ -163,6 +161,18 @@ function bindEvents() {
       return;
     }
 
+    const wardScope = event.target.closest("[data-ward-scope]");
+    if (wardScope) {
+      selectWardScope(wardScope.dataset.wardScope);
+      return;
+    }
+
+    const wardButton = event.target.closest("[data-ward-id]");
+    if (wardButton) {
+      selectWardFromDrawer(wardButton.dataset.wardId);
+      return;
+    }
+
     const removeCustomTag = event.target.closest("[data-remove-custom-tag]");
     if (removeCustomTag) {
       removeCustomTagDefinition(removeCustomTag.dataset.removeCustomTag);
@@ -225,12 +235,6 @@ function bindEvents() {
     rememberEditorTapScroll();
   }, { passive: true });
 
-  refs.wardCollapseBtn.addEventListener("click", () => {
-    state.preferences.wardListCollapsed = !state.preferences.wardListCollapsed;
-    saveState();
-    renderWardRail();
-  });
-
   [refs.newNoteBtn].filter(Boolean).forEach((button) => {
     button.addEventListener("click", () => {
       const ward = getCurrentWard();
@@ -259,19 +263,13 @@ function bindEvents() {
     render();
   });
 
-  refs.wardList.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-ward-id]");
-    if (!button) return;
-
-    state.selectedWardId = button.dataset.wardId;
-    const ward = getCurrentWard();
-    state.selectedNoteId = ward?.notes[0]?.id || "";
-    state.activeView = "notes";
-    saveState();
-    render();
-  });
-
   refs.editorRoot.addEventListener("click", (event) => {
+    const bedJump = event.target.closest?.("[data-bed-jump]");
+    if (bedJump) {
+      jumpToBedInEditor(bedJump.dataset.bedJump);
+      return;
+    }
+
     const quickButton = event.target.closest("[data-quick-tag]");
     if (quickButton) {
       handleQuickTag(quickButton.dataset.quickTag);
@@ -298,6 +296,7 @@ function bindEvents() {
     if (!event.target.closest?.("#notepad-editor")) return;
     const editor = event.target.closest("#notepad-editor");
     uiState.editorFocused = true;
+    hideBedIndex();
     syncMobileTagDock();
     rememberEditorSelection(editor);
     stabilizeEditorTapScroll(editor);
@@ -325,6 +324,7 @@ function bindEvents() {
     note.updatedAt = Date.now();
     rememberEditorSelection(editor);
     saveState();
+    hideBedIndex();
     requestAnimationFrame(() => keepEditorCaretVisible(editor));
     return;
   });
@@ -396,6 +396,7 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("keydown", (event) => {
     if (event.target.closest?.("#notepad-editor")) {
+      hideBedIndex();
       handleNotepadKeydown(event);
     }
   });
@@ -494,15 +495,6 @@ function bindEvents() {
     }
   });
 
-  refs.timelineScope.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-scope]");
-    if (!button) return;
-
-    state.timelineScope = button.dataset.scope;
-    saveState();
-    renderTimeline();
-  });
-
   document.addEventListener("selectionchange", () => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
     if (!editor) return;
@@ -511,21 +503,20 @@ function bindEvents() {
   });
 
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
+  window.addEventListener("scroll", showBedIndexDuringScroll, { passive: true });
 }
 
 function render() {
   ensureSelection();
   renderAuthUi();
   refs.workspace.classList.toggle("single-ward", Boolean(state.preferences.singleWardMode));
-  refs.wardRail.classList.toggle("hidden", Boolean(state.preferences.singleWardMode));
-  refs.timelineView.classList.toggle("single-ward-summary", Boolean(state.preferences.singleWardMode));
+  refs.timelineView.classList.toggle("single-ward-summary", state.timelineScope === "active");
 
   refs.notesTabBtn.classList.toggle("is-active", state.activeView === "notes");
   refs.timelineTabBtn.classList.toggle("is-active", state.activeView === "timeline");
   refs.notesView.classList.toggle("hidden", state.activeView !== "notes");
   refs.timelineView.classList.toggle("hidden", state.activeView !== "timeline");
 
-  renderWardRail();
   renderEditor();
   renderTimeline();
   renderDrawer();
@@ -664,6 +655,7 @@ function renderSettingsMenu() {
 function renderWardOptionsMenu() {
   const preferences = getPreferences();
   const multipleWardsEnabled = !preferences.singleWardMode;
+  const allSelected = state.timelineScope !== "active";
   return `
     <section class="drawer-section multiple-wards-section">
       <label class="drawer-section-toggle drawer-direct-toggle" for="multiple-wards-toggle">
@@ -683,6 +675,41 @@ function renderWardOptionsMenu() {
         <button class="accent-btn ward-add-btn" type="button" data-drawer-action="add-ward" ${multipleWardsEnabled ? "" : "disabled"}>Add ward</button>
       </div>
     </section>
+    <section class="drawer-section drawer-ward-list-section">
+      <div class="drawer-section-title">
+        <span>Active lists</span>
+      </div>
+      <div class="ward-list drawer-ward-list">
+        <button
+          class="ward-tab all-wards-tab ${allSelected ? "is-active" : ""}"
+          type="button"
+          data-ward-scope="all"
+        >
+          <div class="ward-tab-head">
+            <span class="ward-dot all-ward-dot"></span>
+            <strong>All wards</strong>
+          </div>
+        </button>
+        ${state.wards.map(renderDrawerWardButton).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderDrawerWardButton(ward) {
+  const active = state.timelineScope === "active" && ward.id === state.selectedWardId;
+  return `
+    <button
+      class="ward-tab ${active ? "is-active" : ""}"
+      type="button"
+      data-ward-id="${escapeHtml(ward.id)}"
+      style="--ward-color:${escapeHtml(ward.color)}"
+    >
+      <div class="ward-tab-head">
+        <span class="ward-dot"></span>
+        <strong>${escapeHtml(ward.name)}</strong>
+      </div>
+    </button>
   `;
 }
 
@@ -777,39 +804,10 @@ function renderCustomTagSettingRow(tag) {
   `;
 }
 
-function renderWardRail() {
-  const collapsed = Boolean(state.preferences.wardListCollapsed);
-  refs.wardRail.classList.toggle("is-collapsed", collapsed);
-  refs.wardCollapseBtn.textContent = collapsed ? "Expand" : "Collapse";
-  refs.wardCollapseBtn.setAttribute("aria-expanded", String(!collapsed));
-
-  if (collapsed) {
-    refs.wardList.innerHTML = "";
-    return;
-  }
-
-  refs.wardList.innerHTML = state.wards
-    .map((ward) => {
-      return `
-        <button
-          class="ward-tab ${ward.id === state.selectedWardId ? "is-active" : ""}"
-          type="button"
-          data-ward-id="${escapeHtml(ward.id)}"
-          style="--ward-color:${escapeHtml(ward.color)}"
-        >
-          <div class="ward-tab-head">
-            <span class="ward-dot"></span>
-            <strong>${escapeHtml(ward.name)}</strong>
-          </div>
-        </button>
-      `;
-    })
-    .join("");
-}
-
 function renderEditor() {
   const ward = getCurrentWard();
   const note = getCurrentNote();
+  const bedIndex = getBedIndexForNote(note);
 
   if (!ward || !note) {
     refs.editorRoot.innerHTML = `
@@ -846,6 +844,7 @@ function renderEditor() {
             aria-label="Main notepad"
             autocapitalize="sentences"
           >${documentHtml}</div>
+          ${renderBedIndexRail(bedIndex)}
         </div>
 
       </section>
@@ -861,16 +860,27 @@ function renderEditor() {
   });
 }
 
+function renderBedIndexRail(beds) {
+  if (!beds.length) return "";
+  return `
+    <div class="bed-index-rail ${uiState.bedIndexVisible ? "is-visible" : ""}" aria-label="Bed index">
+      ${beds
+        .map(
+          (bed) => `
+            <button type="button" data-bed-jump="${escapeHtml(bed)}">${escapeHtml(bed)}</button>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderTimeline() {
   const scope = state.timelineScope || "all";
   const summaryTab = state.summaryTab === "reminders" ? "reminders" : "beds";
-  refs.timelineScope.innerHTML = `
-    <button class="scope-pill ${scope === "active" ? "is-active" : ""}" type="button" data-scope="active">Active ward</button>
-    <button class="scope-pill ${scope === "all" ? "is-active" : ""}" type="button" data-scope="all">All wards</button>
-  `;
-
   const summary = buildSummaryGroups(scope);
   const openReminderCount = summary.timed.filter((item) => !item.entry.done).length;
+  const scopeLabel = scope === "active" ? getCurrentWard()?.name || "Selected ward" : "All wards";
 
   refs.timelineRoot.innerHTML = `
     <div class="summary-controls-row">
@@ -878,7 +888,7 @@ function renderTimeline() {
         <button class="summary-tab ${summaryTab === "beds" ? "is-active" : ""}" type="button" data-summary-tab="beds">Bed Info</button>
         <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" data-summary-tab="reminders">Reminders</button>
       </div>
-      <strong class="summary-count">${openReminderCount} open reminder${openReminderCount === 1 ? "" : "s"}</strong>
+      <strong class="summary-count">${escapeHtml(scopeLabel)} · ${openReminderCount} open reminder${openReminderCount === 1 ? "" : "s"}</strong>
     </div>
     ${summaryTab === "beds" ? renderSummaryBedSection(summary.byBed) : renderSummaryTimedSection(summary.timed)}
   `;
@@ -2013,8 +2023,31 @@ function addWard() {
   render();
 }
 
+function selectWardScope(scope) {
+  if (scope !== "all") return;
+  state.timelineScope = "all";
+  state.activeView = "timeline";
+  uiState.editorFocused = false;
+  uiState.mobileTagsOpen = false;
+  saveState();
+  render();
+}
+
+function selectWardFromDrawer(wardId) {
+  const ward = state.wards.find((item) => item.id === wardId);
+  if (!ward) return;
+  state.selectedWardId = ward.id;
+  state.selectedNoteId = ward.notes[0]?.id || "";
+  state.timelineScope = "active";
+  saveState();
+  render();
+}
+
 function updateMultipleWardsMode(enabled) {
   state.preferences.singleWardMode = !enabled;
+  if (!enabled) {
+    state.timelineScope = "active";
+  }
   saveState();
   render();
 }
@@ -2181,6 +2214,25 @@ function countBedsForWard(ward) {
     });
   });
   return beds.size;
+}
+
+function getBedIndexForNote(note) {
+  if (!note) return [];
+  const root = parseHtmlRoot(getNoteDocumentHtml(note));
+  const beds = [];
+
+  Array.from(root.childNodes).forEach((node) => {
+    if (node.nodeType !== Node.ELEMENT_NODE || !["DIV", "P"].includes(node.tagName)) return;
+    const parsed = parseLineNode(node);
+    const bedTag = parsed.tags.find((tag) => tag.type === "bed");
+    if (!bedTag) return;
+    const label = bedTag.text.replace(/^Bed\s*/i, "").trim().toUpperCase();
+    if (label && !beds.includes(label)) {
+      beds.push(label);
+    }
+  });
+
+  return beds;
 }
 
 function createWard(name, color) {
@@ -2471,6 +2523,45 @@ function addMinutesToTime(value, minutesToAdd) {
 function formatTimeFromTimestamp(timestamp) {
   const date = new Date(Number(timestamp) || Date.now());
   return formatTimeFromMinutes(date.getHours() * 60 + date.getMinutes());
+}
+
+function showBedIndexDuringScroll() {
+  if (state.activeView !== "notes" || uiState.editorFocused) return;
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  const rail = refs.editorRoot.querySelector(".bed-index-rail");
+  if (!editor || !rail) return;
+  const rect = editor.getBoundingClientRect();
+  const viewportHeight = window.visualViewport?.height || window.innerHeight;
+  if (rect.bottom < 120 || rect.top > viewportHeight - 80) return;
+
+  setBedIndexVisible(true);
+  window.clearTimeout(uiState.bedIndexTimer);
+  uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 1100);
+}
+
+function setBedIndexVisible(visible) {
+  uiState.bedIndexVisible = Boolean(visible);
+  refs.editorRoot.querySelector(".bed-index-rail")?.classList.toggle("is-visible", Boolean(visible));
+}
+
+function hideBedIndex() {
+  window.clearTimeout(uiState.bedIndexTimer);
+  setBedIndexVisible(false);
+}
+
+function jumpToBedInEditor(bedLabel) {
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  if (!editor || !bedLabel) return;
+  const target = Array.from(editor.querySelectorAll('.tag-token[data-tag="bed"]')).find((token) => {
+    const label = String(token.textContent || "").replace(/^Bed\s*/i, "").trim().toUpperCase();
+    return label === String(bedLabel).toUpperCase();
+  });
+  const line = target?.closest("div, p") || target;
+  if (!line) return;
+  line.scrollIntoView({ behavior: "smooth", block: "center" });
+  setBedIndexVisible(true);
+  window.clearTimeout(uiState.bedIndexTimer);
+  uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 900);
 }
 
 function formatClock(timestamp) {
