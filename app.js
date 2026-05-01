@@ -14,7 +14,6 @@ const KIND_META = {
 
 const refs = {
   menuBtn: document.getElementById("menu-btn"),
-  singleWardToggle: document.getElementById("single-ward-toggle"),
   addWardBtn: document.getElementById("add-ward-btn"),
   newNoteBtn: document.getElementById("new-note-btn"),
   authGate: document.getElementById("auth-gate"),
@@ -216,10 +215,6 @@ function bindEvents() {
     if (!editor) return;
     rememberEditorTapScroll();
   }, { passive: true });
-
-  refs.singleWardToggle.addEventListener("change", (event) => {
-    updateSingleWardMode(event.target.checked);
-  });
 
   refs.addWardBtn.addEventListener("click", () => {
     const ward = createWard(getNextWardName(), WARD_COLORS[state.wards.length % WARD_COLORS.length]);
@@ -524,7 +519,6 @@ function bindEvents() {
 function render() {
   ensureSelection();
   renderAuthUi();
-  refs.singleWardToggle.checked = Boolean(state.preferences.singleWardMode);
   refs.workspace.classList.toggle("single-ward", Boolean(state.preferences.singleWardMode));
   refs.wardRail.classList.toggle("hidden", Boolean(state.preferences.singleWardMode));
   refs.timelineView.classList.toggle("single-ward-summary", Boolean(state.preferences.singleWardMode));
@@ -612,7 +606,6 @@ function renderSettingsMenu() {
       ${renderDrawerSectionToggle("settings", "Settings", settingsOpen)}
       <div class="drawer-panel">
         <div class="settings-grid">
-          ${renderSingleWardSetting(preferences)}
           ${renderDelayField("time", "Time tag delay", preferences.tagDelays.time)}
           ${renderDelayField("lab", "Lab delay", preferences.tagDelays.lab)}
           ${renderDelayField("io", "I/O delay", preferences.tagDelays.io)}
@@ -638,6 +631,7 @@ function renderSettingsMenu() {
         </div>
       </div>
     </section>
+    ${renderSingleWardToggleSection(preferences)}
     <section class="drawer-section danger-zone ${resetOpen ? "is-open" : ""}">
       ${renderDrawerSectionToggle("reset", "Reset", resetOpen)}
       <div class="drawer-panel">
@@ -647,23 +641,22 @@ function renderSettingsMenu() {
   `;
 }
 
-function renderSingleWardSetting(preferences) {
+function renderSingleWardToggleSection(preferences) {
   return `
-    <label class="setting-field setting-toggle-field" for="drawer-single-ward-toggle">
-      <span>
-        Single-ward shift
-        <small>Hide the ward list and focus the summary on the selected ward.</small>
-      </span>
-      <span class="switch">
-        <input
-          id="drawer-single-ward-toggle"
-          type="checkbox"
-          data-single-ward-setting="true"
-          ${preferences.singleWardMode ? "checked" : ""}
-        />
-        <span class="switch-track"></span>
-      </span>
-    </label>
+    <section class="drawer-section single-ward-section">
+      <label class="drawer-section-toggle drawer-direct-toggle" for="drawer-single-ward-toggle">
+        <span>Single-ward shift</span>
+        <span class="switch">
+          <input
+            id="drawer-single-ward-toggle"
+            type="checkbox"
+            data-single-ward-setting="true"
+            ${preferences.singleWardMode ? "checked" : ""}
+          />
+          <span class="switch-track"></span>
+        </span>
+      </label>
+    </section>
   `;
 }
 

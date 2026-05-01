@@ -360,7 +360,7 @@ h2 {
   text-align: left;
 }
 
-.drawer-section-toggle span {
+.drawer-section-toggle > span:not(.switch) {
   font-size: 1.08rem;
   font-weight: 800;
 }
@@ -454,14 +454,6 @@ button:disabled {
   line-height: 1.3;
 }
 
-.setting-toggle-field {
-  align-items: center;
-}
-
-.setting-toggle-field .switch {
-  flex: 0 0 auto;
-}
-
 .setting-field input,
 .custom-tag-form input[type="number"],
 .custom-tag-row input[type="number"] {
@@ -531,7 +523,7 @@ button:disabled {
   border-top: 1px solid rgba(96, 76, 55, 0.1);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 14px;
 }
 
@@ -541,22 +533,12 @@ button:disabled {
   gap: 10px;
 }
 
-.switch-card,
 .ward-rail,
 .note-stack-panel,
 .timeline-panel {
   background: var(--panel);
   border: 1px solid var(--line);
   box-shadow: var(--shadow-md);
-}
-
-.switch-card {
-  display: inline-flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  color: var(--ink);
 }
 
 .switch {
@@ -598,6 +580,14 @@ button:disabled {
 
 .switch input:checked + .switch-track::after {
   transform: translateX(22px);
+}
+
+.drawer-direct-toggle {
+  cursor: pointer;
+}
+
+.drawer-direct-toggle .switch {
+  flex: 0 0 auto;
 }
 
 .accent-btn,
@@ -1560,10 +1550,6 @@ select:focus {
     align-items: stretch;
   }
 
-  .app-toolbar .switch-card {
-    justify-content: space-between;
-  }
-
   .toolbar-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1744,11 +1730,6 @@ select:focus {
     gap: 8px;
   }
 
-  .switch-card {
-    min-height: 44px;
-    padding: 8px 10px;
-  }
-
   .switch {
     width: 48px;
     height: 28px;
@@ -1779,7 +1760,6 @@ select:focus {
     border-radius: 22px;
   }
 
-  .switch-card,
   .note-stack-panel,
   .timeline-panel,
   .ward-rail {
