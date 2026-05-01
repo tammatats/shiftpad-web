@@ -163,6 +163,12 @@ function bindEvents() {
   });
 
   refs.drawerRoot?.addEventListener("change", (event) => {
+    const singleWardSetting = event.target.closest("[data-single-ward-setting]");
+    if (singleWardSetting) {
+      updateSingleWardMode(singleWardSetting.checked);
+      return;
+    }
+
     const delayInput = event.target.closest("[data-tag-delay]");
     if (delayInput) {
       updateTagDelay(delayInput.dataset.tagDelay, delayInput.value);
@@ -212,9 +218,7 @@ function bindEvents() {
   }, { passive: true });
 
   refs.singleWardToggle.addEventListener("change", (event) => {
-    state.preferences.singleWardMode = event.target.checked;
-    saveState();
-    render();
+    updateSingleWardMode(event.target.checked);
   });
 
   refs.addWardBtn.addEventListener("click", () => {
@@ -608,6 +612,7 @@ function renderSettingsMenu() {
       ${renderDrawerSectionToggle("settings", "Settings", settingsOpen)}
       <div class="drawer-panel">
         <div class="settings-grid">
+          ${renderSingleWardSetting(preferences)}
           ${renderDelayField("time", "Time tag delay", preferences.tagDelays.time)}
           ${renderDelayField("lab", "Lab delay", preferences.tagDelays.lab)}
           ${renderDelayField("io", "I/O delay", preferences.tagDelays.io)}
@@ -639,6 +644,26 @@ function renderSettingsMenu() {
         <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Reset all notes</button>
       </div>
     </section>
+  `;
+}
+
+function renderSingleWardSetting(preferences) {
+  return `
+    <label class="setting-field setting-toggle-field" for="drawer-single-ward-toggle">
+      <span>
+        Single-ward shift
+        <small>Hide the ward list and focus the summary on the selected ward.</small>
+      </span>
+      <span class="switch">
+        <input
+          id="drawer-single-ward-toggle"
+          type="checkbox"
+          data-single-ward-setting="true"
+          ${preferences.singleWardMode ? "checked" : ""}
+        />
+        <span class="switch-track"></span>
+      </span>
+    </label>
   `;
 }
 
@@ -1947,6 +1972,12 @@ function resetAllNotes() {
   uiState.savedSelection = null;
   uiState.mobileTagsOpen = false;
   uiState.drawerOpen = false;
+  saveState();
+  render();
+}
+
+function updateSingleWardMode(enabled) {
+  state.preferences.singleWardMode = Boolean(enabled);
   saveState();
   render();
 }

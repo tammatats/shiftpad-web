@@ -447,6 +447,21 @@ button:disabled {
   font-weight: 700;
 }
 
+.setting-field small {
+  display: block;
+  margin-top: 3px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.setting-toggle-field {
+  align-items: center;
+}
+
+.setting-toggle-field .switch {
+  flex: 0 0 auto;
+}
+
 .setting-field input,
 .custom-tag-form input[type="number"],
 .custom-tag-row input[type="number"] {
