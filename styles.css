@@ -168,10 +168,20 @@ button {
 }
 
 .app-header {
+  position: sticky;
+  top: calc(env(safe-area-inset-top) + var(--viewport-offset-top) + 8px);
+  z-index: 90;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 18px;
+  padding: 6px;
+  margin: -6px;
+  border-radius: 20px;
+  background: rgba(255, 252, 248, 0.82);
+  box-shadow: 0 10px 26px rgba(72, 46, 24, 0.1);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .menu-btn {
@@ -184,6 +194,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 252, 248, 0.8);
+  box-shadow: 0 8px 18px rgba(72, 46, 24, 0.1);
 }
 
 .menu-btn span {
@@ -1062,7 +1073,7 @@ select:focus {
 
 .bed-index-rail {
   position: fixed;
-  top: 50%;
+  top: calc(var(--viewport-offset-top) + 50vh);
   right: calc(env(safe-area-inset-right) + 12px);
   z-index: 95;
   display: grid;
@@ -1806,6 +1817,10 @@ select:focus {
     grid-template-columns: 40px minmax(0, 1fr) 40px;
     gap: 10px;
     align-items: center;
+    top: calc(env(safe-area-inset-top) + var(--viewport-offset-top) + 6px);
+    padding: 4px;
+    margin: -4px;
+    border-radius: 18px;
   }
 
   .menu-btn {
