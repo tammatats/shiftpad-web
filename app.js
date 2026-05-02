@@ -2881,6 +2881,7 @@ function insertTagIntoEditor(editor, tag) {
     )}">${escapeHtml(label)}</span>&nbsp;`
   );
   const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
+  rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
   placeCaretAfterNode(inserted, true);
 }
 
@@ -3190,6 +3191,16 @@ function getFreshFinalizedTagForDelete(editor, inputType) {
   if (!isNodeInsideEditor(editor, selection.anchorNode)) return null;
 
   const searchBackward = inputType !== "deleteContentForward";
+  return (
+    getFreshFinalizedTagNearSelection(editor, searchBackward) ||
+    getFreshFinalizedTagNearSelection(editor, !searchBackward)
+  );
+}
+
+function getFreshFinalizedTagNearSelection(editor, searchBackward) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return null;
+
   let node = selection.anchorNode;
   let offset = selection.anchorOffset;
 
