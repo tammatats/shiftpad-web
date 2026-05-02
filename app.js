@@ -62,6 +62,7 @@ const uiState = {
   suppressNextDeleteInput: false,
   drawerOpen: false,
   wardOptionsOpen: false,
+  drawerCloseTimer: null,
   drawerSections: new Set(),
   animateWardAdd: false,
   pendingTagInsertions: new Map(),
@@ -130,12 +131,14 @@ function bindEvents() {
   });
 
   refs.menuBtn?.addEventListener("click", () => {
+    clearDrawerCloseTimer();
     uiState.drawerOpen = true;
     uiState.wardOptionsOpen = false;
     renderDrawer({ animateSide: "left" });
   });
 
   refs.wardOptionsBtn?.addEventListener("click", () => {
+    clearDrawerCloseTimer();
     uiState.wardOptionsOpen = true;
     uiState.drawerOpen = false;
     renderDrawer({ animateSide: "right" });
@@ -144,9 +147,7 @@ function bindEvents() {
   refs.drawerRoot?.addEventListener("click", async (event) => {
     const close = event.target.closest("[data-drawer-close]");
     if (close) {
-      uiState.drawerOpen = false;
-      uiState.wardOptionsOpen = false;
-      renderDrawer();
+      closeDrawersWithAnimation();
       return;
     }
 
@@ -527,6 +528,7 @@ function render() {
 
 function renderDrawer({ animateSide = "" } = {}) {
   if (!refs.drawerRoot) return;
+  clearDrawerCloseTimer();
   const open = Boolean(uiState.drawerOpen);
   const wardOptionsOpen = Boolean(uiState.wardOptionsOpen);
   refs.menuBtn?.setAttribute("aria-expanded", String(open));
@@ -579,6 +581,37 @@ function renderDrawer({ animateSide = "" } = {}) {
       refs.drawerRoot?.querySelector(".ward-add-reveal")?.classList.remove("should-animate");
     }, 260);
   }
+}
+
+function clearDrawerCloseTimer() {
+  if (!uiState.drawerCloseTimer) return;
+  window.clearTimeout(uiState.drawerCloseTimer);
+  uiState.drawerCloseTimer = null;
+}
+
+function closeDrawersWithAnimation() {
+  if (!refs.drawerRoot) return;
+  const openLayers = [...refs.drawerRoot.querySelectorAll(".drawer-layer.is-open")];
+  uiState.drawerOpen = false;
+  uiState.wardOptionsOpen = false;
+  refs.menuBtn?.setAttribute("aria-expanded", "false");
+  refs.wardOptionsBtn?.setAttribute("aria-expanded", "false");
+
+  if (!openLayers.length) {
+    renderDrawer();
+    return;
+  }
+
+  openLayers.forEach((layer) => {
+    layer.classList.remove("is-open");
+    layer.setAttribute("aria-hidden", "true");
+  });
+
+  clearDrawerCloseTimer();
+  uiState.drawerCloseTimer = window.setTimeout(() => {
+    uiState.drawerCloseTimer = null;
+    renderDrawer();
+  }, 240);
 }
 
 function renderAccountMenu() {

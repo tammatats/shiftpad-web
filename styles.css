@@ -143,13 +143,15 @@ button {
   max-width: 100vw;
   padding: 22px;
   display: grid;
-  place-items: center;
+  justify-items: center;
+  align-items: start;
   overflow-x: clip;
 }
 
 .phone-frame {
   width: min(1320px, 100%);
   max-width: 100%;
+  min-height: calc(100dvh - 44px);
   border-radius: 40px;
   padding: 22px;
   background:
@@ -1917,6 +1919,7 @@ select:focus {
   }
 
   .phone-frame {
+    min-height: calc(100dvh - 24px);
     padding: 10px;
     border-radius: 22px;
   }
