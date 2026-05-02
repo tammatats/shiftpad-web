@@ -100,12 +100,16 @@ function initMobileViewportDock() {
 
   const requestViewportOffsetUpdate = () => {
     window.cancelAnimationFrame(rafId);
-    rafId = window.requestAnimationFrame(updateViewportOffset);
+    rafId = window.requestAnimationFrame(() => {
+      updateViewportOffset();
+      positionMobileTagDock();
+    });
   };
 
   requestViewportOffsetUpdate();
   window.visualViewport?.addEventListener("resize", requestViewportOffsetUpdate);
   window.visualViewport?.addEventListener("scroll", requestViewportOffsetUpdate);
+  window.addEventListener("scroll", requestViewportOffsetUpdate, { passive: true });
   window.addEventListener("focusin", requestViewportOffsetUpdate);
   window.addEventListener("focusout", () => {
     window.setTimeout(requestViewportOffsetUpdate, 80);
@@ -1438,6 +1442,34 @@ function syncMobileTagDock() {
   dock.classList.toggle("is-open", isOpen);
   dock.setAttribute("aria-hidden", String(!shouldShow));
   dock.querySelector("[data-mobile-tag-toggle]")?.setAttribute("aria-expanded", String(isOpen));
+  window.requestAnimationFrame(positionMobileTagDock);
+}
+
+function positionMobileTagDock() {
+  const dock = refs.mobileTagRoot?.querySelector("[data-mobile-tag-dock]");
+  if (!dock) return;
+
+  if (!isCompactMobileLayout() || !dock.classList.contains("is-visible")) {
+    dock.style.removeProperty("--mobile-tag-top");
+    dock.style.removeProperty("--mobile-tag-left");
+    dock.style.removeProperty("--mobile-tag-width");
+    return;
+  }
+
+  const viewport = window.visualViewport;
+  const compact = window.matchMedia("(max-width: 560px)").matches;
+  const marginX = compact ? 10 : 12;
+  const marginBottom = compact ? 6 : 8;
+  const visualLeft = viewport?.offsetLeft || 0;
+  const visualTop = viewport?.offsetTop || 0;
+  const visualWidth = viewport?.width || window.innerWidth;
+  const visualHeight = viewport?.height || window.innerHeight;
+  const dockHeight = dock.offsetHeight || 44;
+  const top = Math.max(0, visualTop + visualHeight - dockHeight - marginBottom);
+
+  dock.style.setProperty("--mobile-tag-left", `${Math.max(0, visualLeft + marginX)}px`);
+  dock.style.setProperty("--mobile-tag-width", `${Math.max(0, visualWidth - marginX * 2)}px`);
+  dock.style.setProperty("--mobile-tag-top", `${top}px`);
 }
 
 function refreshMobileTagDock() {
