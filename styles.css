@@ -1726,8 +1726,8 @@ select:focus {
   .mobile-tag-dock {
     display: flex;
     position: fixed;
-    left: var(--mobile-tag-left, 12px);
-    top: var(--mobile-tag-top, auto);
+    left: 0;
+    top: 0;
     right: auto;
     bottom: auto;
     width: var(--mobile-tag-width, calc(100vw - 24px));
@@ -1738,8 +1738,8 @@ select:focus {
     opacity: 0;
     pointer-events: none;
     visibility: hidden;
-    transform: translate3d(0, 0, 0);
-    will-change: top, left, width;
+    transform: translate3d(var(--mobile-tag-x, 12px), var(--mobile-tag-y, calc(100dvh - 56px)), 0);
+    will-change: transform;
     transition: opacity 100ms ease;
   }
 
@@ -2068,10 +2068,12 @@ select:focus {
   }
 
   .mobile-tag-dock {
-    left: var(--mobile-tag-left, 10px);
+    left: 0;
+    top: 0;
     right: auto;
     bottom: auto;
     width: var(--mobile-tag-width, calc(100vw - 20px));
+    transform: translate3d(var(--mobile-tag-x, 10px), var(--mobile-tag-y, calc(100dvh - 52px)), 0);
   }
 
   .mobile-tag-tray {

@@ -1450,8 +1450,8 @@ function positionMobileTagDock() {
   if (!dock) return;
 
   if (!isCompactMobileLayout() || !dock.classList.contains("is-visible")) {
-    dock.style.removeProperty("--mobile-tag-top");
-    dock.style.removeProperty("--mobile-tag-left");
+    dock.style.removeProperty("--mobile-tag-x");
+    dock.style.removeProperty("--mobile-tag-y");
     dock.style.removeProperty("--mobile-tag-width");
     return;
   }
@@ -1460,16 +1460,23 @@ function positionMobileTagDock() {
   const compact = window.matchMedia("(max-width: 560px)").matches;
   const marginX = compact ? 10 : 12;
   const marginBottom = compact ? 6 : 8;
-  const visualLeft = viewport?.offsetLeft || 0;
-  const visualTop = viewport?.offsetTop || 0;
-  const visualWidth = viewport?.width || window.innerWidth;
-  const visualHeight = viewport?.height || window.innerHeight;
-  const dockHeight = dock.offsetHeight || 44;
-  const top = Math.max(0, visualTop + visualHeight - dockHeight - marginBottom);
+  const visualLeft = Math.round(viewport?.offsetLeft || 0);
+  const visualTop = Math.round(viewport?.offsetTop || 0);
+  const visualWidth = Math.round(viewport?.width || window.innerWidth);
+  const visualHeight = Math.round(viewport?.height || window.innerHeight);
+  const dockHeight = Math.round(dock.offsetHeight || 44);
+  const x = Math.max(0, visualLeft + marginX);
+  const y = Math.max(0, visualTop + visualHeight - dockHeight - marginBottom);
+  const width = Math.max(0, visualWidth - marginX * 2);
 
-  dock.style.setProperty("--mobile-tag-left", `${Math.max(0, visualLeft + marginX)}px`);
-  dock.style.setProperty("--mobile-tag-width", `${Math.max(0, visualWidth - marginX * 2)}px`);
-  dock.style.setProperty("--mobile-tag-top", `${top}px`);
+  setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
+  setDockStyleValue(dock, "--mobile-tag-y", `${y}px`);
+  setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
+}
+
+function setDockStyleValue(dock, property, value) {
+  if (dock.style.getPropertyValue(property) === value) return;
+  dock.style.setProperty(property, value);
 }
 
 function refreshMobileTagDock() {
