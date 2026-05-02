@@ -63,6 +63,7 @@ const uiState = {
   drawerOpen: false,
   wardOptionsOpen: false,
   drawerSections: new Set(),
+  animateWardAdd: false,
   pendingTagInsertions: new Map(),
   notificationStatus: ""
 };
@@ -183,6 +184,7 @@ function bindEvents() {
   refs.drawerRoot?.addEventListener("change", (event) => {
     const multipleWardSetting = event.target.closest("[data-multiple-wards-setting]");
     if (multipleWardSetting) {
+      uiState.animateWardAdd = multipleWardSetting.checked;
       updateMultipleWardsMode(multipleWardSetting.checked);
       return;
     }
@@ -571,10 +573,11 @@ function renderDrawer({ animateSide = "" } = {}) {
       refs.drawerRoot?.querySelector(`[data-drawer-side="${animateSide}"]`)?.classList.add("is-open");
     });
   }
-  if (wardOptionsOpen && !getPreferences().singleWardMode) {
-    window.requestAnimationFrame(() => {
-      refs.drawerRoot?.querySelector(".ward-add-reveal")?.classList.add("is-open");
-    });
+  if (uiState.animateWardAdd) {
+    window.setTimeout(() => {
+      uiState.animateWardAdd = false;
+      refs.drawerRoot?.querySelector(".ward-add-reveal")?.classList.remove("should-animate");
+    }, 260);
   }
 }
 
@@ -656,25 +659,12 @@ function renderWardOptionsMenu() {
   const preferences = getPreferences();
   const multipleWardsEnabled = !preferences.singleWardMode;
   const allSelected = state.timelineScope !== "active";
-  return `
-    <section class="drawer-section multiple-wards-section">
-      <label class="drawer-section-toggle drawer-direct-toggle" for="multiple-wards-toggle">
-        <span>Multiple wards</span>
-        <strong>${multipleWardsEnabled ? "On" : "Off"}</strong>
-        <span class="switch">
-          <input
-            id="multiple-wards-toggle"
-            type="checkbox"
-            data-multiple-wards-setting="true"
-            ${multipleWardsEnabled ? "checked" : ""}
-          />
-          <span class="switch-track"></span>
-        </span>
-      </label>
-      <div class="ward-add-reveal ${multipleWardsEnabled ? "is-open" : ""}">
-        <button class="accent-btn ward-add-btn" type="button" data-drawer-action="add-ward" ${multipleWardsEnabled ? "" : "disabled"}>Add ward</button>
-      </div>
-    </section>
+  const revealClass = [
+    "ward-add-reveal",
+    multipleWardsEnabled ? "is-open" : "",
+    uiState.animateWardAdd ? "should-animate" : ""
+  ].filter(Boolean).join(" ");
+  const wardListMarkup = multipleWardsEnabled ? `
     <section class="drawer-section drawer-ward-list-section">
       <div class="drawer-section-title">
         <span>Active lists</span>
@@ -693,6 +683,27 @@ function renderWardOptionsMenu() {
         ${state.wards.map(renderDrawerWardButton).join("")}
       </div>
     </section>
+  ` : "";
+  return `
+    <section class="drawer-section multiple-wards-section">
+      <label class="drawer-section-toggle drawer-direct-toggle" for="multiple-wards-toggle">
+        <span>Multiple wards</span>
+        <strong>${multipleWardsEnabled ? "On" : "Off"}</strong>
+        <span class="switch">
+          <input
+            id="multiple-wards-toggle"
+            type="checkbox"
+            data-multiple-wards-setting="true"
+            ${multipleWardsEnabled ? "checked" : ""}
+          />
+          <span class="switch-track"></span>
+        </span>
+      </label>
+      <div class="${revealClass}">
+        <button class="accent-btn ward-add-btn" type="button" data-drawer-action="add-ward" ${multipleWardsEnabled ? "" : "disabled"}>Add ward</button>
+      </div>
+    </section>
+    ${wardListMarkup}
   `;
 }
 

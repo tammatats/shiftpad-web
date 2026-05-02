@@ -169,7 +169,7 @@ button {
 
 .app-header {
   position: sticky;
-  top: calc(env(safe-area-inset-top) + var(--viewport-offset-top) + 8px);
+  top: calc(env(safe-area-inset-top) + 8px);
   z-index: 90;
   display: flex;
   justify-content: space-between;
@@ -203,6 +203,20 @@ button {
   height: 2px;
   border-radius: 999px;
   background: var(--ink);
+}
+
+.header-icon-btn {
+  gap: 0;
+}
+
+.header-icon {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .app-title {
@@ -644,6 +658,9 @@ button:disabled {
   max-height: 72px;
   opacity: 1;
   transform: translateY(0);
+}
+
+.ward-add-reveal.should-animate {
   animation: ward-add-reveal 220ms ease;
 }
 
@@ -1818,7 +1835,7 @@ select:focus {
     grid-template-columns: 40px minmax(0, 1fr) 40px;
     gap: 10px;
     align-items: center;
-    top: calc(env(safe-area-inset-top) + var(--viewport-offset-top) + 6px);
+    top: calc(env(safe-area-inset-top) + 6px);
     padding: 4px;
     margin: -4px;
     border-radius: 18px;
