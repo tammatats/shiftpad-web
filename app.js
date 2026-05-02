@@ -106,7 +106,6 @@ function initMobileViewportDock() {
   requestViewportOffsetUpdate();
   window.visualViewport?.addEventListener("resize", requestViewportOffsetUpdate);
   window.visualViewport?.addEventListener("scroll", requestViewportOffsetUpdate);
-  window.addEventListener("scroll", requestViewportOffsetUpdate, { passive: true });
   window.addEventListener("focusin", requestViewportOffsetUpdate);
   window.addEventListener("focusout", () => {
     window.setTimeout(requestViewportOffsetUpdate, 80);
@@ -2830,6 +2829,8 @@ function insertTagIntoEditor(editor, tag) {
     selection?.removeAllRanges();
     selection?.addRange(range);
   }
+
+  prepareLineForSingleTagInsertion(editor);
   const insertionPoint = getEditorSelectionPoint(editor);
 
   if (tag === "bed") {
@@ -2851,7 +2852,7 @@ function insertTagIntoEditor(editor, tag) {
     insertHtmlAtSelection(
       `<span class="tag-token tag-${escapeAttribute(tag)} tag-editing" data-tag="${escapeAttribute(tag)}" data-token-id="${escapeAttribute(
         tokenId
-      )}" data-done="false" data-editing="true">00.00</span>&nbsp;`
+      )}" data-done="false" data-editing="true">00.00</span>`
     );
     const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
     rememberPendingTagInsertion(tokenId, editor, insertionPoint);
@@ -2864,7 +2865,7 @@ function insertTagIntoEditor(editor, tag) {
     insertHtmlAtSelection(
       `<span class="tag-token tag-io" contenteditable="false" data-tag="io" data-token-id="${escapeAttribute(
         tokenId
-      )}" data-done="false">I/O</span>&nbsp;`
+      )}" data-done="false">I/O</span>`
     );
     const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
     rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
@@ -2878,11 +2879,52 @@ function insertTagIntoEditor(editor, tag) {
   insertHtmlAtSelection(
     `<span class="tag-token tag-${escapeAttribute(tag)}" contenteditable="false" data-tag="${escapeAttribute(tag)}" data-token-id="${escapeAttribute(
       tokenId
-    )}">${escapeHtml(label)}</span>&nbsp;`
+    )}">${escapeHtml(label)}</span>`
   );
   const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
   rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
   placeCaretAfterNode(inserted, true);
+}
+
+function prepareLineForSingleTagInsertion(editor) {
+  const selection = window.getSelection();
+  const line = getCurrentEditorLine();
+  if (!editor || !selection || !line || !isNodeInsideEditor(editor, line)) return;
+
+  const tokens = Array.from(line.querySelectorAll(".tag-token"));
+  if (!tokens.length) return;
+
+  const activeToken = getActiveTagToken();
+  const referenceToken = activeToken && line.contains(activeToken) ? activeToken : tokens[0];
+  const marker = document.createTextNode("");
+  line.insertBefore(marker, referenceToken);
+
+  tokens.forEach((token) => {
+    consumePendingTagInsertion(token);
+    removeInsertedTagSpacer(token);
+    token.remove();
+  });
+
+  if (line.firstChild?.nodeType === Node.TEXT_NODE) {
+    line.firstChild.textContent = line.firstChild.textContent.replace(/^\u00a0+/, "");
+  }
+
+  refreshLineTagClasses(line);
+  const range = document.createRange();
+  range.setStartBefore(marker);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  marker.remove();
+
+  if (isEditorLineEmpty(line)) {
+    line.innerHTML = "";
+    const emptyRange = document.createRange();
+    emptyRange.selectNodeContents(line);
+    emptyRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(emptyRange);
+  }
 }
 
 function isNodeInsideEditor(editor, node) {
