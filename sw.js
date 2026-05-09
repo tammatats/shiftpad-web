@@ -1,5 +1,15 @@
-const CACHE_NAME = "shiftpad-shell-v1";
-const SHELL_ASSETS = ["/", "/index.html", "/styles.css", "/app.js", "/manifest.webmanifest"];
+const CACHE_NAME = "shiftpad-shell-v2";
+const SHELL_ASSETS = [
+  "/",
+  "/index.html",
+  "/styles.css",
+  "/app.js",
+  "/manifest.webmanifest",
+  "/icons/icon-180.png",
+  "/icons/icon-192.png",
+  "/icons/icon-512.png"
+];
+const STATIC_ASSET_PATHS = new Set(SHELL_ASSETS.filter((path) => path !== "/" && path !== "/index.html"));
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -23,16 +33,51 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
 
-  event.respondWith(
-    fetch(request)
-      .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => undefined);
-        return response;
-      })
-      .catch(() => caches.match(request).then((cached) => cached || caches.match("/index.html")))
-  );
+  if (request.mode === "navigate") {
+    event.respondWith(networkFirst(request, "/index.html"));
+    return;
+  }
+
+  if (STATIC_ASSET_PATHS.has(url.pathname)) {
+    event.respondWith(cacheFirst(request));
+    return;
+  }
+
+  event.respondWith(networkFirst(request, "/index.html"));
 });
+
+async function cacheFirst(request) {
+  const cached = await caches.match(request);
+  if (cached) {
+    refreshCache(request);
+    return cached;
+  }
+  const response = await fetch(request);
+  await putInCache(request, response.clone());
+  return response;
+}
+
+async function networkFirst(request, fallbackPath) {
+  try {
+    const response = await fetch(request);
+    await putInCache(request, response.clone());
+    return response;
+  } catch {
+    return (await caches.match(request)) || (fallbackPath ? caches.match(fallbackPath) : undefined);
+  }
+}
+
+function refreshCache(request) {
+  fetch(request)
+    .then((response) => putInCache(request, response))
+    .catch(() => undefined);
+}
+
+async function putInCache(request, response) {
+  if (!response || !response.ok) return;
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(request, response);
+}
 
 self.addEventListener("push", (event) => {
   let data = {};

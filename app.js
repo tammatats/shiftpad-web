@@ -5,7 +5,9 @@ const WARD_COLORS = ["#f28b67", "#6ea8fe", "#6fc48d", "#b490ff", "#f0b95c", "#ff
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
 const CLOUD_SAVE_DEBOUNCE_MS = 700;
+const LOCAL_SAVE_DEBOUNCE_MS = 180;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
+const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
   lab: { label: "Lab", icon: "Lab", className: "kind-lab" },
@@ -47,6 +49,7 @@ const authState = {
   ready: false,
   configured: false,
   saveTimer: null,
+  localSaveTimer: null,
   isSaving: false,
   isHydrating: false,
   suppressCloudSave: false
@@ -508,6 +511,12 @@ function bindEvents() {
     stabilizeEditorTapScroll(editor);
   });
 
+  window.addEventListener("beforeunload", flushLocalStateSave);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      flushLocalStateSave();
+    }
+  });
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
   window.addEventListener("scroll", showBedIndexDuringScroll, { passive: true });
 }
@@ -984,8 +993,26 @@ function renderAuthUi() {
 
 async function initAuth() {
   const config = window.SHIFTPAD_PUBLIC_CONFIG || {};
-  if (!config.supabaseUrl || !config.supabaseAnonKey || !window.supabase?.createClient) {
+  if (!config.supabaseUrl || !config.supabaseAnonKey) {
     authState.ready = true;
+    renderAuthUi();
+    return;
+  }
+
+  if (!window.supabase?.createClient) {
+    try {
+      await loadSupabaseClient();
+    } catch (error) {
+      authState.ready = true;
+      setAuthMessage(formatSupabaseError(error, "Supabase client load failed."));
+      renderAuthUi();
+      return;
+    }
+  }
+
+  if (!window.supabase?.createClient) {
+    authState.ready = true;
+    setAuthMessage("Supabase client load failed.");
     renderAuthUi();
     return;
   }
@@ -1014,6 +1041,30 @@ async function initAuth() {
       setAuthMessage(formatSupabaseError(error, "Auth update failed."));
     });
   });
+}
+
+function loadSupabaseClient() {
+  if (window.supabase?.createClient) return Promise.resolve();
+  if (window.__shiftpadSupabaseLoading) return window.__shiftpadSupabaseLoading;
+
+  window.__shiftpadSupabaseLoading = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${SUPABASE_JS_URL}"]`);
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", () => reject(new Error("Could not load Supabase client.")), { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = SUPABASE_JS_URL;
+    script.async = true;
+    script.crossOrigin = "anonymous";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("Could not load Supabase client."));
+    document.head.appendChild(script);
+  });
+
+  return window.__shiftpadSupabaseLoading;
 }
 
 async function applySession(session) {
@@ -2483,10 +2534,26 @@ function normalizeState(input) {
 }
 
 function saveState({ skipCloud = false } = {}) {
-  saveLocalState();
+  scheduleLocalStateSave();
   if (!skipCloud) {
     scheduleCloudSave();
   }
+}
+
+function scheduleLocalStateSave() {
+  window.clearTimeout(authState.localSaveTimer);
+  authState.localSaveTimer = window.setTimeout(() => {
+    authState.localSaveTimer = null;
+    saveLocalState();
+  }, LOCAL_SAVE_DEBOUNCE_MS);
+}
+
+function flushLocalStateSave() {
+  if (authState.localSaveTimer) {
+    window.clearTimeout(authState.localSaveTimer);
+    authState.localSaveTimer = null;
+  }
+  saveLocalState();
 }
 
 function saveLocalState() {
