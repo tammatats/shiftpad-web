@@ -1787,6 +1787,12 @@ select:focus {
     color: #fffaf4;
   }
 
+  .mobile-tag-fab.is-cancel {
+    min-width: 46px;
+    padding: 0 16px;
+    font-size: 1.05rem;
+  }
+
   .mobile-tag-option {
     padding: 0 14px;
   }
@@ -1801,12 +1807,6 @@ select:focus {
 
   .mobile-tag-option.io {
     background: #dcecff;
-  }
-
-  .mobile-tag-option.muted {
-    grid-column: 1 / -1;
-    color: var(--muted);
-    background: rgba(245, 239, 231, 0.92);
   }
 
   .note-pad-card {

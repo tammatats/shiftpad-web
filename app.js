@@ -432,14 +432,6 @@ function bindEvents() {
       return;
     }
 
-    const close = event.target.closest("[data-mobile-tag-close]");
-    if (close) {
-      uiState.mobileTagsOpen = false;
-      restoreEditorFocusAndSelection();
-      syncMobileTagDock();
-      return;
-    }
-
     const tagButton = event.target.closest("[data-mobile-tag]");
     if (tagButton) {
       restoreEditorFocusAndSelection();
@@ -1357,10 +1349,9 @@ function renderMobileTagDock() {
         ${getAvailableQuickTags()
           .map((tag) => `<button class="mobile-tag-option ${escapeHtml(tag.className || "")}" type="button" data-mobile-tag="${escapeHtml(tag.key)}">${escapeHtml(tag.label)}</button>`)
           .join("")}
-        <button class="mobile-tag-option muted" type="button" data-mobile-tag-close="true">Cancel</button>
       </div>
-      <button class="mobile-tag-fab" type="button" data-mobile-tag-toggle="true" aria-expanded="${expanded}">
-        Tags
+      <button class="mobile-tag-fab ${uiState.mobileTagsOpen ? "is-cancel" : ""}" type="button" data-mobile-tag-toggle="true" aria-expanded="${expanded}" aria-label="${uiState.mobileTagsOpen ? "Close tag menu" : "Open tag menu"}">
+        ${uiState.mobileTagsOpen ? "X" : "Tags"}
       </button>
     </div>
   `;
@@ -1492,7 +1483,13 @@ function syncMobileTagDock() {
   dock.classList.toggle("is-visible", shouldShow);
   dock.classList.toggle("is-open", isOpen);
   dock.setAttribute("aria-hidden", String(!shouldShow));
-  dock.querySelector("[data-mobile-tag-toggle]")?.setAttribute("aria-expanded", String(isOpen));
+  const toggle = dock.querySelector("[data-mobile-tag-toggle]");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", String(isOpen));
+    toggle.setAttribute("aria-label", isOpen ? "Close tag menu" : "Open tag menu");
+    toggle.classList.toggle("is-cancel", isOpen);
+    toggle.textContent = isOpen ? "X" : "Tags";
+  }
   window.requestAnimationFrame(positionMobileTagDock);
 }
 
