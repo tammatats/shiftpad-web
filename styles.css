@@ -1788,8 +1788,6 @@ select:focus {
   }
 
   .mobile-tag-fab.is-cancel {
-    min-width: 46px;
-    padding: 0 16px;
     font-size: 1.05rem;
   }
 
