@@ -457,7 +457,7 @@ function bindEvents() {
     const checkbox = event.target.closest("[data-token-id]");
     if (!checkbox) return;
 
-    toggleTaggedLineDone(checkbox.dataset.noteId, checkbox.dataset.tokenId, checkbox.checked);
+    toggleTaggedLineDone(checkbox.dataset.noteId, checkbox.dataset.tokenId, checkbox.checked, checkbox.dataset.reminderKey);
   });
 
   refs.timelineRoot.addEventListener("input", (event) => {
@@ -1211,6 +1211,7 @@ function renderTimelineItem(item) {
           type="checkbox"
           data-note-id="${escapeHtml(note.id)}"
           data-token-id="${escapeHtml(item.tokenId || "")}"
+          data-reminder-key="${escapeHtml(item.reminderKey || "")}"
           ${entry.done ? "checked" : ""}
         />
         <span class="reminder-checkmark"></span>
@@ -1706,7 +1707,7 @@ function getCaretRect() {
   return markerRect;
 }
 
-function toggleTaggedLineDone(noteId, tokenId, done) {
+function toggleTaggedLineDone(noteId, tokenId, done, reminderKey = "") {
   const note = findNoteById(noteId);
   if (!note || !tokenId) return;
 
@@ -1714,7 +1715,12 @@ function toggleTaggedLineDone(noteId, tokenId, done) {
   const target = root.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
   if (!target) return;
 
-  target.dataset.done = done ? "true" : "false";
+  if (target.dataset.tag === "io" && reminderKey) {
+    target.removeAttribute("data-done");
+    target.setAttribute(getIoDoneAttributeName(reminderKey), done ? "true" : "false");
+  } else {
+    target.dataset.done = done ? "true" : "false";
+  }
   note.documentHtml = sanitizeEditorHtml(root.innerHTML);
   note.updatedAt = Date.now();
   saveState();
@@ -2284,13 +2290,15 @@ function buildSummaryGroups(scope) {
           }
         };
 
-        getReminderTimesForLine(line).forEach((reminderTime, index) => {
+        getReminderItemsForLine(line).forEach((reminder) => {
           timed.push({
             ...item,
+            reminderKey: reminder.key,
             tokenId: item.tokenId,
             entry: {
               ...item.entry,
-              reminderTime
+              done: reminder.done,
+              reminderTime: reminder.time
             }
           });
         });
@@ -2965,10 +2973,11 @@ function insertTagIntoEditor(editor, tag) {
 
   if (tag === "io") {
     const tokenId = createId("tag");
+    const createdAt = Date.now();
     insertHtmlAtSelection(
       `<span class="tag-token tag-io" contenteditable="false" data-tag="io" data-token-id="${escapeAttribute(
         tokenId
-      )}" data-done="false">I/O</span>`
+      )}" data-created-at="${createdAt}" data-done-14="false" data-done-22="false">I/O</span>`
     );
     const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
     rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
@@ -3753,6 +3762,8 @@ function extractTaggedLines(note) {
       reminderTokenId: reminderTag?.id || "",
       timeTokenId: timeTag?.id || reminderTag?.id || "",
       done: Boolean(reminderTag?.done),
+      ioCreatedAt: reminderTag?.type === "io" ? Number(reminderTag.createdAt || note.createdAt || Date.now()) : 0,
+      ioDoneByTime: reminderTag?.type === "io" ? getIoDoneState(reminderTag) : {},
       timeAtStart: Boolean(line.timeAtStart && reminderTag && reminderTag.type !== "io"),
       primaryKind: primaryTag?.type || "general",
       primaryTokenId: primaryTag?.id || ""
@@ -3786,7 +3797,10 @@ function parseLineNode(node) {
         type: current.dataset.tag || "general",
         text: tagText,
         id: current.dataset.tokenId || "",
-        done: current.dataset.done === "true"
+        done: current.dataset.done === "true",
+        createdAt: Number(current.dataset.createdAt || 0),
+        done14: current.getAttribute("data-done-14") === "true",
+        done22: current.getAttribute("data-done-22") === "true"
       });
       parts.push({
         type: "tag",
@@ -3861,24 +3875,56 @@ function formatTimedSummaryLine(line) {
 }
 
 function getReminderTimesForLine(line) {
+  return getReminderItemsForLine(line).map((item) => item.time);
+}
+
+function getReminderItemsForLine(line) {
   if (!line?.reminderType) return [];
   const preferences = getPreferences();
   if (line.reminderType === "time" && line.timeTag) {
-    return [addMinutesToTime(line.timeTag, preferences.tagDelays.time)];
+    return [{ time: addMinutesToTime(line.timeTag, preferences.tagDelays.time), key: "time", done: Boolean(line.done) }];
   }
   if (line.reminderType === "lab" && line.timeTag) {
-    return [addMinutesToTime(line.timeTag, preferences.tagDelays.lab)];
+    return [{ time: addMinutesToTime(line.timeTag, preferences.tagDelays.lab), key: "lab", done: Boolean(line.done) }];
   }
   if (line.reminderType === "io") {
-    const baseTimes = getShiftDurationHours(line.noteCreatedAt) === 24 ? ["14.00", "22.00"] : ["22.00"];
-    return baseTimes.map((time) => addMinutesToTime(time, preferences.tagDelays.io));
+    const baseTimes = getIoBaseTimesForTimestamp(line.ioCreatedAt || line.noteCreatedAt);
+    return baseTimes.map((baseTime) => {
+      const key = getIoReminderKey(baseTime);
+      return {
+        time: addMinutesToTime(baseTime, preferences.tagDelays.io),
+        key,
+        done: Boolean(line.ioDoneByTime?.[key])
+      };
+    });
   }
   const customTag = getCustomTagDefinition(line.reminderType);
   if (customTag?.hasReminder) {
     const startTime = formatTimeFromTimestamp(line.noteCreatedAt);
-    return [addMinutesToTime(startTime, customTag.delayMinutes)];
+    return [{ time: addMinutesToTime(startTime, customTag.delayMinutes), key: line.reminderType, done: Boolean(line.done) }];
   }
   return [];
+}
+
+function getIoBaseTimesForTimestamp(timestamp) {
+  return getShiftDurationHours(timestamp) === 24 ? ["14.00", "22.00"] : ["22.00"];
+}
+
+function getIoReminderKey(baseTime) {
+  return parseTime(baseTime) < 18 * 60 ? "14" : "22";
+}
+
+function getIoDoneAttributeName(reminderKey) {
+  return reminderKey === "14" ? "data-done-14" : "data-done-22";
+}
+
+function getIoDoneState(tag) {
+  const hasSeparateState = Boolean(tag.done14 || tag.done22);
+  const legacyDone = !hasSeparateState && Boolean(tag.done);
+  return {
+    "14": Boolean(tag.done14 || legacyDone),
+    "22": Boolean(tag.done22 || legacyDone)
+  };
 }
 
 function finalizeTagToken(token, { moveToNewLine = false } = {}) {

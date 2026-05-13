@@ -138,12 +138,15 @@ function buildDueReminders(state, { now, timeZone, windowMinutes }) {
       if (now.getTime() - Number(note.createdAt || 0) > 48 * 60 * 60 * 1000) return;
 
       extractTaggedLines(note, preferences).forEach((line) => {
-        if (line.done || !line.reminderType) return;
+        if (!line.reminderType) return;
 
-        getReminderTimesForLine(line, preferences, timeZone).forEach((reminderTime) => {
+        getReminderItemsForLine(line, preferences, timeZone).forEach((reminder) => {
+          if (reminder.done) return;
+          const reminderTime = reminder.time;
+          const anchorAt = line.reminderType === "io" ? line.ioCreatedAt || note.createdAt : note.createdAt;
           const scheduled = getScheduledInstant({
             reminderTime,
-            noteCreatedAt: Number(note.createdAt) || now.getTime(),
+            noteCreatedAt: Number(anchorAt) || now.getTime(),
             timeZone,
             now
           });
@@ -154,7 +157,7 @@ function buildDueReminders(state, { now, timeZone, windowMinutes }) {
           const bedText = line.bedLabel ? `Bed ${line.bedLabel.toUpperCase()}` : ward.name || "ShiftPad";
           const summary = line.text || line.visibleText || "Reminder due";
           reminders.push({
-            key: [note.id || "note", line.lineIndex, line.reminderTokenId || line.primaryTokenId || line.reminderType, reminderTime].join(":"),
+            key: [note.id || "note", line.lineIndex, line.reminderTokenId || line.primaryTokenId || line.reminderType, reminder.key || reminderTime].join(":"),
             scheduledFor: scheduled.toISOString(),
             title: `${formatTimeLabel(reminderTime)} ${typeLabel || "Reminder"}`,
             body: `${ward.name || "Ward"}${line.bedLabel ? ` · ${bedText}` : ""}: ${summary}`.slice(0, 180),
@@ -224,6 +227,8 @@ function extractTaggedLines(note, preferences) {
       reminderTokenId: reminderTag?.id || "",
       primaryTokenId: primaryTag?.id || "",
       done: Boolean(reminderTag?.done),
+      ioCreatedAt: reminderTag?.type === "io" ? Number(reminderTag.createdAt || note.createdAt || Date.now()) : 0,
+      ioDoneByTime: reminderTag?.type === "io" ? getIoDoneState(reminderTag) : {},
       timeAtStart: Boolean(parsed.timeAtStart && reminderTag && reminderTag.type !== "io")
     });
   });
@@ -257,7 +262,10 @@ function parseLineHtml(block) {
       type: getAttr(attrs, "data-tag") || "general",
       text: decodeHtml(stripTags(match[3])).trim(),
       id: getAttr(attrs, "data-token-id") || "",
-      done: getAttr(attrs, "data-done") === "true"
+      done: getAttr(attrs, "data-done") === "true",
+      createdAt: Number(getAttr(attrs, "data-created-at") || 0),
+      done14: getAttr(attrs, "data-done-14") === "true",
+      done22: getAttr(attrs, "data-done-22") === "true"
     });
   }
 
@@ -308,23 +316,51 @@ function isReminderTagType(type, preferences) {
 }
 
 function getReminderTimesForLine(line, preferences, timeZone = "UTC") {
+  return getReminderItemsForLine(line, preferences, timeZone).map((item) => item.time);
+}
+
+function getReminderItemsForLine(line, preferences, timeZone = "UTC") {
   if (!line?.reminderType) return [];
   if (line.reminderType === "time" && line.timeTag) {
-    return [addMinutesToTime(line.timeTag, preferences.tagDelays.time)];
+    return [{ time: addMinutesToTime(line.timeTag, preferences.tagDelays.time), key: "time", done: Boolean(line.done) }];
   }
   if (line.reminderType === "lab" && line.timeTag) {
-    return [addMinutesToTime(line.timeTag, preferences.tagDelays.lab)];
+    return [{ time: addMinutesToTime(line.timeTag, preferences.tagDelays.lab), key: "lab", done: Boolean(line.done) }];
   }
   if (line.reminderType === "io") {
-    const baseTimes = getShiftDurationHours(line.noteCreatedAt) === 24 ? ["14.00", "22.00"] : ["22.00"];
-    return baseTimes.map((time) => addMinutesToTime(time, preferences.tagDelays.io));
+    const baseTimes = getIoBaseTimesForTimestamp(line.ioCreatedAt || line.noteCreatedAt, timeZone);
+    return baseTimes.map((baseTime) => {
+      const key = getIoReminderKey(baseTime);
+      return {
+        time: addMinutesToTime(baseTime, preferences.tagDelays.io),
+        key,
+        done: Boolean(line.ioDoneByTime?.[key])
+      };
+    });
   }
   const customTag = preferences.customTags.find((tag) => tag.id === line.reminderType);
   if (customTag?.hasReminder) {
     const startTime = formatTimeFromTimestamp(line.noteCreatedAt, timeZone);
-    return [addMinutesToTime(startTime, customTag.delayMinutes)];
+    return [{ time: addMinutesToTime(startTime, customTag.delayMinutes), key: line.reminderType, done: Boolean(line.done) }];
   }
   return [];
+}
+
+function getIoBaseTimesForTimestamp(timestamp, timeZone = "UTC") {
+  return getShiftDurationHours(timestamp, timeZone) === 24 ? ["14.00", "22.00"] : ["22.00"];
+}
+
+function getIoReminderKey(baseTime) {
+  return parseTime(baseTime) < 18 * 60 ? "14" : "22";
+}
+
+function getIoDoneState(tag) {
+  const hasSeparateState = Boolean(tag.done14 || tag.done22);
+  const legacyDone = !hasSeparateState && Boolean(tag.done);
+  return {
+    "14": Boolean(tag.done14 || legacyDone),
+    "22": Boolean(tag.done22 || legacyDone)
+  };
 }
 
 function getScheduledInstant({ reminderTime, noteCreatedAt, timeZone }) {
