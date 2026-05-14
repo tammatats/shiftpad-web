@@ -185,6 +185,12 @@ function bindEvents() {
       return;
     }
 
+    const deleteWard = event.target.closest("[data-delete-ward]");
+    if (deleteWard) {
+      deleteWardFromDrawer(deleteWard.dataset.deleteWard);
+      return;
+    }
+
     const wardButton = event.target.closest("[data-ward-id]");
     if (wardButton) {
       selectWardFromDrawer(wardButton.dataset.wardId);
@@ -762,17 +768,20 @@ function renderWardOptionsMenu() {
 function renderDrawerWardButton(ward) {
   const active = state.timelineScope === "active" && ward.id === state.selectedWardId;
   return `
-    <button
+    <div
       class="ward-tab ${active ? "is-active" : ""}"
-      type="button"
-      data-ward-id="${escapeHtml(ward.id)}"
       style="--ward-color:${escapeHtml(ward.color)}"
     >
-      <div class="ward-tab-head">
-        <span class="ward-dot"></span>
-        <strong>${escapeHtml(ward.name)}</strong>
-      </div>
-    </button>
+      <button class="ward-select-btn" type="button" data-ward-id="${escapeHtml(ward.id)}">
+        <span class="ward-tab-head">
+          <span class="ward-dot"></span>
+          <strong>${escapeHtml(ward.name)}</strong>
+        </span>
+      </button>
+      <button class="ward-delete-btn" type="button" data-delete-ward="${escapeHtml(ward.id)}" aria-label="Delete ${escapeAttribute(ward.name)}">
+        Delete
+      </button>
+    </div>
   `;
 }
 
@@ -2431,6 +2440,34 @@ function selectWardFromDrawer(wardId) {
   state.selectedWardId = ward.id;
   state.selectedNoteId = ward.notes[0]?.id || "";
   state.timelineScope = "active";
+  saveState();
+  render();
+}
+
+function deleteWardFromDrawer(wardId) {
+  const wardIndex = state.wards.findIndex((ward) => ward.id === wardId);
+  if (wardIndex < 0) return;
+  if (state.wards.length <= 1) {
+    window.alert("Keep at least one ward in ShiftPad.");
+    return;
+  }
+
+  const ward = state.wards[wardIndex];
+  if (!window.confirm(`Delete ${ward.name}? Notes in this ward will be removed from this account.`)) return;
+
+  const deletedSelectedWard = state.selectedWardId === ward.id;
+  state.wards.splice(wardIndex, 1);
+
+  if (deletedSelectedWard) {
+    const nextWard = state.wards[Math.min(wardIndex, state.wards.length - 1)] || state.wards[0];
+    state.selectedWardId = nextWard.id;
+    state.selectedNoteId = nextWard.notes[0]?.id || "";
+    if (state.timelineScope === "active") {
+      state.activeView = "notes";
+    }
+  }
+
+  ensureSelection();
   saveState();
   render();
 }
