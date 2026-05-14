@@ -35,6 +35,23 @@ for delete
 to authenticated
 using (auth.uid() = user_id);
 
+do $$
+begin
+  if exists (
+    select 1
+    from pg_publication
+    where pubname = 'supabase_realtime'
+  ) and not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'shiftpad_user_state'
+  ) then
+    alter publication supabase_realtime add table public.shiftpad_user_state;
+  end if;
+end $$;
+
 create table if not exists public.shiftpad_push_subscriptions (
   id bigserial primary key,
   user_id uuid not null references auth.users(id) on delete cascade,

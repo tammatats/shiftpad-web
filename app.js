@@ -6,6 +6,8 @@ const CUSTOM_TAG_COLORS = ["#9b8cff", "#2bb3c0", "#f27b8a", "#63b56b", "#f0a64f"
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
 const CLOUD_SAVE_DEBOUNCE_MS = 700;
+const CLOUD_SYNC_POLL_MS = 5000;
+const CLOUD_REMOTE_APPLY_IDLE_MS = 1200;
 const LOCAL_SAVE_DEBOUNCE_MS = 180;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
@@ -51,6 +53,13 @@ const authState = {
   configured: false,
   saveTimer: null,
   localSaveTimer: null,
+  livePollTimer: null,
+  realtimeChannel: null,
+  pendingRemoteRecord: null,
+  remoteApplyTimer: null,
+  lastCloudUpdatedAt: 0,
+  lastLocalMutationAt: 0,
+  realtimeStatus: "off",
   isSaving: false,
   isHydrating: false,
   suppressCloudSave: false
@@ -508,6 +517,11 @@ function bindEvents() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       flushLocalStateSave();
+    } else {
+      fetchLatestCloudState({ reason: "visible" }).catch((error) => {
+        console.error("Cloud sync refresh failed:", error);
+      });
+      applyPendingRemoteStateIfReady();
     }
   });
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
@@ -812,6 +826,10 @@ function getSyncStatusText() {
   if (!authState.user) return authState.ready ? "Sign in to load cloud notes" : "Checking session...";
   if (authState.isHydrating) return "Loading cloud notes...";
   if (authState.isSaving) return "Saving to cloud...";
+  if (authState.pendingRemoteRecord) return "Remote changes waiting";
+  if (authState.realtimeStatus === "subscribed") return "Live sync on";
+  if (authState.realtimeStatus === "polling") return "Cloud sync polling";
+  if (authState.realtimeStatus === "error") return "Cloud sync reconnecting";
   return "Cloud sync on";
 }
 
@@ -982,7 +1000,7 @@ function renderAuthUi() {
   } else if (authState.isSaving) {
     refs.syncStatus.textContent = "Saving to cloud...";
   } else {
-    refs.syncStatus.textContent = "Cloud sync on";
+    refs.syncStatus.textContent = getSyncStatusText();
   }
 }
 
@@ -1063,6 +1081,7 @@ function loadSupabaseClient() {
 }
 
 async function applySession(session) {
+  stopCloudLiveSync();
   authState.session = session || null;
   authState.user = session?.user || null;
   authState.ready = true;
@@ -1074,6 +1093,7 @@ async function applySession(session) {
   }
 
   await hydrateStateFromCloud();
+  startCloudLiveSync();
 }
 
 async function signInWithPassword() {
@@ -1146,7 +1166,7 @@ async function hydrateStateFromCloud() {
   try {
     const response = await authState.client
       .from(CLOUD_STATE_TABLE)
-      .select("state_json")
+      .select("state_json,updated_at")
       .eq("user_id", authState.user.id)
       .maybeSingle();
     data = response.data;
@@ -1168,6 +1188,7 @@ async function hydrateStateFromCloud() {
 
   if (data?.state_json) {
     state = normalizeState(data.state_json);
+    authState.lastCloudUpdatedAt = parseCloudUpdatedAt(data.updated_at) || Date.now();
   } else {
     state = normalizeState(fallback);
     authState.suppressCloudSave = false;
@@ -1179,6 +1200,184 @@ async function hydrateStateFromCloud() {
   authState.suppressCloudSave = false;
   saveLocalState();
   render();
+}
+
+function startCloudLiveSync() {
+  if (!authState.client || !authState.user) return;
+  stopCloudLiveSync({ keepStatus: true });
+  authState.realtimeStatus = "polling";
+
+  try {
+    authState.client.realtime?.setAuth?.(authState.session?.access_token);
+    authState.realtimeChannel = authState.client
+      .channel(`shiftpad-user-state-${authState.user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: CLOUD_STATE_TABLE,
+          filter: `user_id=eq.${authState.user.id}`
+        },
+        (payload) => {
+          handleRemoteCloudRecord(payload.new || payload.old, { source: "realtime" });
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          authState.realtimeStatus = "subscribed";
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          authState.realtimeStatus = "error";
+        }
+        renderAuthUi();
+      });
+  } catch (error) {
+    console.error("Realtime sync setup failed:", error);
+    authState.realtimeStatus = "error";
+  }
+
+  fetchLatestCloudState({ reason: "start" }).catch((error) => {
+    console.error("Cloud sync refresh failed:", error);
+  });
+  authState.livePollTimer = window.setInterval(() => {
+    fetchLatestCloudState({ reason: "poll" }).catch((error) => {
+      console.error("Cloud sync poll failed:", error);
+      if (authState.realtimeStatus !== "subscribed") {
+        authState.realtimeStatus = "error";
+        renderAuthUi();
+      }
+    });
+  }, CLOUD_SYNC_POLL_MS);
+  renderAuthUi();
+}
+
+function stopCloudLiveSync({ keepStatus = false } = {}) {
+  if (authState.livePollTimer) {
+    window.clearInterval(authState.livePollTimer);
+    authState.livePollTimer = null;
+  }
+  if (authState.remoteApplyTimer) {
+    window.clearTimeout(authState.remoteApplyTimer);
+    authState.remoteApplyTimer = null;
+  }
+  if (authState.realtimeChannel && authState.client?.removeChannel) {
+    authState.client.removeChannel(authState.realtimeChannel);
+  }
+  authState.realtimeChannel = null;
+  authState.pendingRemoteRecord = null;
+  if (!keepStatus) {
+    authState.realtimeStatus = "off";
+    authState.lastCloudUpdatedAt = 0;
+  }
+}
+
+async function fetchLatestCloudState() {
+  if (!authState.client || !authState.user || authState.isHydrating || document.visibilityState === "hidden") return;
+  const { data, error } = await authState.client
+    .from(CLOUD_STATE_TABLE)
+    .select("state_json,updated_at")
+    .eq("user_id", authState.user.id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (data) {
+    handleRemoteCloudRecord(data, { source: "poll" });
+  }
+}
+
+function handleRemoteCloudRecord(record) {
+  if (!record?.state_json) return;
+  const remoteUpdatedAt = parseCloudUpdatedAt(record.updated_at) || Date.now();
+  if (remoteUpdatedAt <= authState.lastCloudUpdatedAt) return;
+
+  if (shouldDeferRemoteStateApply()) {
+    authState.pendingRemoteRecord = record;
+    schedulePendingRemoteStateApply();
+    renderAuthUi();
+    return;
+  }
+
+  applyRemoteCloudState(record);
+}
+
+function shouldDeferRemoteStateApply() {
+  if (authState.saveTimer || authState.isSaving) return true;
+  return uiState.editorFocused && Date.now() - authState.lastLocalMutationAt < CLOUD_REMOTE_APPLY_IDLE_MS;
+}
+
+function schedulePendingRemoteStateApply() {
+  if (authState.remoteApplyTimer) {
+    window.clearTimeout(authState.remoteApplyTimer);
+  }
+  authState.remoteApplyTimer = window.setTimeout(() => {
+    authState.remoteApplyTimer = null;
+    applyPendingRemoteStateIfReady();
+  }, CLOUD_REMOTE_APPLY_IDLE_MS);
+}
+
+function applyPendingRemoteStateIfReady() {
+  if (!authState.pendingRemoteRecord) return;
+  if (shouldDeferRemoteStateApply()) {
+    schedulePendingRemoteStateApply();
+    return;
+  }
+  const record = authState.pendingRemoteRecord;
+  authState.pendingRemoteRecord = null;
+  applyRemoteCloudState(record);
+}
+
+function applyRemoteCloudState(record) {
+  const remoteUpdatedAt = parseCloudUpdatedAt(record.updated_at) || Date.now();
+  if (!record?.state_json || remoteUpdatedAt <= authState.lastCloudUpdatedAt) return;
+
+  state = mergeRemoteStatePreservingLocalView(record.state_json);
+  authState.lastCloudUpdatedAt = remoteUpdatedAt;
+  authState.suppressCloudSave = true;
+  saveState({ skipCloud: true, markDirty: false });
+  authState.suppressCloudSave = false;
+  render();
+}
+
+function mergeRemoteStatePreservingLocalView(remoteState) {
+  const currentView = {
+    activeView: state.activeView,
+    selectedWardId: state.selectedWardId,
+    selectedNoteId: state.selectedNoteId,
+    timelineScope: state.timelineScope,
+    summaryTab: state.summaryTab
+  };
+  const nextState = normalizeState(remoteState);
+  nextState.activeView = currentView.activeView === "timeline" ? "timeline" : "notes";
+  nextState.timelineScope = currentView.timelineScope === "active" ? "active" : "all";
+  nextState.summaryTab = currentView.summaryTab === "reminders" ? "reminders" : "beds";
+
+  const currentWard = nextState.wards.find((ward) => ward.id === currentView.selectedWardId);
+  if (currentWard) {
+    nextState.selectedWardId = currentWard.id;
+    nextState.selectedNoteId = currentWard.notes.some((note) => note.id === currentView.selectedNoteId)
+      ? currentView.selectedNoteId
+      : currentWard.notes[0]?.id || "";
+  }
+
+  ensureSelectionForState(nextState);
+  return nextState;
+}
+
+function ensureSelectionForState(targetState) {
+  if (!targetState?.wards?.length) return;
+  let ward = targetState.wards.find((item) => item.id === targetState.selectedWardId);
+  if (!ward) {
+    ward = targetState.wards[0];
+    targetState.selectedWardId = ward.id;
+  }
+  if (!ward.notes.some((note) => note.id === targetState.selectedNoteId)) {
+    targetState.selectedNoteId = ward.notes[0]?.id || "";
+  }
+}
+
+function parseCloudUpdatedAt(value) {
+  const timestamp = Date.parse(value || "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function setAuthMessage(message) {
@@ -2594,7 +2793,10 @@ function normalizeState(input) {
   };
 }
 
-function saveState({ skipCloud = false } = {}) {
+function saveState({ skipCloud = false, markDirty = true } = {}) {
+  if (markDirty && !authState.suppressCloudSave) {
+    authState.lastLocalMutationAt = Date.now();
+  }
   scheduleLocalStateSave();
   if (!skipCloud) {
     scheduleCloudSave();
@@ -2666,13 +2868,18 @@ async function saveCloudStateNow() {
 
   authState.isSaving = true;
   renderAuthUi();
+  const updatedAt = new Date().toISOString();
   const payload = {
     user_id: authState.user.id,
     state_json: state,
-    updated_at: new Date().toISOString()
+    updated_at: updatedAt
   };
 
-  const { error } = await authState.client.from(CLOUD_STATE_TABLE).upsert(payload, { onConflict: "user_id" });
+  const { data, error } = await authState.client
+    .from(CLOUD_STATE_TABLE)
+    .upsert(payload, { onConflict: "user_id" })
+    .select("updated_at")
+    .maybeSingle();
   authState.isSaving = false;
 
   if (error) {
@@ -2682,6 +2889,8 @@ async function saveCloudStateNow() {
     return;
   }
 
+  authState.lastCloudUpdatedAt = parseCloudUpdatedAt(data?.updated_at || updatedAt) || Date.now();
+  applyPendingRemoteStateIfReady();
   setAuthMessage("");
   renderAuthUi();
 }
