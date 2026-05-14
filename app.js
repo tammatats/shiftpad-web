@@ -2,6 +2,7 @@ const STORAGE_KEY = "shiftpad-ios-state-v1";
 const LEGACY_STORAGE_KEY = STORAGE_KEY;
 const STORAGE_NAMESPACE = "shiftpad-ios-state-v2";
 const WARD_COLORS = ["#f28b67", "#6ea8fe", "#6fc48d", "#b490ff", "#f0b95c", "#ff7aa2"];
+const CUSTOM_TAG_COLORS = ["#9b8cff", "#2bb3c0", "#f27b8a", "#63b56b", "#f0a64f", "#5f9cff", "#c86dd7", "#b6a54a"];
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
 const CLOUD_SAVE_DEBOUNCE_MS = 700;
@@ -839,9 +840,10 @@ function renderDelayField(key, label, value) {
 }
 
 function renderCustomTagSettingRow(tag) {
+  const tagStyle = renderCustomTagStyle(tag);
   return `
-    <div class="custom-tag-row" data-custom-tag-row="${escapeHtml(tag.id)}">
-      <strong>${escapeHtml(tag.label)}</strong>
+    <div class="custom-tag-row" data-custom-tag-row="${escapeHtml(tag.id)}" ${tagStyle}>
+      <strong><span class="custom-tag-swatch" aria-hidden="true"></span>${escapeHtml(tag.label)}</strong>
       <label class="mini-check">
         <input type="checkbox" data-custom-reminder-toggle="true" ${tag.hasReminder ? "checked" : ""} />
         <span>Reminder</span>
@@ -880,7 +882,7 @@ function renderEditor() {
         </div>
 
         <div class="quick-tags">
-          ${getAvailableQuickTags().map((tag) => renderQuickChip(tag.key, tag.label)).join("")}
+          ${getAvailableQuickTags().map((tag) => renderQuickChip(tag.key, tag.label, tag.className, tag.color)).join("")}
         </div>
 
         <div class="smart-pad-surface document-pad">
@@ -898,6 +900,7 @@ function renderEditor() {
       </section>
     </div>
   `;
+  applyCustomTagColors(refs.editorRoot);
 
   requestAnimationFrame(() => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
@@ -1334,9 +1337,10 @@ function formatReminderTimeLabel(value) {
   return String(value || "").replace(".", ":");
 }
 
-function renderQuickChip(key, label, extraClass = "") {
+function renderQuickChip(key, label, extraClass = "", color = "") {
+  const style = renderCustomTagStyle({ color });
   return `
-    <button class="quick-chip ${escapeHtml(extraClass)}" type="button" data-quick-tag="${escapeHtml(key)}">
+    <button class="quick-chip ${escapeHtml(extraClass)}" type="button" data-quick-tag="${escapeHtml(key)}" ${style}>
       ${escapeHtml(label)}
     </button>
   `;
@@ -1348,7 +1352,10 @@ function renderMobileTagDock() {
     <div class="mobile-tag-dock" data-mobile-tag-dock="true" aria-hidden="true">
       <div class="mobile-tag-tray" role="menu" aria-label="Insert tag">
         ${getAvailableQuickTags()
-          .map((tag) => `<button class="mobile-tag-option ${escapeHtml(tag.className || "")}" type="button" data-mobile-tag="${escapeHtml(tag.key)}">${escapeHtml(tag.label)}</button>`)
+          .map((tag) => {
+            const style = renderCustomTagStyle(tag);
+            return `<button class="mobile-tag-option ${escapeHtml(tag.className || "")}" type="button" data-mobile-tag="${escapeHtml(tag.key)}" ${style}>${escapeHtml(tag.label)}</button>`;
+          })
           .join("")}
       </div>
       <button class="mobile-tag-fab ${uiState.mobileTagsOpen ? "is-cancel" : ""}" type="button" data-mobile-tag-toggle="true" aria-expanded="${expanded}" aria-label="${uiState.mobileTagsOpen ? "Close tag menu" : "Open tag menu"}">
@@ -1371,7 +1378,8 @@ function getAvailableQuickTags() {
     ...getCustomTagDefinitions().map((tag) => ({
       key: tag.id,
       label: tag.label,
-      className: tag.hasReminder ? "timed" : ""
+      className: ["custom", tag.hasReminder ? "timed" : ""].filter(Boolean).join(" "),
+      color: tag.color
     }))
   ];
 }
@@ -1415,12 +1423,57 @@ function normalizePreferences(input = {}) {
 function normalizeCustomTag(tag) {
   const label = String(tag?.label || "").trim().slice(0, 18);
   if (!label) return null;
+  const id = String(tag.id || createCustomTagId(label));
   return {
-    id: String(tag.id || createCustomTagId(label)),
+    id,
     label,
     hasReminder: Boolean(tag.hasReminder),
-    delayMinutes: Math.max(0, clampDelay(tag.delayMinutes, 0))
+    delayMinutes: Math.max(0, clampDelay(tag.delayMinutes, 0)),
+    color: normalizeCustomTagColor(tag.color, getGeneratedCustomTagColor(`${id}:${label}`))
   };
+}
+
+function getGeneratedCustomTagColor(seed) {
+  const text = String(seed || "custom-tag");
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  }
+  return CUSTOM_TAG_COLORS[hash % CUSTOM_TAG_COLORS.length];
+}
+
+function getNextCustomTagColor(existingTags, seed) {
+  const fallback = getGeneratedCustomTagColor(seed);
+  const usedColors = new Set(
+    (Array.isArray(existingTags) ? existingTags : [])
+      .map((tag) => normalizeCustomTagColor(tag.color, ""))
+      .filter(Boolean)
+  );
+  const startIndex = Math.max(0, CUSTOM_TAG_COLORS.indexOf(fallback));
+  for (let offset = 0; offset < CUSTOM_TAG_COLORS.length; offset += 1) {
+    const color = CUSTOM_TAG_COLORS[(startIndex + offset) % CUSTOM_TAG_COLORS.length];
+    if (!usedColors.has(color)) return color;
+  }
+  return fallback;
+}
+
+function normalizeCustomTagColor(value, fallback = CUSTOM_TAG_COLORS[0]) {
+  const color = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+function renderCustomTagStyle(tag) {
+  const color = normalizeCustomTagColor(tag?.color || "", "");
+  return color ? `style="--custom-tag-color:${escapeAttribute(color)}"` : "";
+}
+
+function applyCustomTagColors(root) {
+  root?.querySelectorAll?.(".tag-token").forEach((token) => {
+    const customTag = getCustomTagDefinition(token.dataset.tag || "");
+    if (customTag?.color) {
+      token.style.setProperty("--custom-tag-color", customTag.color);
+    }
+  });
 }
 
 function getCustomTagDefinitions() {
@@ -2203,11 +2256,14 @@ function addCustomTagFromForm(form) {
   if (!label) return;
 
   const preferences = getPreferences();
+  const id = createCustomTagId(label);
+  const color = getNextCustomTagColor(preferences.customTags, `${id}:${label}`);
   preferences.customTags.push({
-    id: createCustomTagId(label),
+    id,
     label,
     hasReminder: formData.get("hasReminder") === "on",
-    delayMinutes: Math.max(0, clampDelay(formData.get("delayMinutes"), 0))
+    delayMinutes: Math.max(0, clampDelay(formData.get("delayMinutes"), 0)),
+    color
   });
   saveState();
   render();
@@ -2773,10 +2829,11 @@ function convertEntriesToDocumentHtml(entries) {
 
       const lineBits = [];
       if (entry.kind && entry.kind !== "general") {
+        const tagStyle = renderCustomTagStyle(getKindMeta(entry.kind));
         lineBits.push(
           `<span class="tag-token tag-${escapeAttribute(entry.kind)}" contenteditable="false" data-tag="${escapeAttribute(
             entry.kind
-          )}" data-token-id="${escapeAttribute(createId("tag"))}">${escapeHtml(getKindMeta(entry.kind)?.label || entry.kind)}</span>`
+          )}" data-token-id="${escapeAttribute(createId("tag"))}" ${tagStyle}>${escapeHtml(getKindMeta(entry.kind)?.label || entry.kind)}</span>`
         );
       }
       if (entry.timeTag) {
@@ -2987,11 +3044,13 @@ function insertTagIntoEditor(editor, tag) {
   }
 
   const tokenId = createId("tag");
-  const label = getKindMeta(tag)?.label || tag;
+  const tagMeta = getKindMeta(tag);
+  const label = tagMeta?.label || tag;
+  const tagStyle = renderCustomTagStyle(tagMeta);
   insertHtmlAtSelection(
     `<span class="tag-token tag-${escapeAttribute(tag)}" contenteditable="false" data-tag="${escapeAttribute(tag)}" data-token-id="${escapeAttribute(
       tokenId
-    )}">${escapeHtml(label)}</span>`
+    )}" ${tagStyle}>${escapeHtml(label)}</span>`
   );
   const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
   rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
@@ -4071,6 +4130,7 @@ function normalizeEditorBlocks(root) {
     line.classList.toggle("timed-line", hasTime);
     line.classList.toggle("io-line", hasIo);
   });
+  applyCustomTagColors(root);
 }
 
 function normalizeTimeTagValue(value) {

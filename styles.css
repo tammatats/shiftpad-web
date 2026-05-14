@@ -558,6 +558,22 @@ button:disabled {
   border: 1px solid rgba(96, 76, 55, 0.08);
 }
 
+.custom-tag-row strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-tag-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--custom-tag-color, var(--accent));
+  box-shadow:
+    inset 0 0 0 1px rgba(36, 28, 22, 0.12),
+    0 2px 8px rgba(72, 46, 24, 0.14);
+}
+
 .danger-btn {
   color: #a63528;
   border-color: rgba(166, 53, 40, 0.2);
@@ -1079,6 +1095,13 @@ select:focus {
   border-color: rgba(230, 125, 89, 0.32);
 }
 
+.quick-chip.custom {
+  background: rgba(255, 252, 248, 0.95);
+  background: color-mix(in srgb, var(--custom-tag-color, var(--accent)) 18%, #fffaf4 82%);
+  border-color: color-mix(in srgb, var(--custom-tag-color, var(--accent)) 42%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--custom-tag-color, var(--accent)) 16%, transparent);
+}
+
 .helper-copy {
   max-width: 520px;
   line-height: 1.45;
@@ -1304,6 +1327,15 @@ select:focus {
   border-radius: 999px;
   font-size: 0.9rem;
   font-weight: 700;
+}
+
+.notepad-editor .tag-token[data-tag^="custom-"] {
+  background: rgba(255, 245, 238, 0.95);
+  background: color-mix(in srgb, var(--custom-tag-color, var(--accent)) 22%, #fffaf4 78%);
+  border: 1px solid color-mix(in srgb, var(--custom-tag-color, var(--accent)) 46%, transparent);
+  border-radius: 999px;
+  color: var(--ink);
+  font-weight: 800;
 }
 
 .notepad-editor .io-line {
@@ -1805,6 +1837,12 @@ select:focus {
 
   .mobile-tag-option.io {
     background: #dcecff;
+  }
+
+  .mobile-tag-option.custom {
+    background: rgba(255, 252, 248, 0.98);
+    background: color-mix(in srgb, var(--custom-tag-color, var(--accent)) 20%, #fffaf4 80%);
+    border-color: color-mix(in srgb, var(--custom-tag-color, var(--accent)) 42%, transparent);
   }
 
   .note-pad-card {
