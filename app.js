@@ -1280,6 +1280,10 @@ async function fetchLatestCloudState() {
     .maybeSingle();
 
   if (error) throw error;
+  if (authState.realtimeStatus === "error") {
+    authState.realtimeStatus = "polling";
+    renderAuthUi();
+  }
   if (data) {
     handleRemoteCloudRecord(data, { source: "poll" });
   }
