@@ -108,3 +108,9 @@ create table if not exists public.shiftpad_notification_deliveries (
 );
 
 alter table public.shiftpad_notification_deliveries enable row level security;
+
+grant select, insert, update, delete on table public.shiftpad_user_state to authenticated, service_role;
+grant select, insert, update, delete on table public.shiftpad_push_subscriptions to authenticated, service_role;
+grant usage, select on sequence public.shiftpad_push_subscriptions_id_seq to authenticated, service_role;
+grant select, insert, update, delete on table public.shiftpad_notification_deliveries to service_role;
+grant usage, select on sequence public.shiftpad_notification_deliveries_id_seq to service_role;
