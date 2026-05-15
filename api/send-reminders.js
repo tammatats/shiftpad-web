@@ -143,7 +143,10 @@ function buildDueReminders(state, { now, timeZone, windowMinutes }) {
         getReminderItemsForLine(line, preferences, timeZone).forEach((reminder) => {
           if (reminder.done) return;
           const reminderTime = reminder.time;
-          const anchorAt = line.reminderType === "io" ? line.ioCreatedAt || note.createdAt : note.createdAt;
+          const anchorAt =
+            line.reminderType === "io"
+              ? line.ioCreatedAt || line.reminderCreatedAt || note.createdAt
+              : line.reminderCreatedAt || note.updatedAt || note.createdAt;
           const scheduled = getScheduledInstant({
             reminderTime,
             noteCreatedAt: Number(anchorAt) || now.getTime(),
@@ -225,6 +228,7 @@ function extractTaggedLines(note, preferences) {
       noteCreatedAt: Number(note.createdAt) || Date.now(),
       reminderType: reminderTag?.type || "",
       reminderTokenId: reminderTag?.id || "",
+      reminderCreatedAt: Number(reminderTag?.createdAt || 0),
       primaryTokenId: primaryTag?.id || "",
       done: Boolean(reminderTag?.done),
       ioCreatedAt: reminderTag?.type === "io" ? Number(reminderTag.createdAt || note.createdAt || Date.now()) : 0,

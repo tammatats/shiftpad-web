@@ -3177,14 +3177,16 @@ function convertEntriesToDocumentHtml(entries) {
         lineBits.push(
           `<span class="tag-token tag-${escapeAttribute(entry.kind)}" contenteditable="false" data-tag="${escapeAttribute(
             entry.kind
-          )}" data-token-id="${escapeAttribute(createId("tag"))}" ${tagStyle}>${escapeHtml(getKindMeta(entry.kind)?.label || entry.kind)}</span>`
+          )}" data-token-id="${escapeAttribute(createId("tag"))}" data-created-at="${Number(entry.createdAt) || Date.now()}" ${tagStyle}>${escapeHtml(
+            getKindMeta(entry.kind)?.label || entry.kind
+          )}</span>`
         );
       }
       if (entry.timeTag) {
         lineBits.push(
-          `<span class="tag-token tag-time" data-tag="time" data-token-id="${escapeAttribute(createId("tag"))}" data-done="${
-            entry.done ? "true" : "false"
-          }">${escapeHtml(entry.timeTag)}</span>`
+          `<span class="tag-token tag-time" data-tag="time" data-token-id="${escapeAttribute(createId("tag"))}" data-created-at="${
+            Number(entry.createdAt) || Date.now()
+          }" data-done="${entry.done ? "true" : "false"}">${escapeHtml(entry.timeTag)}</span>`
         );
       }
       lineBits.push(escapeHtml(entry.text).replace(/\n/g, "<br>"));
@@ -3361,10 +3363,11 @@ function insertTagIntoEditor(editor, tag) {
 
   if (tag === "time" || tag === "lab") {
     const tokenId = createId("tag");
+    const createdAt = Date.now();
     insertHtmlAtSelection(
       `<span class="tag-token tag-${escapeAttribute(tag)} tag-editing" data-tag="${escapeAttribute(tag)}" data-token-id="${escapeAttribute(
         tokenId
-      )}" data-done="false" data-editing="true">00.00</span>`
+      )}" data-created-at="${createdAt}" data-done="false" data-editing="true">00.00</span>`
     );
     const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
     rememberPendingTagInsertion(tokenId, editor, insertionPoint);
@@ -3396,10 +3399,11 @@ function insertTagIntoEditor(editor, tag) {
   const tagMeta = getKindMeta(tag);
   const label = tagMeta?.label || tag;
   const tagStyle = renderCustomTagStyle(tagMeta);
+  const createdAt = Date.now();
   insertHtmlAtSelection(
     `<span class="tag-token tag-${escapeAttribute(tag)}" contenteditable="false" data-tag="${escapeAttribute(tag)}" data-token-id="${escapeAttribute(
       tokenId
-    )}" ${tagStyle}>${escapeHtml(label)}</span>`
+    )}" data-created-at="${createdAt}" ${tagStyle}>${escapeHtml(label)}</span>`
   );
   const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
   rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
@@ -4215,6 +4219,7 @@ function extractTaggedLines(note) {
       noteCreatedAt: Number(note.createdAt) || Date.now(),
       reminderType: reminderTag?.type || "",
       reminderTokenId: reminderTag?.id || "",
+      reminderCreatedAt: reminderTag?.createdAt || 0,
       timeTokenId: timeTag?.id || reminderTag?.id || "",
       done: Boolean(reminderTag?.done),
       todoTokenId: todoTag?.id || "",
