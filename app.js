@@ -4209,6 +4209,9 @@ function extractTaggedLines(note) {
     if (!cleanedText && !reminderTag && !todoTag && !primaryTag && !visibleText) {
       return;
     }
+    if (isTextReminderOnlyLine(reminderTag, cleanedText, primaryTag)) {
+      return;
+    }
 
     lines.push({
       lineIndex: lines.length,
@@ -4233,6 +4236,11 @@ function extractTaggedLines(note) {
   });
 
   return { lines };
+}
+
+function isTextReminderOnlyLine(reminderTag, cleanedText, primaryTag) {
+  if (!reminderTag || primaryTag || cleanedText) return false;
+  return reminderTag.type === "time" || reminderTag.type === "lab" || !CORE_REMINDER_TAGS.includes(reminderTag.type);
 }
 
 function parseLineNode(node) {

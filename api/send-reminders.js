@@ -158,7 +158,7 @@ function buildDueReminders(state, { now, timeZone, windowMinutes }) {
 
           const typeLabel = getReminderTypeLabel(line.reminderType, preferences);
           const bedText = line.bedLabel ? `Bed ${line.bedLabel.toUpperCase()}` : ward.name || "ShiftPad";
-          const summary = line.text || line.visibleText || "Reminder due";
+          const summary = line.text || "Reminder due";
           reminders.push({
             key: [note.id || "note", line.lineIndex, line.reminderTokenId || line.primaryTokenId || line.reminderType, reminder.key || reminderTime].join(":"),
             scheduledFor: scheduled.toISOString(),
@@ -218,6 +218,7 @@ function extractTaggedLines(note, preferences) {
     const cleanedText = stripTagPrefixes(parsed.text, parsed.tags);
     const visibleText = parsed.visibleText.trim();
     if (!cleanedText && !reminderTag && !primaryTag && !visibleText) return;
+    if (isTextReminderOnlyLine(reminderTag, cleanedText, primaryTag)) return;
 
     lines.push({
       lineIndex: lines.length,
@@ -238,6 +239,11 @@ function extractTaggedLines(note, preferences) {
   });
 
   return lines;
+}
+
+function isTextReminderOnlyLine(reminderTag, cleanedText, primaryTag) {
+  if (!reminderTag || primaryTag || cleanedText) return false;
+  return reminderTag.type === "time" || reminderTag.type === "lab" || !CORE_REMINDER_TAGS.includes(reminderTag.type);
 }
 
 function extractLegacyEntryLines(note) {
