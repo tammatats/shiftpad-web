@@ -797,8 +797,10 @@ function renderNotificationSettings() {
   const permission = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
   const configured = Boolean(window.SHIFTPAD_PUBLIC_CONFIG?.vapidPublicKey);
   const enabled = permission === "granted";
+  const setupIssue = getNotificationSetupIssue({ support, configured });
   const status =
     uiState.notificationStatus ||
+    setupIssue ||
     (support.supported
       ? enabled
         ? "Notifications are allowed on this device."
@@ -816,7 +818,7 @@ function renderNotificationSettings() {
           class="accent-btn"
           type="button"
           data-drawer-action="enable-notifications"
-          ${!support.supported || !configured || !authState.user ? "disabled" : ""}
+          ${support.apiSupported === false ? "disabled" : ""}
         >${enabled ? "Refresh" : "Enable"}</button>
         <button
           class="ghost-btn"
@@ -2272,6 +2274,7 @@ async function handleDrawerAction(action) {
 function getNotificationSupport() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
     return {
+      apiSupported: false,
       supported: false,
       message: "This browser cannot receive web push notifications."
     };
@@ -2281,12 +2284,23 @@ function getNotificationSupport() {
   const isStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true;
   if (isLikelyIos && !isStandalone) {
     return {
+      apiSupported: true,
       supported: false,
       message: "On iPhone, add ShiftPad to the Home Screen and open it from the icon before enabling notifications."
     };
   }
 
-  return { supported: true, message: "" };
+  return { apiSupported: true, supported: true, message: "" };
+}
+
+function getNotificationSetupIssue({ support, configured }) {
+  if (!support.supported) return support.message;
+  if (!authState.user) return "Sign in first, then tap Enable from the Home Screen app.";
+  if (!configured) return "Vercel is missing VAPID_PUBLIC_KEY, so iPhone cannot ask for notification permission yet.";
+  if (typeof Notification !== "undefined" && Notification.permission === "denied") {
+    return "Notifications are blocked. Open iPhone Settings -> Notifications -> ShiftPad and allow notifications.";
+  }
+  return "";
 }
 
 async function registerShiftPadServiceWorker() {
@@ -2300,6 +2314,19 @@ async function registerShiftPadServiceWorker() {
   }
 }
 
+async function getReadyServiceWorkerRegistration() {
+  const registration = await registerShiftPadServiceWorker();
+  if (!("serviceWorker" in navigator)) return registration;
+  return (
+    (await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((resolve) => window.setTimeout(() => resolve(null), 2500))
+    ])) ||
+    registration ||
+    null
+  );
+}
+
 async function enablePushNotifications() {
   const support = getNotificationSupport();
   if (!support.supported) {
@@ -2309,22 +2336,20 @@ async function enablePushNotifications() {
   }
 
   if (!authState.session?.access_token) {
-    uiState.notificationStatus = "Sign in before enabling notifications.";
+    uiState.notificationStatus = "Sign in first, then tap Enable from the Home Screen app.";
     renderDrawer();
     return;
   }
 
   const publicKey = window.SHIFTPAD_PUBLIC_CONFIG?.vapidPublicKey;
   if (!publicKey) {
-    uiState.notificationStatus = "Notification keys are not configured in Vercel yet.";
+    uiState.notificationStatus = "Vercel is missing VAPID_PUBLIC_KEY, so iPhone cannot ask for notification permission yet.";
     renderDrawer();
     return;
   }
 
   try {
-    uiState.notificationStatus = "Asking iPhone for notification permission...";
-    renderDrawer();
-
+    // Keep this directly in the tap handler; iOS may ignore permission prompts after extra async UI work.
     const permission = await Notification.requestPermission();
     if (permission !== "granted") {
       uiState.notificationStatus = "Notifications were not allowed on this device.";
@@ -2332,7 +2357,10 @@ async function enablePushNotifications() {
       return;
     }
 
-    const registration = (await navigator.serviceWorker.ready) || (await registerShiftPadServiceWorker());
+    uiState.notificationStatus = "Saving this iPhone for ShiftPad reminders...";
+    renderDrawer();
+
+    const registration = await getReadyServiceWorkerRegistration();
     if (!registration?.pushManager) {
       uiState.notificationStatus = "Push notifications are not available in this browser.";
       renderDrawer();

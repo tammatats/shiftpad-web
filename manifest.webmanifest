@@ -2,6 +2,7 @@
   "name": "ShiftPad",
   "short_name": "ShiftPad",
   "description": "Shift notes with tagged reminders.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
