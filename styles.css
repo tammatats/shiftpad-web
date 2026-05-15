@@ -1133,6 +1133,11 @@ select:focus {
   border-color: rgba(230, 125, 89, 0.32);
 }
 
+.quick-chip.todo {
+  background: rgba(236, 248, 241, 0.95);
+  border-color: rgba(95, 159, 116, 0.24);
+}
+
 .quick-chip.custom {
   background: rgba(255, 252, 248, 0.95);
   background: color-mix(in srgb, var(--custom-tag-color, var(--accent)) 18%, #fffaf4 82%);
@@ -1365,6 +1370,43 @@ select:focus {
   border-radius: 999px;
   font-size: 0.9rem;
   font-weight: 700;
+}
+
+.notepad-editor .tag-todo {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  background: #e8f6ee;
+  color: #285d3a;
+  font-size: 0.9rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.notepad-editor .tag-todo::before {
+  content: "";
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(50, 116, 73, 0.56);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.notepad-editor .tag-todo[data-done="true"] {
+  background: #edf0ec;
+  color: rgba(72, 86, 75, 0.72);
+}
+
+.notepad-editor .tag-todo[data-done="true"]::before {
+  content: "✓";
+  display: inline-grid;
+  place-items: center;
+  background: #4f9f68;
+  border-color: #4f9f68;
+  color: white;
+  font-size: 0.72rem;
+  line-height: 1;
 }
 
 .notepad-editor .tag-token[data-tag^="custom-"] {
@@ -1639,6 +1681,11 @@ select:focus {
   text-align: center;
 }
 
+.todo-time-pill {
+  background: rgba(79, 159, 104, 0.13);
+  color: #2d6d44;
+}
+
 .reminder-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1867,6 +1914,10 @@ select:focus {
 
   .mobile-tag-option.bed {
     background: #fff452;
+  }
+
+  .mobile-tag-option.todo {
+    background: #e8f6ee;
   }
 
   .mobile-tag-option.timed {

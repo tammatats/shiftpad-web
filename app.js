@@ -14,7 +14,8 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
   lab: { label: "Lab", icon: "Lab", className: "kind-lab" },
-  io: { label: "I/O", icon: "I/O", className: "kind-io" }
+  io: { label: "I/O", icon: "I/O", className: "kind-io" },
+  todo: { label: "To-do", icon: "To-do", className: "kind-todo" }
 };
 
 const refs = {
@@ -301,6 +302,12 @@ function bindEvents() {
       return;
     }
 
+    const todoToken = event.target.closest('.tag-token[data-tag="todo"]');
+    if (todoToken) {
+      toggleTodoTokenInEditor(todoToken);
+      return;
+    }
+
     if (event.target.closest("#notepad-editor")) {
       const editor = refs.editorRoot.querySelector("#notepad-editor");
       uiState.editorFocused = true;
@@ -494,7 +501,7 @@ function bindEvents() {
   refs.timelineRoot.addEventListener("click", (event) => {
     const tab = event.target.closest("[data-summary-tab]");
     if (tab) {
-      state.summaryTab = tab.dataset.summaryTab === "reminders" ? "reminders" : "beds";
+      state.summaryTab = ["beds", "reminders", "todo"].includes(tab.dataset.summaryTab) ? tab.dataset.summaryTab : "beds";
       saveState();
       renderTimeline();
       return;
@@ -955,9 +962,10 @@ function renderBedIndexRail(beds) {
 
 function renderTimeline() {
   const scope = state.timelineScope || "all";
-  const summaryTab = state.summaryTab === "reminders" ? "reminders" : "beds";
+  const summaryTab = ["beds", "reminders", "todo"].includes(state.summaryTab) ? state.summaryTab : "beds";
   const summary = buildSummaryGroups(scope);
   const openReminderCount = summary.timed.filter((item) => !item.entry.done).length;
+  const openTodoCount = summary.todo.filter((item) => !item.entry.done).length;
   const scopeLabel = scope === "active" ? getCurrentWard()?.name || "Selected ward" : "All wards";
 
   refs.timelineRoot.innerHTML = `
@@ -965,10 +973,13 @@ function renderTimeline() {
       <div class="summary-switcher" role="tablist" aria-label="Summary sections">
         <button class="summary-tab ${summaryTab === "beds" ? "is-active" : ""}" type="button" data-summary-tab="beds">Bed Info</button>
         <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" data-summary-tab="reminders">Reminders</button>
+        <button class="summary-tab ${summaryTab === "todo" ? "is-active" : ""}" type="button" data-summary-tab="todo">To-do list</button>
       </div>
-      <strong class="summary-count">${escapeHtml(scopeLabel)} · ${openReminderCount} open reminder${openReminderCount === 1 ? "" : "s"}</strong>
+      <strong class="summary-count">${escapeHtml(scopeLabel)} · ${openReminderCount} reminder${openReminderCount === 1 ? "" : "s"} · ${openTodoCount} to-do</strong>
     </div>
-    ${summaryTab === "beds" ? renderSummaryBedSection(summary.byBed) : renderSummaryTimedSection(summary.timed)}
+    ${summaryTab === "beds" ? renderSummaryBedSection(summary.byBed) : ""}
+    ${summaryTab === "reminders" ? renderSummaryTimedSection(summary.timed) : ""}
+    ${summaryTab === "todo" ? renderSummaryTodoSection(summary.todo) : ""}
   `;
 
   refs.timelineRoot.querySelectorAll("[data-summary-editor], [data-bed-editor]").forEach(autoSizeTextarea);
@@ -1362,7 +1373,7 @@ function mergeRemoteStatePreservingLocalView(remoteState) {
   const nextState = normalizeState(remoteState);
   nextState.activeView = currentView.activeView === "timeline" ? "timeline" : "notes";
   nextState.timelineScope = currentView.timelineScope === "active" ? "active" : "all";
-  nextState.summaryTab = currentView.summaryTab === "reminders" ? "reminders" : "beds";
+  nextState.summaryTab = ["beds", "reminders", "todo"].includes(currentView.summaryTab) ? currentView.summaryTab : "beds";
 
   const currentWard = nextState.wards.find((ward) => ward.id === currentView.selectedWardId);
   if (currentWard) {
@@ -1443,7 +1454,11 @@ function renderTimelineItem(item) {
           ${metadata.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
         </div>
       </div>
-      <span class="reminder-time-pill">${escapeHtml(formatReminderTimeLabel(entry.reminderTime || "No time"))}</span>
+      ${
+        entry.reminderTime
+          ? `<span class="reminder-time-pill">${escapeHtml(formatReminderTimeLabel(entry.reminderTime))}</span>`
+          : `<span class="reminder-time-pill todo-time-pill">To-do</span>`
+      }
     </article>
   `;
 }
@@ -1497,6 +1512,26 @@ function renderSummaryTimedSection(items) {
     <section class="timeline-group reminders-board">
       ${renderReminderListGroup("Open", openItems, `${openItems.length} active`)}
       ${doneItems.length ? renderReminderListGroup("Completed", doneItems, `${doneItems.length} done`) : ""}
+    </section>
+  `;
+}
+
+function renderSummaryTodoSection(items) {
+  if (!items.length) {
+    return `
+      <section class="timeline-group">
+        ${renderTimelineEmptyState("No to-do items in this scope", "Open Notes")}
+      </section>
+    `;
+  }
+
+  const openItems = items.filter((item) => !item.entry.done);
+  const doneItems = items.filter((item) => item.entry.done);
+
+  return `
+    <section class="timeline-group reminders-board todo-board">
+      ${renderReminderListGroup("To do", openItems, `${openItems.length} open`)}
+      ${doneItems.length ? renderReminderListGroup("Done", doneItems, `${doneItems.length} done`) : ""}
     </section>
   `;
 }
@@ -1584,6 +1619,7 @@ function renderEntryChip(label, extraClass = "") {
 function getAvailableQuickTags() {
   return [
     { key: "bed", label: "Bed", className: "bed" },
+    { key: "todo", label: "To-do", className: "todo" },
     { key: "time", label: "Time", className: "timed" },
     { key: "lab", label: "Lab", className: "timed" },
     { key: "io", label: "I/O", className: "io" },
@@ -1990,6 +2026,14 @@ function toggleTaggedLineDone(noteId, tokenId, done, reminderKey = "") {
   note.updatedAt = Date.now();
   saveState();
   render();
+}
+
+function toggleTodoTokenInEditor(token) {
+  if (!token) return;
+  token.dataset.done = token.dataset.done === "true" ? "false" : "true";
+  const line = findEditorLine(token);
+  refreshLineTagClasses(line);
+  syncEditorDocument();
 }
 
 function ensureSelection() {
@@ -2552,6 +2596,7 @@ function buildReminderSubhead(item) {
 }
 
 function getReminderEditorText(entry) {
+  if (entry.reminderType === "todo") return entry.text || "";
   return entry.text || entry.visibleText || "";
 }
 
@@ -2562,6 +2607,7 @@ function getScopedWards(scope) {
 function buildSummaryGroups(scope) {
   const wards = getScopedWards(scope);
   const timed = [];
+  const todo = [];
   const bedMap = new Map();
 
   wards.forEach((ward) => {
@@ -2585,6 +2631,19 @@ function buildSummaryGroups(scope) {
             reminderType: line.reminderType
           }
         };
+
+        if (line.todoTokenId) {
+          todo.push({
+            ...item,
+            tokenId: line.todoTokenId,
+            entry: {
+              ...item.entry,
+              done: line.todoDone,
+              reminderType: "todo",
+              reminderTime: ""
+            }
+          });
+        }
 
         getReminderItemsForLine(line).forEach((reminder) => {
           timed.push({
@@ -2630,9 +2689,16 @@ function buildSummaryGroups(scope) {
     }
     return parseTime(left.entry.reminderTime) - parseTime(right.entry.reminderTime);
   });
+  todo.sort((left, right) => {
+    if (left.entry.done !== right.entry.done) {
+      return Number(left.entry.done) - Number(right.entry.done);
+    }
+    return Number(left.note.createdAt || 0) - Number(right.note.createdAt || 0) || left.lineIndex - right.lineIndex;
+  });
 
   return {
     timed,
+    todo,
     byBed: Array.from(bedMap.values())
   };
 }
@@ -2828,7 +2894,7 @@ function normalizeState(input) {
     selectedWardId: typeof input.selectedWardId === "string" ? input.selectedWardId : wards[0].id,
     selectedNoteId: typeof input.selectedNoteId === "string" ? input.selectedNoteId : wards[0].notes[0]?.id || "",
     timelineScope: input.timelineScope === "active" ? "active" : "all",
-    summaryTab: input.summaryTab === "reminders" ? "reminders" : "beds",
+    summaryTab: ["beds", "reminders", "todo"].includes(input.summaryTab) ? input.summaryTab : "beds",
     preferences: normalizePreferences(input.preferences),
     wards
   };
@@ -3223,7 +3289,7 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
 
   if (key === "Enter" && !shiftKey) {
     const currentLine = getCurrentEditorLine();
-    if (currentLine?.classList.contains("timed-line") || currentLine?.classList.contains("io-line")) {
+    if (currentLine?.classList.contains("timed-line") || currentLine?.classList.contains("io-line") || currentLine?.classList.contains("todo-line")) {
       placeCaretOnNewLine(currentLine);
       syncEditorDocument();
       return true;
@@ -3293,6 +3359,11 @@ function insertTagIntoEditor(editor, tag) {
     return;
   }
 
+  if (tag === "todo") {
+    insertTodoTagIntoLine(editor, insertionPoint);
+    return;
+  }
+
   const tokenId = createId("tag");
   const tagMeta = getKindMeta(tag);
   const label = tagMeta?.label || tag;
@@ -3346,6 +3417,51 @@ function prepareLineForSingleTagInsertion(editor) {
     selection.removeAllRanges();
     selection.addRange(emptyRange);
   }
+}
+
+function insertTodoTagIntoLine(editor, insertionPoint) {
+  const selection = window.getSelection();
+  const tokenId = createId("tag");
+  const tokenHtml = renderTodoTokenHtml(tokenId);
+  let line = getCurrentEditorLine();
+
+  if (!line || !isNodeInsideEditor(editor, line)) {
+    line = insertEditorLine(editor, `${tokenHtml}&nbsp;`);
+  } else {
+    line.querySelectorAll(".tag-token").forEach((token) => {
+      consumePendingTagInsertion(token);
+      removeInsertedTagSpacer(token);
+      token.remove();
+    });
+
+    if (line.firstChild?.nodeType === Node.TEXT_NODE) {
+      line.firstChild.textContent = line.firstChild.textContent.replace(/^\u00a0+/, "");
+    }
+
+    line.insertAdjacentHTML("afterbegin", `${tokenHtml}&nbsp;`);
+  }
+
+  refreshLineTagClasses(line);
+  const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
+  rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
+
+  if (selection && line) {
+    const range = document.createRange();
+    range.selectNodeContents(line);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  } else {
+    placeCaretAfterNode(inserted, true);
+  }
+
+  syncEditorDocument();
+}
+
+function renderTodoTokenHtml(tokenId, done = false) {
+  return `<span class="tag-token tag-todo" contenteditable="false" data-tag="todo" data-token-id="${escapeAttribute(
+    tokenId
+  )}" data-done="${done ? "true" : "false"}">To-do</span>`;
 }
 
 function isNodeInsideEditor(editor, node) {
@@ -3887,6 +4003,7 @@ function refreshLineTagClasses(line) {
   if (!line) return;
   line.classList.toggle("timed-line", Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]')));
   line.classList.toggle("io-line", Boolean(line.querySelector('.tag-token[data-tag="io"]')));
+  line.classList.toggle("todo-line", Boolean(line.querySelector('.tag-token[data-tag="todo"]')));
 }
 
 function placeCaretInsideLine(line) {
@@ -4052,11 +4169,12 @@ function extractTaggedLines(note) {
     }
 
     const reminderTag = line.tags.find((tag) => isReminderTagType(tag.type));
+    const todoTag = line.tags.find((tag) => tag.type === "todo");
     const timeTag = reminderTag && reminderTag.type !== "io" ? reminderTag : null;
-    const primaryTag = line.tags.find((tag) => tag.type !== "bed" && !isReminderTagType(tag.type));
+    const primaryTag = line.tags.find((tag) => tag.type !== "bed" && tag.type !== "todo" && !isReminderTagType(tag.type));
     const cleanedText = stripTagPrefixes(line.text, line.tags);
     const visibleText = line.visibleText.trim();
-    if (!cleanedText && !reminderTag && !primaryTag && !visibleText) {
+    if (!cleanedText && !reminderTag && !todoTag && !primaryTag && !visibleText) {
       return;
     }
 
@@ -4071,6 +4189,8 @@ function extractTaggedLines(note) {
       reminderTokenId: reminderTag?.id || "",
       timeTokenId: timeTag?.id || reminderTag?.id || "",
       done: Boolean(reminderTag?.done),
+      todoTokenId: todoTag?.id || "",
+      todoDone: Boolean(todoTag?.done),
       ioCreatedAt: reminderTag?.type === "io" ? Number(reminderTag.createdAt || note.createdAt || Date.now()) : 0,
       ioDoneByTime: reminderTag?.type === "io" ? getIoDoneState(reminderTag) : {},
       timeAtStart: Boolean(line.timeAtStart && reminderTag && reminderTag.type !== "io"),
@@ -4377,8 +4497,10 @@ function normalizeEditorBlocks(root) {
     });
     const hasTime = Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]'));
     const hasIo = Boolean(line.querySelector('.tag-token[data-tag="io"]'));
+    const hasTodo = Boolean(line.querySelector('.tag-token[data-tag="todo"]'));
     line.classList.toggle("timed-line", hasTime);
     line.classList.toggle("io-line", hasIo);
+    line.classList.toggle("todo-line", hasTodo);
   });
   applyCustomTagColors(root);
 }
