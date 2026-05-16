@@ -135,8 +135,6 @@ function buildDueReminders(state, { now, timeZone, windowMinutes }) {
   wards.forEach((ward) => {
     const notes = Array.isArray(ward.notes) ? ward.notes : [];
     notes.forEach((note) => {
-      if (now.getTime() - Number(note.createdAt || 0) > 48 * 60 * 60 * 1000) return;
-
       extractTaggedLines(note, preferences).forEach((line) => {
         if (!line.reminderType) return;
 
