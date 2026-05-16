@@ -1128,6 +1128,31 @@ select:focus {
   font-weight: 700;
 }
 
+.quick-chip.bed {
+  background: #fff7b8;
+  border-color: rgba(191, 160, 35, 0.22);
+}
+
+.quick-chip.todo {
+  background: #e8f6ee;
+  border-color: rgba(67, 149, 96, 0.22);
+}
+
+.quick-chip.time {
+  background: #eaf2ff;
+  border-color: rgba(94, 142, 216, 0.22);
+}
+
+.quick-chip.lab {
+  background: #f0eaff;
+  border-color: rgba(143, 101, 214, 0.22);
+}
+
+.quick-chip.io {
+  background: #e7f7fb;
+  border-color: rgba(58, 153, 174, 0.22);
+}
+
 .quick-chip.is-selected {
   background: var(--accent-soft);
   border-color: rgba(230, 125, 89, 0.32);
@@ -1350,12 +1375,12 @@ select:focus {
 }
 
 .notepad-editor .tag-lab {
-  background: var(--time-highlight);
+  background: #f0eaff;
   font-weight: inherit;
 }
 
 .notepad-editor .timed-line {
-  display: inline-block;
+  display: block;
   width: fit-content;
   max-width: 100%;
   background: var(--time-highlight);
@@ -1375,7 +1400,10 @@ select:focus {
 .notepad-editor .tag-todo {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
   border-radius: 999px;
   background: #e8f6ee;
   color: #285d3a;
@@ -1419,7 +1447,7 @@ select:focus {
 }
 
 .notepad-editor .io-line {
-  display: inline-block;
+  display: block;
   width: fit-content;
   max-width: 100%;
   background: #dbe8ff;
@@ -1920,8 +1948,12 @@ select:focus {
     background: #e8f6ee;
   }
 
-  .mobile-tag-option.timed {
-    background: var(--time-highlight);
+  .mobile-tag-option.time {
+    background: #eaf2ff;
+  }
+
+  .mobile-tag-option.lab {
+    background: #f0eaff;
   }
 
   .mobile-tag-option.io {

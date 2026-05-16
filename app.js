@@ -80,6 +80,7 @@ const uiState = {
   drawerSections: new Set(),
   animateWardAdd: false,
   pendingTagInsertions: new Map(),
+  lastInsertedTagTokenId: "",
   notificationStatus: ""
 };
 applyUrlOverrides();
@@ -351,6 +352,7 @@ function bindEvents() {
     const note = getCurrentNote();
     if (!note) return;
 
+    discardFreshFinalizedTagInsertions();
     maybeFinalizeEditingTimeToken(editor);
     note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
     note.updatedAt = Date.now();
@@ -1622,8 +1624,8 @@ function getAvailableQuickTags() {
   return [
     { key: "bed", label: "Bed", className: "bed" },
     { key: "todo", label: "To-do", className: "todo" },
-    { key: "time", label: "Time", className: "timed" },
-    { key: "lab", label: "Lab", className: "timed" },
+    { key: "time", label: "Time", className: "time" },
+    { key: "lab", label: "Lab", className: "lab" },
     { key: "io", label: "I/O", className: "io" },
     ...getCustomTagDefinitions().map((tag) => ({
       key: tag.id,
@@ -2033,6 +2035,7 @@ function toggleTaggedLineDone(noteId, tokenId, done, reminderKey = "") {
 function toggleTodoTokenInEditor(token) {
   if (!token) return;
   token.dataset.done = token.dataset.done === "true" ? "false" : "true";
+  token.setAttribute("aria-checked", token.dataset.done === "true" ? "true" : "false");
   const line = findEditorLine(token);
   refreshLineTagClasses(line);
   syncEditorDocument();
@@ -3235,11 +3238,7 @@ function handleNotepadBeforeInput(event) {
     }
 
     const freshToken = getFreshFinalizedTagForDelete(event.target.closest?.("#notepad-editor"), inputType);
-    if (freshToken) {
-      const pendingInsertion = getPendingTagInsertion(freshToken);
-      removeTagToken(freshToken, { restoreRepair: false });
-      syncEditorDocument();
-      restorePendingInsertionTextOffset(pendingInsertion);
+    if (freshToken && deleteFreshFinalizedTag(freshToken)) {
       return true;
     }
 
@@ -3250,10 +3249,97 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
   } else if (inputType.startsWith("insert") || inputType === "formatSetBlockTextDirection") {
+    const activeToken = getActiveTagToken();
+    if (inputType === "insertText" && activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true") {
+      handleEditingTimeTextInput(activeToken, event.data || "");
+      return true;
+    }
+
     discardFreshFinalizedTagInsertions();
   }
 
   return false;
+}
+
+function handleEditingTimeTextInput(token, text) {
+  if (!token || !text) return;
+
+  if (!isTimeEditingCharacter(text)) {
+    if (isDefaultEditingTimeToken(token)) {
+      removeTagToken(token, { restoreRepair: false });
+      insertTextAtSelection(text);
+      syncEditorDocument();
+      return;
+    }
+    finalizeTagToken(token, { moveToNewLine: false });
+    insertTextAtSelection(text);
+    syncEditorDocument();
+    return;
+  }
+
+  const currentText = String(token.textContent || "");
+  const selectionRange = getTokenTextSelectionRange(token);
+  const start = selectionRange ? selectionRange.start : currentText.length;
+  const end = selectionRange ? selectionRange.end : currentText.length;
+  const nextText = `${currentText.slice(0, start)}${text}${currentText.slice(end)}`;
+  const nextOffset = start + text.length;
+  const completed = extractCompletedTimeTokenText(nextText);
+
+  if (completed) {
+    token.textContent = normalizeTimeTagValue(completed.timePart) || completed.timePart;
+    finalizeTagToken(token, { moveToNewLine: false });
+    const trailingText = completed.trailingText.replace(/^\s+/, "");
+    if (trailingText) {
+      insertTextAtSelection(trailingText);
+    }
+    syncEditorDocument();
+    return;
+  }
+
+  token.textContent = nextText;
+  placeCaretInsideTextNode(token, nextOffset);
+  syncEditorDocument();
+}
+
+function getTokenTextSelectionRange(token) {
+  const selection = window.getSelection();
+  const textNode = token?.firstChild;
+  if (!selection || !textNode || textNode.nodeType !== Node.TEXT_NODE) return null;
+
+  const selectedText = String(selection.toString() || "");
+  const tokenText = String(token.textContent || "");
+  if (selectedText === tokenText) {
+    return { start: 0, end: tokenText.length };
+  }
+
+  if (!token.contains(selection.anchorNode) || !token.contains(selection.focusNode)) {
+    return null;
+  }
+
+  const anchorOffset = selection.anchorNode === textNode ? selection.anchorOffset : tokenText.length;
+  const focusOffset = selection.focusNode === textNode ? selection.focusOffset : anchorOffset;
+  return {
+    start: Math.max(0, Math.min(anchorOffset, focusOffset)),
+    end: Math.min(tokenText.length, Math.max(anchorOffset, focusOffset))
+  };
+}
+
+function placeCaretInsideTextNode(node, offset) {
+  if (!node) return;
+  const selection = window.getSelection();
+  if (!selection) return;
+
+  let textNode = node.firstChild;
+  if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+    textNode = document.createTextNode("");
+    node.appendChild(textNode);
+  }
+
+  const range = document.createRange();
+  range.setStart(textNode, Math.min(Math.max(0, offset), textNode.textContent.length));
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } = {}) {
@@ -3292,6 +3378,11 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
       }
 
       const isPrintable = keyboardEvent ? isPrintableKey(keyboardEvent) : key.length === 1;
+      if (isPrintable && isTimeEditingCharacter(key)) {
+        handleEditingTimeTextInput(token, key);
+        return true;
+      }
+
       if (isPrintable && !isTimeEditingCharacter(key)) {
         if (isDefaultEditingTimeToken(token)) {
           removeTagToken(token, { restoreRepair: false });
@@ -3317,6 +3408,15 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
     }
   }
 
+  if (key === "Backspace" || key === "Delete") {
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    const inputType = key === "Delete" ? "deleteContentForward" : "deleteContentBackward";
+    const freshToken = getFreshFinalizedTagForDelete(editor, inputType);
+    if (freshToken && deleteFreshFinalizedTag(freshToken)) {
+      return true;
+    }
+  }
+
   if (key === "Enter" && !shiftKey) {
     const currentLine = getCurrentEditorLine();
     if (currentLine?.classList.contains("timed-line") || currentLine?.classList.contains("io-line") || currentLine?.classList.contains("todo-line")) {
@@ -3327,6 +3427,17 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
   }
 
   return false;
+}
+
+function deleteFreshFinalizedTag(token) {
+  const pendingInsertion = getPendingTagInsertion(token);
+  if (uiState.lastInsertedTagTokenId === token?.dataset?.tokenId) {
+    uiState.lastInsertedTagTokenId = "";
+  }
+  removeTagToken(token, { restoreRepair: false });
+  syncEditorDocument();
+  restorePendingInsertionTextOffset(pendingInsertion);
+  return true;
 }
 
 function insertTagIntoEditor(editor, tag) {
@@ -3426,6 +3537,7 @@ function prepareLineForSingleTagInsertion(editor) {
   tokens.forEach((token) => {
     consumePendingTagInsertion(token);
     removeInsertedTagSpacer(token);
+    removeTagCaretBoundaries(token);
     token.remove();
   });
 
@@ -3463,6 +3575,7 @@ function insertTodoTagIntoLine(editor, insertionPoint) {
     line.querySelectorAll(".tag-token").forEach((token) => {
       consumePendingTagInsertion(token);
       removeInsertedTagSpacer(token);
+      removeTagCaretBoundaries(token);
       token.remove();
     });
 
@@ -3493,7 +3606,28 @@ function insertTodoTagIntoLine(editor, insertionPoint) {
 function renderTodoTokenHtml(tokenId, done = false) {
   return `<span class="tag-token tag-todo" contenteditable="false" data-tag="todo" data-token-id="${escapeAttribute(
     tokenId
-  )}" data-done="${done ? "true" : "false"}">To-do</span>`;
+  )}" data-done="${done ? "true" : "false"}" role="checkbox" aria-checked="${done ? "true" : "false"}" aria-label="To-do item"></span>`;
+}
+
+function ensureSelectionLineForInsertion(range) {
+  let line = getCurrentEditorLine();
+  if (line) return line;
+
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  if (!editor) return null;
+
+  line = document.createElement("div");
+  line.innerHTML = "<br>";
+
+  if (range.startContainer === editor && range.startOffset < editor.childNodes.length) {
+    editor.insertBefore(line, editor.childNodes[range.startOffset]);
+  } else {
+    editor.appendChild(line);
+  }
+
+  range.selectNodeContents(line);
+  range.collapse(true);
+  return line;
 }
 
 function isNodeInsideEditor(editor, node) {
@@ -3511,7 +3645,7 @@ function insertHtmlAtSelection(html) {
   if (!selection || !selection.rangeCount) return;
 
   const range = selection.getRangeAt(0);
-  const currentLine = getCurrentEditorLine();
+  const currentLine = ensureSelectionLineForInsertion(range);
   if (currentLine && isEditorLineEmpty(currentLine)) {
     currentLine.innerHTML = "";
     range.selectNodeContents(currentLine);
@@ -3570,6 +3704,9 @@ function getEditorSelectionPoint(editor) {
 
 function rememberPendingTagInsertion(tokenId, editor, point, options = {}) {
   if (!tokenId || !editor || !point?.node) return;
+  if (options.finalized) {
+    uiState.lastInsertedTagTokenId = tokenId;
+  }
   uiState.pendingTagInsertions.set(tokenId, {
     editor,
     node: point.node,
@@ -3601,7 +3738,7 @@ function insertTextAtSelection(text) {
   if (!selection || !selection.rangeCount) return;
 
   const range = selection.getRangeAt(0);
-  const currentLine = getCurrentEditorLine();
+  const currentLine = ensureSelectionLineForInsertion(range);
   if (currentLine && isEditorLineEmpty(currentLine)) {
     currentLine.innerHTML = "";
     range.selectNodeContents(currentLine);
@@ -3753,11 +3890,12 @@ function removeTagToken(token, { restoreRepair = true } = {}) {
   if (pendingInsertion) {
     removeInsertedTagSpacer(token);
   }
+  removeTagCaretBoundaries(token);
   token.remove();
   if (parent?.firstChild?.nodeType === Node.TEXT_NODE) {
     parent.firstChild.textContent = parent.firstChild.textContent.replace(/^\u00a0+/, "");
   }
-  if (parent && parent.textContent.trim() === "") {
+  if (parent && String(parent.textContent || "").replace(/\u200b/g, "").trim() === "") {
     parent.innerHTML = "<br>";
   }
   if (line) {
@@ -3792,6 +3930,9 @@ function discardFreshFinalizedTagInsertions() {
   Array.from(uiState.pendingTagInsertions.entries()).forEach(([tokenId, pending]) => {
     if (pending?.finalized) {
       uiState.pendingTagInsertions.delete(tokenId);
+      if (uiState.lastInsertedTagTokenId === tokenId) {
+        uiState.lastInsertedTagTokenId = "";
+      }
     }
   });
 }
@@ -3804,7 +3945,31 @@ function getFreshFinalizedTagForDelete(editor, inputType) {
   const searchBackward = inputType !== "deleteContentForward";
   return (
     getFreshFinalizedTagNearSelection(editor, searchBackward) ||
-    getFreshFinalizedTagNearSelection(editor, !searchBackward)
+    getFreshFinalizedTagNearSelection(editor, !searchBackward) ||
+    getLastInsertedTagForDelete(editor) ||
+    getFreshFinalizedTagInCurrentLine(editor)
+  );
+}
+
+function getLastInsertedTagForDelete(editor) {
+  const tokenId = uiState.lastInsertedTagTokenId;
+  if (!tokenId || !editor) return null;
+  const token = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
+  if (!token?.classList?.contains("tag-token")) return null;
+  const line = findEditorLine(token);
+  const currentLine = getCurrentEditorLine();
+  if (!line || !currentLine || line !== currentLine) return null;
+  return token;
+}
+
+function getFreshFinalizedTagInCurrentLine(editor) {
+  const line = getCurrentEditorLine();
+  if (!line || !isNodeInsideEditor(editor, line)) return null;
+  return (
+    Array.from(line.querySelectorAll(".tag-token")).find((token) => {
+      const pending = getPendingTagInsertion(token);
+      return pending?.finalized;
+    }) || null
   );
 }
 
@@ -3849,7 +4014,8 @@ function getPreviousMeaningfulNode(node, offset, editor) {
         return current;
       }
     } else if (current.childNodes?.length && childOffset > 0) {
-      return getDeepestRightNode(current.childNodes[childOffset - 1]);
+      const safeOffset = Math.min(childOffset, current.childNodes.length);
+      return getDeepestRightNode(current.childNodes[safeOffset - 1]);
     }
 
     if (current.previousSibling) {
@@ -3872,7 +4038,8 @@ function getNextMeaningfulNode(node, offset, editor) {
         return current;
       }
     } else if (current.childNodes?.length && childOffset < current.childNodes.length) {
-      return getDeepestLeftNode(current.childNodes[childOffset]);
+      const safeOffset = Math.max(0, Math.min(childOffset, current.childNodes.length - 1));
+      return getDeepestLeftNode(current.childNodes[safeOffset]);
     }
 
     if (current.nextSibling) {
@@ -4000,9 +4167,26 @@ function placeCaretAtTextOffset(line, targetOffset) {
 function removeInsertedTagSpacer(token) {
   const next = token?.nextSibling;
   if (next?.nodeType !== Node.TEXT_NODE) return;
-  next.textContent = String(next.textContent || "").replace(/^[\u00a0 ]+/, "");
+  next.textContent = String(next.textContent || "").replace(/^[\u00a0 \u200b]+/, "");
   if (!next.textContent) {
     next.remove();
+  }
+}
+
+function removeTagCaretBoundaries(token) {
+  const previous = token?.previousSibling;
+  const next = token?.nextSibling;
+  if (previous?.nodeType === Node.TEXT_NODE && previous.textContent.endsWith("\u200b")) {
+    previous.textContent = previous.textContent.slice(0, -1);
+    if (!previous.textContent) {
+      previous.remove();
+    }
+  }
+  if (next?.nodeType === Node.TEXT_NODE && next.textContent.startsWith("\u200b")) {
+    next.textContent = next.textContent.slice(1);
+    if (!next.textContent) {
+      next.remove();
+    }
   }
 }
 
@@ -4076,14 +4260,15 @@ function getEditableTextFromLine(line) {
   if (!line) return "";
   const clone = line.cloneNode(true);
   clone.querySelectorAll(".tag-token").forEach((token) => token.remove());
-  return String(clone.textContent || "").replace(/\u00a0/g, " ");
+  return String(clone.textContent || "").replace(/\u00a0/g, " ").replace(/\u200b/g, "");
 }
 
 function isEditorLineEmpty(line) {
   if (!line) return true;
   const clone = line.cloneNode(true);
   clone.querySelectorAll("[data-pending-tag-marker], [data-caret-marker]").forEach((marker) => marker.remove());
-  const text = String(clone.textContent || "").replace(/\u00a0/g, " ").trim();
+  if (clone.querySelector(".tag-token")) return false;
+  const text = String(clone.textContent || "").replace(/\u00a0/g, " ").replace(/\u200b/g, "").trim();
   return !text || clone.innerHTML.trim() === "<br>";
 }
 
@@ -4150,8 +4335,9 @@ function getCurrentEditorLine() {
   const selection = window.getSelection();
   if (!selection || !selection.anchorNode) return null;
 
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
   let node = selection.anchorNode.nodeType === Node.TEXT_NODE ? selection.anchorNode.parentNode : selection.anchorNode;
-  while (node && node !== refs.editorRoot) {
+  while (node && node !== refs.editorRoot && node !== editor) {
     if (node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)) {
       return node;
     }
@@ -4290,6 +4476,7 @@ function parseLineNode(node) {
     .map((part) => part.text)
     .join("")
     .replace(/\u00a0/g, " ")
+    .replace(/\u200b/g, "")
     .replace(/\s+\n/g, "\n")
     .replace(/\n\s+/g, "\n")
     .trim();
@@ -4299,6 +4486,7 @@ function parseLineNode(node) {
     .map((part) => part.text)
     .join(" ")
     .replace(/\u00a0/g, " ")
+    .replace(/\u200b/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -4314,7 +4502,7 @@ function parseLineNode(node) {
 }
 
 function stripTagPrefixes(text, tags) {
-  let cleaned = text.trim();
+  let cleaned = String(text || "").replace(/\u200b/g, "").trim();
   tags.forEach((tag) => {
     if (cleaned.toLowerCase().startsWith(tag.text.toLowerCase())) {
       cleaned = cleaned.slice(tag.text.length).trim();
@@ -4428,8 +4616,9 @@ function finalizeTagToken(token, { moveToNewLine = false } = {}) {
 }
 
 function findEditorLine(node) {
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
   let current = node;
-  while (current && current !== refs.editorRoot) {
+  while (current && current !== refs.editorRoot && current !== editor) {
     if (current.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(current.tagName)) {
       return current;
     }
@@ -4512,6 +4701,7 @@ function normalizeEditorBlocks(root) {
   if (!root) return;
 
   root.querySelectorAll?.("[data-pending-tag-marker]").forEach((marker) => marker.remove());
+  wrapLooseEditorInlineNodes(root);
 
   const childNodes = Array.from(root.childNodes);
   if (!childNodes.length) {
@@ -4534,6 +4724,7 @@ function normalizeEditorBlocks(root) {
   Array.from(root.children).forEach((line) => {
     if (!["DIV", "P"].includes(line.tagName)) return;
     Array.from(line.querySelectorAll('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]')).forEach((token) => {
+      if (token.dataset.editing === "true") return;
       token.textContent = normalizeTimeTagValue(token.textContent) || "00.00";
     });
     const hasTime = Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]'));
@@ -4542,8 +4733,86 @@ function normalizeEditorBlocks(root) {
     line.classList.toggle("timed-line", hasTime);
     line.classList.toggle("io-line", hasIo);
     line.classList.toggle("todo-line", hasTodo);
+    ensureTagCaretBoundaries(line);
   });
   applyCustomTagColors(root);
+}
+
+function wrapLooseEditorInlineNodes(root) {
+  const doc = root.ownerDocument;
+  const replacements = [];
+  let inlineLine = null;
+  let changed = false;
+
+  const pushInlineLine = () => {
+    if (!inlineLine) return;
+    if (!inlineLine.childNodes.length) {
+      inlineLine = null;
+      return;
+    }
+    replacements.push(inlineLine);
+    inlineLine = null;
+  };
+
+  Array.from(root.childNodes).forEach((node) => {
+    const isBlock = node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName);
+    if (isBlock) {
+      pushInlineLine();
+      replacements.push(node);
+      return;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE && !node.textContent.replace(/[\s\u00a0\u200b]/g, "")) {
+      changed = true;
+      return;
+    }
+
+    changed = true;
+    if (!inlineLine) {
+      inlineLine = doc.createElement("div");
+    }
+    inlineLine.appendChild(node);
+  });
+
+  pushInlineLine();
+
+  if (!changed) return;
+  if (!replacements.length) {
+    const emptyLine = doc.createElement("div");
+    emptyLine.innerHTML = "<br>";
+    replacements.push(emptyLine);
+  }
+  root.replaceChildren(...replacements);
+}
+
+function ensureTagCaretBoundaries(line) {
+  if (!line) return;
+  Array.from(line.querySelectorAll(".tag-token")).forEach((token) => {
+    ensureCaretBoundaryBefore(token);
+    ensureCaretBoundaryAfter(token);
+  });
+}
+
+function ensureCaretBoundaryBefore(token) {
+  const previous = token.previousSibling;
+  if (previous?.nodeType === Node.TEXT_NODE) {
+    if (!previous.textContent.endsWith("\u200b")) {
+      previous.textContent += "\u200b";
+    }
+    return;
+  }
+  token.parentNode?.insertBefore(document.createTextNode("\u200b"), token);
+}
+
+function ensureCaretBoundaryAfter(token) {
+  const next = token.nextSibling;
+  if (next?.nodeType === Node.TEXT_NODE) {
+    if (!next.textContent.startsWith("\u200b") && !next.textContent.startsWith(" ") && !next.textContent.startsWith("\u00a0")) {
+      next.textContent = `\u200b${next.textContent}`;
+    }
+    return;
+  }
+  token.parentNode?.insertBefore(document.createTextNode("\u200b"), token.nextSibling);
 }
 
 function normalizeTimeTagValue(value) {

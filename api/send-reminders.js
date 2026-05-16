@@ -268,7 +268,7 @@ function parseLineHtml(block) {
     const attrs = `${match[1]} ${match[2]}`;
     tags.push({
       type: getAttr(attrs, "data-tag") || "general",
-      text: decodeHtml(stripTags(match[3])).trim(),
+      text: decodeHtml(stripTags(match[3])).replace(/\u200b/g, "").trim(),
       id: getAttr(attrs, "data-token-id") || "",
       done: getAttr(attrs, "data-done") === "true",
       createdAt: Number(getAttr(attrs, "data-created-at") || 0),
@@ -278,7 +278,7 @@ function parseLineHtml(block) {
   }
 
   const firstTagMatch = block.match(/<(span)\b[^>]*\btag-token\b/i);
-  const text = decodeHtml(stripTags(block)).replace(/\s+/g, " ").trim();
+  const text = decodeHtml(stripTags(block)).replace(/\u200b/g, "").replace(/\s+/g, " ").trim();
   return {
     tags,
     text,
@@ -309,7 +309,7 @@ function decodeHtml(value) {
 }
 
 function stripTagPrefixes(text, tags) {
-  let cleaned = String(text || "").trim();
+  let cleaned = String(text || "").replace(/\u200b/g, "").trim();
   tags.forEach((tag) => {
     if (cleaned.toLowerCase().startsWith(tag.text.toLowerCase())) {
       cleaned = cleaned.slice(tag.text.length).trim();
