@@ -263,17 +263,7 @@ function bindEvents() {
   }, { passive: true });
 
   [refs.newNoteBtn].filter(Boolean).forEach((button) => {
-    button.addEventListener("click", () => {
-      const ward = getCurrentWard();
-      if (!ward) return;
-
-      const note = createNote(`${ward.name} handover ${ward.notes.length + 1}`, "");
-      ward.notes.unshift(note);
-      state.selectedNoteId = note.id;
-      state.activeView = "notes";
-      saveState();
-      render();
-    });
+    button.addEventListener("click", createNewShiftNote);
   });
 
   refs.notesTabBtn.addEventListener("click", () => {
@@ -291,6 +281,12 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
+    const newNote = event.target.closest?.("[data-new-note]");
+    if (newNote) {
+      createNewShiftNote();
+      return;
+    }
+
     const bedJump = event.target.closest?.("[data-bed-jump]");
     if (bedJump) {
       jumpToBedInEditor(bedJump.dataset.bedJump);
@@ -680,12 +676,13 @@ function renderDrawerSectionToggle(key, label, open) {
 function renderSettingsMenu() {
   const preferences = getPreferences();
   const customTags = getCustomTagDefinitions();
-  const settingsOpen = isDrawerSectionOpen("settings");
+  const tagDelaysOpen = isDrawerSectionOpen("tag-delays");
+  const notificationsOpen = isDrawerSectionOpen("notifications");
   const customOpen = isDrawerSectionOpen("custom-tags");
   const resetOpen = isDrawerSectionOpen("reset");
   return `
-    <section class="drawer-section ${settingsOpen ? "is-open" : ""}">
-      ${renderDrawerSectionToggle("settings", "Settings", settingsOpen)}
+    <section class="drawer-section ${tagDelaysOpen ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("tag-delays", "Tag delays", tagDelaysOpen)}
       <div class="drawer-panel">
         <div class="settings-grid">
           ${renderDelayField("time", "Time tag delay", preferences.tagDelays.time)}
@@ -693,6 +690,11 @@ function renderSettingsMenu() {
           ${renderDelayField("io", "I/O delay", preferences.tagDelays.io)}
         </div>
         <p class="drawer-help">I/O uses the note creation time: before 14:30 gives 14:00 and 22:00; after 14:30 gives 22:00 only.</p>
+      </div>
+    </section>
+    <section class="drawer-section ${notificationsOpen ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("notifications", "Notifications", notificationsOpen)}
+      <div class="drawer-panel">
         ${renderNotificationSettings()}
       </div>
     </section>
@@ -916,7 +918,10 @@ function renderEditor() {
             <p class="section-kicker">Main notepad</p>
             <h2>${escapeHtml(ward.name || "Current ward")}</h2>
           </div>
-          <small>Updated ${escapeHtml(formatClock(note.updatedAt || note.createdAt))}</small>
+          <div class="note-meta-actions">
+            <small>Updated ${escapeHtml(formatClock(note.updatedAt || note.createdAt))}</small>
+            <button class="ghost-btn tiny-btn" type="button" data-new-note="true">New shift note</button>
+          </div>
         </div>
 
         <div class="quick-tags">
@@ -1639,6 +1644,18 @@ function getAvailableQuickTags() {
 function getPreferences() {
   state.preferences = normalizePreferences(state.preferences);
   return state.preferences;
+}
+
+function createNewShiftNote() {
+  const ward = getCurrentWard();
+  if (!ward) return;
+
+  const note = createNote(`${ward.name} handover ${ward.notes.length + 1}`, "");
+  ward.notes.unshift(note);
+  state.selectedNoteId = note.id;
+  state.activeView = "notes";
+  saveState();
+  render();
 }
 
 function defaultPreferences() {
