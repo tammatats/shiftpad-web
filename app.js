@@ -59,6 +59,7 @@ const authState = {
   pendingRemoteRecord: null,
   remoteApplyTimer: null,
   lastCloudUpdatedAt: 0,
+  lastCloudUpdatedAtValue: "",
   lastLocalMutationAt: 0,
   realtimeStatus: "off",
   isSaving: false,
@@ -1114,6 +1115,8 @@ async function applySession(session) {
   authState.session = session || null;
   authState.user = session?.user || null;
   authState.ready = true;
+  authState.lastCloudUpdatedAt = 0;
+  authState.lastCloudUpdatedAtValue = "";
 
   if (!authState.user) {
     state = loadState();
@@ -1193,11 +1196,7 @@ async function hydrateStateFromCloud() {
   let data = null;
   let error = null;
   try {
-    const response = await authState.client
-      .from(CLOUD_STATE_TABLE)
-      .select("state_json,updated_at")
-      .eq("user_id", authState.user.id)
-      .maybeSingle();
+    const response = await fetchCloudStateRecord();
     data = response.data;
     error = response.error;
   } catch (requestError) {
@@ -1217,7 +1216,7 @@ async function hydrateStateFromCloud() {
 
   if (data?.state_json) {
     state = normalizeState(data.state_json);
-    authState.lastCloudUpdatedAt = parseCloudUpdatedAt(data.updated_at) || Date.now();
+    rememberCloudVersion(data.updated_at);
   } else {
     state = normalizeState(fallback);
     authState.suppressCloudSave = false;
@@ -1297,16 +1296,13 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
   if (!keepStatus) {
     authState.realtimeStatus = "off";
     authState.lastCloudUpdatedAt = 0;
+    authState.lastCloudUpdatedAtValue = "";
   }
 }
 
 async function fetchLatestCloudState() {
   if (!authState.client || !authState.user || authState.isHydrating || document.visibilityState === "hidden") return;
-  const { data, error } = await authState.client
-    .from(CLOUD_STATE_TABLE)
-    .select("state_json,updated_at")
-    .eq("user_id", authState.user.id)
-    .maybeSingle();
+  const { data, error } = await fetchCloudStateRecord();
 
   if (error) throw error;
   if (authState.realtimeStatus === "error") {
@@ -1359,16 +1355,21 @@ function applyPendingRemoteStateIfReady() {
   applyRemoteCloudState(record);
 }
 
-function applyRemoteCloudState(record) {
+function applyRemoteCloudState(record, { force = false } = {}) {
   const remoteUpdatedAt = parseCloudUpdatedAt(record.updated_at) || Date.now();
-  if (!record?.state_json || remoteUpdatedAt <= authState.lastCloudUpdatedAt) return;
+  if (!record?.state_json || (!force && remoteUpdatedAt <= authState.lastCloudUpdatedAt)) return;
 
   state = mergeRemoteStatePreservingLocalView(record.state_json);
-  authState.lastCloudUpdatedAt = remoteUpdatedAt;
+  rememberCloudVersion(record.updated_at || new Date(remoteUpdatedAt).toISOString());
   authState.suppressCloudSave = true;
   saveState({ skipCloud: true, markDirty: false });
   authState.suppressCloudSave = false;
   render();
+}
+
+function rememberCloudVersion(updatedAtValue) {
+  authState.lastCloudUpdatedAtValue = String(updatedAtValue || "");
+  authState.lastCloudUpdatedAt = parseCloudUpdatedAt(updatedAtValue) || Date.now();
 }
 
 function mergeRemoteStatePreservingLocalView(remoteState) {
@@ -3018,6 +3019,14 @@ function scheduleCloudSave() {
   }, CLOUD_SAVE_DEBOUNCE_MS);
 }
 
+function fetchCloudStateRecord() {
+  return authState.client
+    .from(CLOUD_STATE_TABLE)
+    .select("state_json,updated_at")
+    .eq("user_id", authState.user.id)
+    .maybeSingle();
+}
+
 async function saveCloudStateNow() {
   if (!authState.client || !authState.user || authState.suppressCloudSave) return;
 
@@ -3030,23 +3039,65 @@ async function saveCloudStateNow() {
     updated_at: updatedAt
   };
 
-  const { data, error } = await authState.client
-    .from(CLOUD_STATE_TABLE)
-    .upsert(payload, { onConflict: "user_id" })
-    .select("updated_at")
-    .maybeSingle();
+  const query = authState.lastCloudUpdatedAtValue
+    ? authState.client
+        .from(CLOUD_STATE_TABLE)
+        .update({
+          state_json: payload.state_json,
+          updated_at: payload.updated_at
+        })
+        .eq("user_id", authState.user.id)
+        .eq("updated_at", authState.lastCloudUpdatedAtValue)
+    : authState.client.from(CLOUD_STATE_TABLE).insert(payload);
+
+  const { data, error } = await query.select("updated_at").maybeSingle();
   authState.isSaving = false;
 
   if (error) {
+    if (isCloudVersionConflictError(error)) {
+      await handleCloudSaveConflict();
+      return;
+    }
     console.error("Cloud save failed:", error);
     setAuthMessage(`Cloud save failed: ${error.message}`);
     renderAuthUi();
     return;
   }
 
-  authState.lastCloudUpdatedAt = parseCloudUpdatedAt(data?.updated_at || updatedAt) || Date.now();
+  if (!data) {
+    await handleCloudSaveConflict();
+    return;
+  }
+
+  rememberCloudVersion(data.updated_at || updatedAt);
   applyPendingRemoteStateIfReady();
   setAuthMessage("");
+  renderAuthUi();
+}
+
+function isCloudVersionConflictError(error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  return code === "23505" || /duplicate key|violates unique constraint/i.test(message);
+}
+
+async function handleCloudSaveConflict() {
+  try {
+    const { data, error } = await fetchCloudStateRecord();
+    if (error) throw error;
+    if (data?.state_json) {
+      authState.pendingRemoteRecord = null;
+      applyRemoteCloudState(data, { force: true });
+      setAuthMessage("Cloud changed on another device, so ShiftPad loaded the newer cloud copy instead of overwriting it.");
+      return;
+    }
+  } catch (error) {
+    console.error("Cloud conflict refresh failed:", error);
+    setAuthMessage(`Cloud sync conflict. Refresh failed: ${error.message}`);
+    renderAuthUi();
+    return;
+  }
+  setAuthMessage("Cloud changed on another device. Refresh ShiftPad before saving again.");
   renderAuthUi();
 }
 
