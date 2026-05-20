@@ -5,9 +5,9 @@ const WARD_COLORS = ["#f28b67", "#6ea8fe", "#6fc48d", "#b490ff", "#f0b95c", "#ff
 const CUSTOM_TAG_COLORS = ["#9b8cff", "#2bb3c0", "#f27b8a", "#63b56b", "#f0a64f", "#5f9cff", "#c86dd7", "#b6a54a"];
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
-const CLOUD_SAVE_DEBOUNCE_MS = 700;
-const CLOUD_SYNC_POLL_MS = 5000;
-const CLOUD_REMOTE_APPLY_IDLE_MS = 1200;
+const CLOUD_SAVE_DEBOUNCE_MS = 300;
+const CLOUD_SYNC_POLL_MS = 1500;
+const CLOUD_REMOTE_APPLY_IDLE_MS = 450;
 const LOCAL_SAVE_DEBOUNCE_MS = 180;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
@@ -61,6 +61,7 @@ const authState = {
   lastCloudUpdatedAt: 0,
   lastCloudUpdatedAtValue: "",
   lastLocalMutationAt: 0,
+  lastRemoteAppliedAt: 0,
   realtimeStatus: "off",
   isSaving: false,
   isHydrating: false,
@@ -536,6 +537,17 @@ function bindEvents() {
       applyPendingRemoteStateIfReady();
     }
   });
+  window.addEventListener("focus", () => {
+    fetchLatestCloudState({ reason: "focus" }).catch((error) => {
+      console.error("Cloud sync focus refresh failed:", error);
+    });
+    applyPendingRemoteStateIfReady();
+  });
+  window.addEventListener("online", () => {
+    fetchLatestCloudState({ reason: "online" }).catch((error) => {
+      console.error("Cloud sync online refresh failed:", error);
+    });
+  });
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
   window.addEventListener("scroll", showBedIndexDuringScroll, { passive: true });
 }
@@ -848,12 +860,22 @@ function getSyncStatusText() {
   if (!authState.configured) return "Add Supabase env vars";
   if (!authState.user) return authState.ready ? "Sign in to load cloud notes" : "Checking session...";
   if (authState.isHydrating) return "Loading cloud notes...";
+  if (authState.saveTimer) return "Saving soon...";
   if (authState.isSaving) return "Saving to cloud...";
-  if (authState.pendingRemoteRecord) return "Remote changes waiting";
+  if (authState.pendingRemoteRecord) return "Loading newer cloud edits...";
+  if (authState.lastRemoteAppliedAt) return formatLiveSyncStatus();
   if (authState.realtimeStatus === "subscribed") return "Live sync on";
-  if (authState.realtimeStatus === "polling") return "Cloud sync polling";
+  if (authState.realtimeStatus === "polling") return "Live sync polling";
   if (authState.realtimeStatus === "error") return "Cloud sync reconnecting";
   return "Cloud sync on";
+}
+
+function formatLiveSyncStatus() {
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - authState.lastRemoteAppliedAt) / 1000));
+  if (ageSeconds < 10) return "Updated just now";
+  if (ageSeconds < 60) return `Updated ${ageSeconds}s ago`;
+  if (authState.realtimeStatus === "subscribed") return "Live sync on";
+  return "Live sync polling";
 }
 
 function isDrawerSectionOpen(key) {
@@ -1297,6 +1319,7 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
     authState.realtimeStatus = "off";
     authState.lastCloudUpdatedAt = 0;
     authState.lastCloudUpdatedAtValue = "";
+    authState.lastRemoteAppliedAt = 0;
   }
 }
 
@@ -1361,6 +1384,7 @@ function applyRemoteCloudState(record, { force = false } = {}) {
 
   state = mergeRemoteStatePreservingLocalView(record.state_json);
   rememberCloudVersion(record.updated_at || new Date(remoteUpdatedAt).toISOString());
+  authState.lastRemoteAppliedAt = Date.now();
   authState.suppressCloudSave = true;
   saveState({ skipCloud: true, markDirty: false });
   authState.suppressCloudSave = false;
@@ -3012,11 +3036,14 @@ function scheduleCloudSave() {
   if (!authState.client || !authState.user || authState.suppressCloudSave) return;
   window.clearTimeout(authState.saveTimer);
   authState.saveTimer = window.setTimeout(() => {
+    authState.saveTimer = null;
     saveCloudStateNow().catch((error) => {
       console.error("Cloud save failed:", error);
+      authState.isSaving = false;
       renderAuthUi();
     });
   }, CLOUD_SAVE_DEBOUNCE_MS);
+  renderAuthUi();
 }
 
 function fetchCloudStateRecord() {
@@ -3050,7 +3077,16 @@ async function saveCloudStateNow() {
         .eq("updated_at", authState.lastCloudUpdatedAtValue)
     : authState.client.from(CLOUD_STATE_TABLE).insert(payload);
 
-  const { data, error } = await query.select("updated_at").maybeSingle();
+  let data = null;
+  let error = null;
+  try {
+    const response = await query.select("updated_at").maybeSingle();
+    data = response.data;
+    error = response.error;
+  } catch (saveError) {
+    authState.isSaving = false;
+    throw saveError;
+  }
   authState.isSaving = false;
 
   if (error) {
