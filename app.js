@@ -4858,6 +4858,10 @@ function restoreSelectionMarker(marker, editor) {
     marker.remove();
     return;
   }
+  if (!marker.parentNode) {
+    placeCaretAtEndOfLine(getCurrentEditorLine() || editor);
+    return;
+  }
 
   const range = document.createRange();
   range.setStartAfter(marker);
@@ -4875,6 +4879,7 @@ function normalizeEditorBlocks(root) {
 
   root.querySelectorAll?.("[data-pending-tag-marker]").forEach((marker) => marker.remove());
   wrapLooseEditorInlineNodes(root);
+  scrubEditorTagTokens(root);
 
   const childNodes = Array.from(root.childNodes);
   if (!childNodes.length) {
@@ -4893,6 +4898,7 @@ function normalizeEditorBlocks(root) {
   while (liftNestedBlockLines(root)) {
     // Keep flattening until every visible line is a direct child of the editor root.
   }
+  scrubEditorTagTokens(root);
 
   Array.from(root.children).forEach((line) => {
     if (!["DIV", "P"].includes(line.tagName)) return;
@@ -4903,12 +4909,39 @@ function normalizeEditorBlocks(root) {
     const hasTime = Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]'));
     const hasIo = Boolean(line.querySelector('.tag-token[data-tag="io"]'));
     const hasTodo = Boolean(line.querySelector('.tag-token[data-tag="todo"]'));
+    if (!hasTime && !hasIo && !hasTodo && isEditorLineEmpty(line)) {
+      line.innerHTML = "<br>";
+    }
     line.classList.toggle("timed-line", hasTime);
     line.classList.toggle("io-line", hasIo);
     line.classList.toggle("todo-line", hasTodo);
     ensureTagCaretBoundaries(line);
   });
   applyCustomTagColors(root);
+}
+
+function scrubEditorTagTokens(root) {
+  root.querySelectorAll?.(".tag-token .tag-token").forEach((nestedToken) => {
+    const outerToken = nestedToken.parentElement?.closest(".tag-token");
+    if (!outerToken || outerToken === nestedToken || !outerToken.parentNode) return;
+    while (outerToken.firstChild) {
+      outerToken.parentNode.insertBefore(outerToken.firstChild, outerToken);
+    }
+    outerToken.remove();
+  });
+
+  root.querySelectorAll?.(".tag-token").forEach((token) => {
+    const tagType = token.dataset.tag || "";
+    if (tagType === "todo" || tagType === "io") return;
+    const text = String(token.textContent || "").replace(/[\u00a0\u200b]/g, " ").trim();
+    if (text) return;
+    const caretMarker = token.querySelector?.("[data-caret-marker]");
+    if (caretMarker && token.parentNode) {
+      token.parentNode.insertBefore(caretMarker, token);
+    }
+    removeTagCaretBoundaries(token);
+    token.remove();
+  });
 }
 
 function wrapLooseEditorInlineNodes(root) {

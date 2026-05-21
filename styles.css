@@ -1382,13 +1382,13 @@ select:focus {
 
 .notepad-editor .timed-line {
   display: block;
-  width: fit-content;
+  width: auto;
   max-width: 100%;
-  background: rgba(232, 246, 216, 0.55);
-  border: 1px solid rgba(102, 153, 63, 0.1);
-  border-radius: 10px;
-  padding: 4px 6px;
-  margin-block: 2px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  margin-block: 0;
   font-weight: inherit;
 }
 
@@ -1452,13 +1452,13 @@ select:focus {
 
 .notepad-editor .io-line {
   display: block;
-  width: fit-content;
+  width: auto;
   max-width: 100%;
-  background: rgba(231, 247, 251, 0.55);
-  border: 1px solid rgba(58, 153, 174, 0.1);
-  border-radius: 10px;
-  padding: 4px 6px;
-  margin-block: 2px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  margin-block: 0;
   font-weight: inherit;
 }
 
