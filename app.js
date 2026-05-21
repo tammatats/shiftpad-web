@@ -65,7 +65,8 @@ const authState = {
   realtimeStatus: "off",
   isSaving: false,
   isHydrating: false,
-  suppressCloudSave: false
+  suppressCloudSave: false,
+  pendingDoneToggles: new Map()
 };
 const uiState = {
   editorFocused: false,
@@ -1315,6 +1316,7 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
   }
   authState.realtimeChannel = null;
   authState.pendingRemoteRecord = null;
+  authState.pendingDoneToggles.clear();
   if (!keepStatus) {
     authState.realtimeStatus = "off";
     authState.lastCloudUpdatedAt = 0;
@@ -1382,7 +1384,14 @@ function applyRemoteCloudState(record, { force = false } = {}) {
   const remoteUpdatedAt = parseCloudUpdatedAt(record.updated_at) || Date.now();
   if (!record?.state_json || (!force && remoteUpdatedAt <= authState.lastCloudUpdatedAt)) return;
 
-  state = mergeRemoteStatePreservingLocalView(record.state_json);
+  const remoteState = normalizeState(record.state_json);
+  if (authState.pendingDoneToggles.size) {
+    authState.pendingDoneToggles.forEach((toggle) => {
+      applyDoneToggleToState(remoteState, toggle);
+    });
+  }
+
+  state = mergeRemoteStatePreservingLocalView(remoteState);
   rememberCloudVersion(record.updated_at || new Date(remoteUpdatedAt).toISOString());
   authState.lastRemoteAppliedAt = Date.now();
   authState.suppressCloudSave = true;
@@ -2055,32 +2064,69 @@ function getCaretRect() {
 }
 
 function toggleTaggedLineDone(noteId, tokenId, done, reminderKey = "") {
-  const note = findNoteById(noteId);
-  if (!note || !tokenId) return;
+  if (!applyDoneToggleToState(state, { noteId, tokenId, done, reminderKey })) return;
 
-  const root = parseHtmlRoot(getNoteDocumentHtml(note));
-  const target = root.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
-  if (!target) return;
-
-  if (target.dataset.tag === "io" && reminderKey) {
-    target.removeAttribute("data-done");
-    target.setAttribute(getIoDoneAttributeName(reminderKey), done ? "true" : "false");
-  } else {
-    target.dataset.done = done ? "true" : "false";
-  }
-  note.documentHtml = sanitizeEditorHtml(root.innerHTML);
-  note.updatedAt = Date.now();
+  rememberPendingDoneToggle(noteId, tokenId, done, reminderKey);
   saveState();
   render();
 }
 
 function toggleTodoTokenInEditor(token) {
   if (!token) return;
-  token.dataset.done = token.dataset.done === "true" ? "false" : "true";
-  token.setAttribute("aria-checked", token.dataset.done === "true" ? "true" : "false");
+  const note = getCurrentNote();
+  const tokenId = token.dataset.tokenId || "";
+  const done = token.dataset.done !== "true";
+  token.dataset.done = done ? "true" : "false";
+  token.setAttribute("aria-checked", done ? "true" : "false");
   const line = findEditorLine(token);
   refreshLineTagClasses(line);
+  rememberPendingDoneToggle(note?.id || "", tokenId, done, "");
   syncEditorDocument();
+}
+
+function rememberPendingDoneToggle(noteId, tokenId, done, reminderKey = "") {
+  if (!authState.user || !noteId || !tokenId) return;
+  authState.pendingDoneToggles.set(getDoneToggleKey(noteId, tokenId, reminderKey), {
+    noteId,
+    tokenId,
+    done: Boolean(done),
+    reminderKey: reminderKey || ""
+  });
+}
+
+function getDoneToggleKey(noteId, tokenId, reminderKey = "") {
+  return [noteId, tokenId, reminderKey || ""].map((item) => encodeURIComponent(item)).join(":");
+}
+
+function applyDoneToggleToState(targetState, toggle) {
+  const note = findNoteByIdInState(targetState, toggle?.noteId);
+  if (!note || !toggle?.tokenId) return false;
+
+  const root = parseHtmlRoot(getNoteDocumentHtml(note));
+  const target = root.querySelector(`[data-token-id="${cssEscape(toggle.tokenId)}"]`);
+  if (!target) return false;
+
+  if (target.dataset.tag === "io" && toggle.reminderKey) {
+    target.removeAttribute("data-done");
+    target.setAttribute(getIoDoneAttributeName(toggle.reminderKey), toggle.done ? "true" : "false");
+  } else {
+    target.dataset.done = toggle.done ? "true" : "false";
+    if (target.dataset.tag === "todo") {
+      target.setAttribute("aria-checked", toggle.done ? "true" : "false");
+    }
+  }
+  note.documentHtml = sanitizeEditorHtml(root.innerHTML);
+  note.updatedAt = Date.now();
+  return true;
+}
+
+function findNoteByIdInState(targetState, noteId) {
+  if (!targetState || !noteId) return null;
+  for (const ward of targetState.wards || []) {
+    const note = (ward.notes || []).find((item) => item.id === noteId);
+    if (note) return note;
+  }
+  return null;
 }
 
 function ensureSelection() {
@@ -3106,6 +3152,7 @@ async function saveCloudStateNow() {
   }
 
   rememberCloudVersion(data.updated_at || updatedAt);
+  authState.pendingDoneToggles.clear();
   applyPendingRemoteStateIfReady();
   setAuthMessage("");
   renderAuthUi();
@@ -3122,6 +3169,28 @@ async function handleCloudSaveConflict() {
     const { data, error } = await fetchCloudStateRecord();
     if (error) throw error;
     if (data?.state_json) {
+      if (authState.pendingDoneToggles.size) {
+        const mergedState = normalizeState(data.state_json);
+        let didReplayDoneToggle = false;
+        authState.pendingDoneToggles.forEach((toggle) => {
+          didReplayDoneToggle = applyDoneToggleToState(mergedState, toggle) || didReplayDoneToggle;
+        });
+
+        if (didReplayDoneToggle) {
+          authState.pendingRemoteRecord = null;
+          state = mergeRemoteStatePreservingLocalView(mergedState);
+          rememberCloudVersion(data.updated_at);
+          authState.suppressCloudSave = true;
+          saveState({ skipCloud: true, markDirty: false });
+          authState.suppressCloudSave = false;
+          render();
+          setAuthMessage("Cloud changed, so ShiftPad kept your checkbox change and saved it on top of the newer copy.");
+          await saveCloudStateNow();
+          return;
+        }
+        authState.pendingDoneToggles.clear();
+      }
+
       authState.pendingRemoteRecord = null;
       applyRemoteCloudState(data, { force: true });
       setAuthMessage("Cloud changed on another device, so ShiftPad loaded the newer cloud copy instead of overwriting it.");
