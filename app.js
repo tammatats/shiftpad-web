@@ -84,7 +84,8 @@ const uiState = {
   animateWardAdd: false,
   pendingTagInsertions: new Map(),
   lastInsertedTagTokenId: "",
-  notificationStatus: ""
+  notificationStatus: "",
+  pointerTracking: null
 };
 applyUrlOverrides();
 
@@ -256,13 +257,21 @@ function bindEvents() {
   refs.editorRoot.addEventListener("pointerdown", (event) => {
     const editor = event.target.closest?.("#notepad-editor");
     if (!editor) return;
-    rememberEditorTapScroll();
+    rememberEditorTapScroll(event);
+  }, { passive: true });
+
+  refs.editorRoot.addEventListener("pointermove", (event) => {
+    markEditorPointerMoved(event);
   }, { passive: true });
 
   refs.editorRoot.addEventListener("touchstart", (event) => {
     const editor = event.target.closest?.("#notepad-editor");
     if (!editor) return;
-    rememberEditorTapScroll();
+    rememberEditorTapScroll(event);
+  }, { passive: true });
+
+  refs.editorRoot.addEventListener("touchmove", (event) => {
+    markEditorPointerMoved(event);
   }, { passive: true });
 
   [refs.newNoteBtn].filter(Boolean).forEach((button) => {
@@ -1907,21 +1916,50 @@ function rememberEditorSelection(editor) {
   uiState.savedSelection = selection.getRangeAt(0).cloneRange();
 }
 
-function rememberEditorTapScroll() {
+function rememberEditorTapScroll(event) {
   if (!isCompactMobileLayout()) return;
   const viewport = window.visualViewport;
+  const point = getEditorPointerPoint(event);
   uiState.editorTapScroll = {
     scrollX: window.scrollX,
     scrollY: window.scrollY,
     viewportHeight: viewport?.height || window.innerHeight,
     viewportTop: viewport?.offsetTop || 0,
-    timestamp: performance.now()
+    timestamp: performance.now(),
+    startX: point?.x ?? 0,
+    startY: point?.y ?? 0,
+    moved: false
   };
+  uiState.pointerTracking = point ? { x: point.x, y: point.y } : null;
+}
+
+function getEditorPointerPoint(event) {
+  const touch = event?.touches?.[0] || event?.changedTouches?.[0];
+  const x = touch?.clientX ?? event?.clientX;
+  const y = touch?.clientY ?? event?.clientY;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function markEditorPointerMoved(event) {
+  const start = uiState.pointerTracking;
+  const snapshot = uiState.editorTapScroll;
+  if (!start || !snapshot) return;
+  const point = getEditorPointerPoint(event);
+  if (!point) return;
+  if (Math.hypot(point.x - start.x, point.y - start.y) > 10) {
+    snapshot.moved = true;
+  }
 }
 
 function stabilizeEditorTapScroll(editor, attempt = 0) {
   const snapshot = uiState.editorTapScroll;
   if (!editor || !snapshot || !isCompactMobileLayout()) return;
+  const selection = window.getSelection();
+  if (snapshot.moved || (selection && selection.rangeCount && !selection.isCollapsed)) {
+    uiState.editorTapScroll = null;
+    return;
+  }
 
   window.requestAnimationFrame(() => {
     const viewport = window.visualViewport;
@@ -3415,6 +3453,10 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
+    if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(event.target.closest?.("#notepad-editor"))) {
+      return true;
+    }
+
     const bedLine = getCurrentEditingBedLine();
     if (bedLine && isEditingBedLineEmpty(bedLine)) {
       removeEditingBedLine(bedLine);
@@ -4028,6 +4070,10 @@ function deleteBackwardAtSelection(editor) {
     return;
   }
 
+  if (blockTaggedLineMergeOnBackspace(editor)) {
+    return;
+  }
+
   if (typeof selection.modify === "function") {
     selection.modify("extend", "backward", "character");
     if (!selection.isCollapsed) {
@@ -4052,6 +4098,46 @@ function deleteBackwardAtSelection(editor) {
     syncEditorDocument();
     rememberEditorSelection(editor);
   }
+}
+
+function blockTaggedLineMergeOnBackspace(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return false;
+  const currentLine = getCurrentEditorLine();
+  const previousLine = getPreviousEditorLine(currentLine);
+  if (!currentLine || !previousLine) return false;
+  if (!isSelectionAtStartOfLine(currentLine, selection)) return false;
+  if (!lineHasTag(currentLine) || !lineHasTag(previousLine)) return false;
+
+  placeCaretAtEndOfLine(previousLine);
+  rememberEditorSelection(editor);
+  return true;
+}
+
+function getPreviousEditorLine(line) {
+  let node = line?.previousSibling || null;
+  while (node) {
+    if (node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)) return node;
+    node = node.previousSibling;
+  }
+  return null;
+}
+
+function isSelectionAtStartOfLine(line, selection) {
+  if (!line || !selection?.rangeCount) return false;
+  const range = selection.getRangeAt(0);
+  const beforeRange = document.createRange();
+  beforeRange.selectNodeContents(line);
+  try {
+    beforeRange.setEnd(range.startContainer, range.startOffset);
+  } catch {
+    return false;
+  }
+  return !String(beforeRange.toString() || "").replace(/[\u00a0\u200b]/g, " ").trim();
+}
+
+function lineHasTag(line) {
+  return Boolean(line?.querySelector?.(".tag-token"));
 }
 
 function removeTagToken(token, { restoreRepair = true } = {}) {
@@ -4858,7 +4944,7 @@ function restoreSelectionMarker(marker, editor) {
     marker.remove();
     return;
   }
-  if (!marker.parentNode) {
+  if (!marker.parentNode || !marker.isConnected) {
     placeCaretAtEndOfLine(getCurrentEditorLine() || editor);
     return;
   }
@@ -4899,6 +4985,7 @@ function normalizeEditorBlocks(root) {
     // Keep flattening until every visible line is a direct child of the editor root.
   }
   scrubEditorTagTokens(root);
+  splitMultiTagEditorLines(root);
 
   Array.from(root.children).forEach((line) => {
     if (!["DIV", "P"].includes(line.tagName)) return;
@@ -4918,6 +5005,42 @@ function normalizeEditorBlocks(root) {
     ensureTagCaretBoundaries(line);
   });
   applyCustomTagColors(root);
+}
+
+function splitMultiTagEditorLines(root) {
+  Array.from(root.children || []).forEach((line) => {
+    if (!(line.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(line.tagName))) return;
+    if (line.querySelectorAll(".tag-token").length <= 1) return;
+
+    const doc = root.ownerDocument;
+    const replacements = [];
+    let nextLine = doc.createElement("div");
+    let nextLineHasTag = false;
+
+    const pushLine = () => {
+      if (!nextLine.childNodes.length) return;
+      replacements.push(nextLine);
+      nextLine = doc.createElement("div");
+      nextLineHasTag = false;
+    };
+
+    Array.from(line.childNodes).forEach((node) => {
+      const nodeIsTag = node.nodeType === Node.ELEMENT_NODE && node.classList.contains("tag-token");
+      if (nodeIsTag && nextLineHasTag) {
+        pushLine();
+      }
+      nextLine.appendChild(node.cloneNode(true));
+      nextLineHasTag = nextLineHasTag || nodeIsTag;
+    });
+
+    pushLine();
+    if (replacements.length <= 1) return;
+
+    const fragment = doc.createDocumentFragment();
+    replacements.forEach((replacement) => fragment.appendChild(replacement));
+    root.insertBefore(fragment, line);
+    line.remove();
+  });
 }
 
 function scrubEditorTagTokens(root) {
