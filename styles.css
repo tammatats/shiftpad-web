@@ -174,6 +174,7 @@ button {
   justify-content: space-between;
   align-items: center;
   gap: 18px;
+  min-height: 60px;
   padding: 8px;
   margin: 0;
   border-radius: 20px;
@@ -831,19 +832,24 @@ button:disabled {
 
 .drawer-ward-list .ward-tab {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 34px minmax(0, 1fr) 38px;
   align-items: center;
-  gap: 8px;
-  padding: 6px;
+  gap: 7px;
+  padding: 7px;
+}
+
+.drawer-ward-list .ward-tab.all-wards-tab {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 10px 12px;
 }
 
 .ward-select-btn {
   min-width: 0;
-  min-height: 44px;
+  min-height: 38px;
   padding: 0;
-  border: 0;
+  border: 1px solid rgba(96, 76, 55, 0.08);
   border-radius: 12px;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.52);
   color: var(--ink);
   font: inherit;
   font-weight: 800;
@@ -857,37 +863,56 @@ button:disabled {
 .ward-name-input {
   min-width: 0;
   width: 100%;
-  min-height: 40px;
-  border: 1px solid rgba(96, 76, 55, 0.1);
+  min-height: 38px;
+  border: 1px solid transparent;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.72);
+  background: transparent;
   color: var(--ink);
   font: inherit;
   font-weight: 800;
-  padding: 7px 10px;
+  padding: 7px 8px;
   outline: none;
 }
 
 .ward-name-input:focus {
   border-color: rgba(230, 125, 89, 0.34);
+  background: rgba(255, 255, 255, 0.86);
   box-shadow: 0 0 0 3px rgba(230, 125, 89, 0.08);
 }
 
 .ward-delete-btn {
-  min-height: 40px;
-  padding: 0 10px;
-  border: 1px solid rgba(166, 53, 40, 0.18);
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 12px;
-  background: rgba(255, 245, 240, 0.84);
-  color: #9d3429;
+  background: transparent;
+  color: rgba(157, 52, 41, 0.66);
   font: inherit;
-  font-size: 0.86rem;
   font-weight: 800;
 }
 
-.ward-select-btn:hover,
+.ward-select-btn:hover {
+  background: rgba(255, 255, 255, 0.78);
+}
+
 .ward-delete-btn:hover {
-  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(166, 53, 40, 0.12);
+  background: rgba(255, 245, 240, 0.76);
+  color: #9d3429;
+}
+
+.ward-delete-icon {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .ward-tab.is-active {
@@ -899,17 +924,18 @@ button:disabled {
 }
 
 .ward-tab-head {
+  min-height: 38px;
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
 .ward-dot {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
   background: var(--ward-color, var(--accent));
-  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.65);
+  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.68);
 }
 
 .ward-tab small,
@@ -924,13 +950,17 @@ button:disabled {
 .content-shell {
   min-width: 0;
   width: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(360px, 1fr);
   overflow-x: clip;
 }
 
 .view-tabs,
 .scope-toggle {
   display: inline-flex;
+  align-items: center;
   gap: 8px;
+  min-height: 54px;
   padding: 6px;
   border-radius: 18px;
   background: rgba(255, 250, 245, 0.72);
@@ -939,8 +969,17 @@ button:disabled {
 
 .view-tab,
 .scope-pill {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   color: var(--muted);
+}
+
+.view-panel {
+  min-width: 0;
+  min-height: 360px;
 }
 
 .view-tab.is-active,
@@ -1902,10 +1941,11 @@ select:focus {
     right: auto;
     bottom: auto;
     width: var(--mobile-tag-width, calc(100vw - 24px));
+    height: 46px;
     z-index: 120;
-    flex-direction: column;
+    flex-direction: row;
+    justify-content: flex-end;
     align-items: flex-end;
-    gap: 8px;
     opacity: 0;
     pointer-events: none;
     visibility: hidden;
@@ -1921,7 +1961,10 @@ select:focus {
   }
 
   .mobile-tag-tray {
-    display: none;
+    position: absolute;
+    right: 0;
+    bottom: 54px;
+    display: grid;
     width: min(100%, 380px);
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
@@ -1932,10 +1975,24 @@ select:focus {
     box-shadow: 0 16px 36px rgba(72, 46, 24, 0.18);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    transform: translate3d(0, 6px, 0);
+    transition:
+      opacity 120ms ease,
+      transform 120ms ease,
+      visibility 0s linear 120ms;
   }
 
   .mobile-tag-dock.is-open .mobile-tag-tray {
-    display: grid;
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+    transform: translate3d(0, 0, 0);
+    transition:
+      opacity 120ms ease,
+      transform 120ms ease;
   }
 
   .mobile-tag-fab,
@@ -2023,6 +2080,7 @@ select:focus {
     grid-template-columns: 40px minmax(0, 1fr) 40px;
     gap: 10px;
     align-items: center;
+    min-height: 48px;
     left: 12px;
     right: 12px;
     top: calc(env(safe-area-inset-top) + 6px);
@@ -2126,11 +2184,16 @@ select:focus {
     margin-top: 8px;
     padding: 4px;
     gap: 4px;
+    min-height: 50px;
   }
 
   .view-tab {
     flex: 1;
     min-height: 42px;
+  }
+
+  .view-panel {
+    min-height: calc(100dvh - 146px);
   }
 
   .scope-pill {
@@ -2246,11 +2309,13 @@ select:focus {
     right: auto;
     bottom: auto;
     width: var(--mobile-tag-width, calc(100vw - 20px));
+    height: 44px;
     transform: translate3d(var(--mobile-tag-x, 10px), var(--mobile-tag-y, calc(100dvh - 52px)), 0);
   }
 
   .mobile-tag-tray {
     width: 100%;
+    bottom: 52px;
     border-radius: 20px;
   }
 

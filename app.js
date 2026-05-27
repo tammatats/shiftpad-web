@@ -823,7 +823,13 @@ function renderDrawerWardButton(ward) {
         aria-label="Ward name"
       />
       <button class="ward-delete-btn" type="button" data-delete-ward="${escapeHtml(ward.id)}" aria-label="Delete ${escapeAttribute(ward.name)}">
-        Delete
+        <svg class="ward-delete-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 6h18"></path>
+          <path d="M8 6V4h8v2"></path>
+          <path d="M9 10v8"></path>
+          <path d="M15 10v8"></path>
+          <path d="M6 6l1 15h10l1-15"></path>
+        </svg>
       </button>
     </div>
   `;
