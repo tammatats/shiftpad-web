@@ -211,6 +211,12 @@ function bindEvents() {
   });
 
   refs.drawerRoot?.addEventListener("change", (event) => {
+    const wardNameInput = event.target.closest("[data-ward-name-input]");
+    if (wardNameInput) {
+      renameWardFromDrawer(wardNameInput.dataset.wardNameInput, wardNameInput.value);
+      return;
+    }
+
     const multipleWardSetting = event.target.closest("[data-multiple-wards-setting]");
     if (multipleWardSetting) {
       uiState.animateWardAdd = multipleWardSetting.checked;
@@ -806,12 +812,16 @@ function renderDrawerWardButton(ward) {
       class="ward-tab ${active ? "is-active" : ""}"
       style="--ward-color:${escapeHtml(ward.color)}"
     >
-      <button class="ward-select-btn" type="button" data-ward-id="${escapeHtml(ward.id)}">
-        <span class="ward-tab-head">
-          <span class="ward-dot"></span>
-          <strong>${escapeHtml(ward.name)}</strong>
-        </span>
+      <button class="ward-select-btn ward-icon-select-btn" type="button" data-ward-id="${escapeHtml(ward.id)}" aria-label="Show ${escapeAttribute(ward.name)}">
+        <span class="ward-dot"></span>
       </button>
+      <input
+        class="ward-name-input"
+        type="text"
+        value="${escapeAttribute(ward.name)}"
+        data-ward-name-input="${escapeHtml(ward.id)}"
+        aria-label="Ward name"
+      />
       <button class="ward-delete-btn" type="button" data-delete-ward="${escapeHtml(ward.id)}" aria-label="Delete ${escapeAttribute(ward.name)}">
         Delete
       </button>
@@ -2318,6 +2328,7 @@ function writeLineText(element, value) {
   let textBody = stripLeadingTagMentions(safeText, leadingTags.map((node) => node.textContent || ""));
 
   if (reminderNode) {
+    textBody = stripLeadingTagMentions(textBody, [getReminderTypeLabel(reminderNode.dataset.tag)]);
     const reminderText = (reminderNode.textContent || "").trim();
     const reminderIndex = textBody.indexOf(reminderText);
 
@@ -2645,6 +2656,26 @@ function selectWardFromDrawer(wardId) {
   render();
 }
 
+function renameWardFromDrawer(wardId, value) {
+  const ward = state.wards.find((item) => item.id === wardId);
+  const nextName = String(value || "").trim();
+  if (!ward) return;
+  if (!nextName) {
+    render();
+    return;
+  }
+  if (ward.name === nextName) return;
+
+  ward.name = nextName;
+  ward.notes.forEach((note) => {
+    if (!note.title || /^Ward\s+\w+\s+handover/i.test(note.title)) {
+      note.title = `${nextName} handover`;
+    }
+  });
+  saveState();
+  render();
+}
+
 function deleteWardFromDrawer(wardId) {
   const wardIndex = state.wards.findIndex((ward) => ward.id === wardId);
   if (wardIndex < 0) return;
@@ -2781,6 +2812,7 @@ function buildSummaryGroups(scope) {
             timeTag: line.timeTag,
             text: line.text,
             visibleText: line.visibleText,
+            bedSummaryText: formatBedSummaryLine(line),
             timeAtStart: line.timeAtStart,
             summaryText: formatTimedSummaryLine(line),
             bedTag: line.bedLabel,
@@ -2834,7 +2866,10 @@ function buildSummaryGroups(scope) {
             group.latestTime = reminderTimes[reminderTimes.length - 1];
           }
           group.items.push(item);
-          group.combinedText = group.items.map((entryItem) => entryItem.entry.visibleText || entryItem.entry.text).filter(Boolean).join("\n");
+          group.combinedText = group.items
+            .map((entryItem) => entryItem.entry.bedSummaryText || entryItem.entry.visibleText || entryItem.entry.text)
+            .filter(Boolean)
+            .join("\n");
         }
       });
     });
@@ -2858,6 +2893,27 @@ function buildSummaryGroups(scope) {
     todo,
     byBed: Array.from(bedMap.values())
   };
+}
+
+function formatBedSummaryLine(line) {
+  const labels = [];
+  if (line.todoTokenId) {
+    labels.push(line.todoDone ? "[x]" : "[ ]");
+  }
+  if (line.reminderType) {
+    const tagLabel = getReminderTypeLabel(line.reminderType);
+    if (line.reminderType === "time" || line.reminderType === "lab") {
+      labels.push([tagLabel, line.timeTag].filter(Boolean).join(" "));
+    } else {
+      labels.push(tagLabel);
+    }
+  }
+  if (line.primaryKind && line.primaryKind !== "general") {
+    labels.push(getKindMeta(line.primaryKind)?.label || line.primaryKind);
+  }
+
+  const prefix = labels.filter(Boolean).join(" · ");
+  return [prefix, line.text].filter(Boolean).join(" ");
 }
 
 function countBedsForWard(ward) {
@@ -3453,6 +3509,11 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
+    const adjacentToken = getAdjacentFinalizedTagForDelete(event.target.closest?.("#notepad-editor"), inputType);
+    if (adjacentToken && deleteAdjacentFinalizedTag(adjacentToken)) {
+      return true;
+    }
+
     if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(event.target.closest?.("#notepad-editor"))) {
       return true;
     }
@@ -3630,6 +3691,11 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
     if (freshToken && deleteFreshFinalizedTag(freshToken)) {
       return true;
     }
+
+    const adjacentToken = getAdjacentFinalizedTagForDelete(editor, inputType);
+    if (adjacentToken && deleteAdjacentFinalizedTag(adjacentToken)) {
+      return true;
+    }
   }
 
   if (key === "Enter" && !shiftKey) {
@@ -3652,6 +3718,39 @@ function deleteFreshFinalizedTag(token) {
   removeTagToken(token, { restoreRepair: false });
   syncEditorDocument();
   restorePendingInsertionTextOffset(pendingInsertion);
+  return true;
+}
+
+function deleteAdjacentFinalizedTag(token) {
+  if (!token || token.dataset.editing === "true") return false;
+  const line = findEditorLine(token);
+  const parent = token.parentNode;
+  if (!line || !parent) return false;
+
+  const marker = document.createTextNode("\u200b");
+  parent.insertBefore(marker, token);
+  consumePendingTagInsertion(token);
+  removeInsertedTagSpacer(token);
+  removeTagCaretBoundaries(token);
+  token.remove();
+
+  if (String(line.textContent || "").replace(/\u200b/g, "").trim() === "") {
+    line.innerHTML = "<br>";
+    placeCaretInsideLine(line);
+  } else {
+    const selection = window.getSelection();
+    if (selection && marker.isConnected) {
+      const range = document.createRange();
+      range.setStartAfter(marker);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }
+
+  refreshLineTagClasses(line);
+  syncEditorDocument();
+  rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
   return true;
 }
 
@@ -4210,6 +4309,17 @@ function getFreshFinalizedTagForDelete(editor, inputType) {
   );
 }
 
+function getAdjacentFinalizedTagForDelete(editor, inputType) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return null;
+  if (!isNodeInsideEditor(editor, selection.anchorNode)) return null;
+  const searchBackward = inputType !== "deleteContentForward";
+  return (
+    getAdjacentFinalizedTagNearSelection(editor, searchBackward) ||
+    getAdjacentFinalizedTagNearSelection(editor, !searchBackward)
+  );
+}
+
 function getLastInsertedTagForDelete(editor) {
   const tokenId = uiState.lastInsertedTagTokenId;
   if (!tokenId || !editor) return null;
@@ -4261,6 +4371,36 @@ function getFreshFinalizedTagNearSelection(editor, searchBackward) {
   const tokenId = candidate.dataset.tokenId;
   const pending = tokenId ? uiState.pendingTagInsertions.get(tokenId) : null;
   return pending?.finalized ? candidate : null;
+}
+
+function getAdjacentFinalizedTagNearSelection(editor, searchBackward) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return null;
+
+  let node = selection.anchorNode;
+  let offset = selection.anchorOffset;
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node.textContent || "";
+    if (searchBackward && text.slice(0, offset).replace(/[\s\u00a0\u200b]/g, "")) return null;
+    if (!searchBackward && text.slice(offset).replace(/[\s\u00a0\u200b]/g, "")) return null;
+  }
+
+  let candidate = searchBackward
+    ? getPreviousMeaningfulNode(node, offset, editor)
+    : getNextMeaningfulNode(node, offset, editor);
+  if (candidate?.nodeType === Node.TEXT_NODE && !candidate.textContent.replace(/[\s\u00a0\u200b]/g, "")) {
+    candidate = searchBackward
+      ? getPreviousMeaningfulNode(candidate, 0, editor)
+      : getNextMeaningfulNode(candidate, candidate.textContent.length, editor);
+  }
+  if (candidate?.nodeType === Node.TEXT_NODE && candidate.parentElement?.classList?.contains("tag-token")) {
+    candidate = candidate.parentElement;
+  }
+
+  if (!candidate?.classList?.contains("tag-token")) return null;
+  if (candidate.dataset.editing === "true") return null;
+  return candidate;
 }
 
 function getPreviousMeaningfulNode(node, offset, editor) {

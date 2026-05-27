@@ -831,7 +831,7 @@ button:disabled {
 
 .drawer-ward-list .ward-tab {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 6px;
@@ -840,14 +840,37 @@ button:disabled {
 .ward-select-btn {
   min-width: 0;
   min-height: 44px;
-  padding: 8px 10px;
+  padding: 0;
   border: 0;
   border-radius: 12px;
   background: transparent;
   color: var(--ink);
-  text-align: left;
   font: inherit;
   font-weight: 800;
+}
+
+.ward-icon-select-btn {
+  display: grid;
+  place-items: center;
+}
+
+.ward-name-input {
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid rgba(96, 76, 55, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 800;
+  padding: 7px 10px;
+  outline: none;
+}
+
+.ward-name-input:focus {
+  border-color: rgba(230, 125, 89, 0.34);
+  box-shadow: 0 0 0 3px rgba(230, 125, 89, 0.08);
 }
 
 .ward-delete-btn {
@@ -1646,11 +1669,11 @@ select:focus {
 
 .reminder-row {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
+  grid-template-columns: 28px minmax(0, 1fr) 64px;
+  gap: 10px;
+  align-items: start;
   margin: 0;
-  padding: 11px 14px;
+  padding: 13px 14px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1671,7 +1694,8 @@ select:focus {
   display: grid;
   place-items: center;
   width: 28px;
-  height: 34px;
+  height: 30px;
+  padding-top: 2px;
 }
 
 .reminder-check input {
@@ -1704,6 +1728,9 @@ select:focus {
 
 .reminder-time-pill {
   min-width: 58px;
+  justify-self: end;
+  align-self: start;
+  margin-top: 1px;
   padding: 6px 8px;
   border-radius: 999px;
   background: rgba(230, 125, 89, 0.12);
@@ -1779,6 +1806,7 @@ select:focus {
 
 .reminder-editor {
   min-height: 30px;
+  display: block;
   padding: 0;
   border-radius: 0;
   background: transparent;
