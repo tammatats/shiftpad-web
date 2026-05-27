@@ -1708,11 +1708,11 @@ select:focus {
 
 .reminder-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 11px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
   align-items: start;
   margin: 0;
-  padding: 12px 14px;
+  padding: 13px 16px 12px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1731,10 +1731,10 @@ select:focus {
 .reminder-check {
   position: relative;
   display: grid;
-  place-items: center;
-  width: 28px;
-  height: 32px;
-  padding-top: 2px;
+  place-items: start center;
+  width: 30px;
+  min-height: 28px;
+  padding-top: 1px;
 }
 
 .reminder-check input {
@@ -1762,41 +1762,19 @@ select:focus {
 .reminder-main {
   min-width: 0;
   display: grid;
-  gap: 4px;
+  gap: 5px;
 }
 
 .reminder-topline {
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 10px;
-}
-
-.reminder-time-pill {
-  min-width: 56px;
-  justify-self: end;
-  align-self: start;
-  margin-top: 2px;
-  padding: 5px 8px;
-  border-radius: 999px;
-  background: rgba(230, 125, 89, 0.12);
-  color: var(--accent-deep);
-  font-size: 0.82rem;
-  font-weight: 800;
-  line-height: 1.2;
-  text-align: center;
-}
-
-.todo-time-pill {
-  background: rgba(79, 159, 104, 0.13);
-  color: #2d6d44;
+  display: block;
 }
 
 .reminder-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 9px;
+  align-items: center;
+  gap: 4px 8px;
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.35;
@@ -1810,6 +1788,20 @@ select:focus {
   margin: 0 8px 2px 0;
   border-radius: 999px;
   background: rgba(118, 103, 88, 0.42);
+}
+
+.reminder-meta-time {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(230, 125, 89, 0.12);
+  color: var(--accent-deep);
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.reminder-meta .reminder-meta-time::before {
+  display: none;
 }
 
 .bed-editor-list {
@@ -2286,16 +2278,8 @@ select:focus {
   }
 
   .reminder-row {
-    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-columns: 30px minmax(0, 1fr);
     align-items: start;
-  }
-
-  .reminder-time-pill {
-    justify-self: end;
-  }
-
-  .reminder-topline {
-    gap: 8px;
   }
 
   .view-tab,

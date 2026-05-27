@@ -1492,11 +1492,16 @@ function renderTimelineItem(item) {
   const { ward, note, entry } = item;
   const reminderText = getReminderEditorText(entry);
   const typeLabel = getReminderTypeLabel(entry.reminderType);
+  const reminderTimeLabel = entry.reminderTime ? formatReminderTimeLabel(entry.reminderTime) : "";
   const metadata = [
     ward.name,
     entry.bedTag ? `Bed ${entry.bedTag.toUpperCase()}` : "",
     typeLabel
   ].filter(Boolean);
+  const metadataMarkup = [
+    ...metadata.map((label) => `<span>${escapeHtml(label)}</span>`),
+    reminderTimeLabel ? `<span class="reminder-meta-time">${escapeHtml(reminderTimeLabel)}</span>` : ""
+  ].filter(Boolean).join("");
 
   return `
     <article class="timeline-item reminder-row ${entry.done ? "is-done" : ""}">
@@ -1519,14 +1524,9 @@ function renderTimelineItem(item) {
             data-line-index="${item.lineIndex}"
             aria-label="Reminder text"
           >${escapeHtml(reminderText)}</textarea>
-          ${
-            entry.reminderTime
-              ? `<span class="reminder-time-pill">${escapeHtml(formatReminderTimeLabel(entry.reminderTime))}</span>`
-              : `<span class="reminder-time-pill todo-time-pill">To-do</span>`
-          }
         </div>
         <div class="reminder-meta">
-          ${metadata.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
+          ${metadataMarkup}
         </div>
       </div>
     </article>
