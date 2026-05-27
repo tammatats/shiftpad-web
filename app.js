@@ -1505,22 +1505,24 @@ function renderTimelineItem(item) {
         <span class="reminder-checkmark"></span>
       </label>
       <div class="reminder-main">
-        <textarea
-          class="summary-editor reminder-editor"
-          data-summary-editor="true"
-          data-note-id="${escapeHtml(note.id)}"
-          data-line-index="${item.lineIndex}"
-          aria-label="Reminder text"
-        >${escapeHtml(reminderText)}</textarea>
+        <div class="reminder-topline">
+          <textarea
+            class="summary-editor reminder-editor"
+            data-summary-editor="true"
+            data-note-id="${escapeHtml(note.id)}"
+            data-line-index="${item.lineIndex}"
+            aria-label="Reminder text"
+          >${escapeHtml(reminderText)}</textarea>
+          ${
+            entry.reminderTime
+              ? `<span class="reminder-time-pill">${escapeHtml(formatReminderTimeLabel(entry.reminderTime))}</span>`
+              : `<span class="reminder-time-pill todo-time-pill">To-do</span>`
+          }
+        </div>
         <div class="reminder-meta">
           ${metadata.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
         </div>
       </div>
-      ${
-        entry.reminderTime
-          ? `<span class="reminder-time-pill">${escapeHtml(formatReminderTimeLabel(entry.reminderTime))}</span>`
-          : `<span class="reminder-time-pill todo-time-pill">To-do</span>`
-      }
     </article>
   `;
 }
