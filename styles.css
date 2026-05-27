@@ -1697,9 +1697,9 @@ select:focus {
 
 .reminder-list {
   overflow: hidden;
-  border: 1px solid rgba(96, 76, 55, 0.09);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(96, 76, 55, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .reminder-list.empty {
@@ -1708,11 +1708,11 @@ select:focus {
 
 .reminder-row {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 7px;
   align-items: start;
   margin: 0;
-  padding: 13px 16px 12px;
+  padding: 10px 14px 9px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1732,9 +1732,9 @@ select:focus {
   position: relative;
   display: grid;
   place-items: start center;
-  width: 30px;
-  min-height: 28px;
-  padding-top: 1px;
+  width: 28px;
+  min-height: 24px;
+  padding-top: 2px;
 }
 
 .reminder-check input {
@@ -1744,8 +1744,8 @@ select:focus {
 }
 
 .reminder-checkmark {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border: 2px solid rgba(118, 103, 88, 0.42);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.92);
@@ -1762,7 +1762,7 @@ select:focus {
 .reminder-main {
   min-width: 0;
   display: grid;
-  gap: 5px;
+  gap: 2px;
 }
 
 .reminder-topline {
@@ -1774,10 +1774,11 @@ select:focus {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
+  gap: 2px 8px;
   color: var(--muted);
-  font-size: 0.82rem;
-  line-height: 1.35;
+  font-size: 0.8rem;
+  font-weight: 650;
+  line-height: 1.25;
 }
 
 .reminder-meta span + span::before {
@@ -1791,17 +1792,8 @@ select:focus {
 }
 
 .reminder-meta-time {
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgba(230, 125, 89, 0.12);
-  color: var(--accent-deep);
-  font-size: 0.8rem;
-  font-weight: 800;
-  line-height: 1.2;
-}
-
-.reminder-meta .reminder-meta-time::before {
-  display: none;
+  color: var(--muted);
+  font: inherit;
 }
 
 .bed-editor-list {
@@ -1844,7 +1836,7 @@ select:focus {
 }
 
 .reminder-editor {
-  min-height: 32px;
+  min-height: 24px;
   display: block;
   padding: 0;
   border-radius: 0;
@@ -1852,8 +1844,8 @@ select:focus {
   box-shadow: none;
   color: var(--ink);
   font-size: 1rem;
-  font-weight: 650;
-  line-height: 1.32;
+  font-weight: 700;
+  line-height: 1.24;
 }
 
 .timeline-item.is-done .summary-editor {
