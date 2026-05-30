@@ -2049,6 +2049,16 @@ select:focus {
   }
 }
 
+@media (max-width: 860px) and (hover: hover) and (pointer: fine) {
+  .quick-tags {
+    display: flex;
+  }
+
+  .mobile-tag-dock {
+    display: none;
+  }
+}
+
 @media (max-width: 560px) {
   html,
   body,

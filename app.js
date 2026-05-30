@@ -1855,7 +1855,9 @@ function handleQuickTag(tag) {
 }
 
 function isCompactMobileLayout() {
-  return window.matchMedia("(max-width: 860px)").matches;
+  const narrow = window.matchMedia("(max-width: 860px)").matches;
+  const touchLike = window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(hover: none)").matches;
+  return narrow && touchLike;
 }
 
 function syncMobileTagDock() {
