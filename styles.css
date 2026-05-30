@@ -1195,23 +1195,23 @@ select:focus {
 }
 
 .quick-chip.todo {
-  background: rgba(250, 252, 248, 0.82);
-  border-color: rgba(89, 125, 101, 0.12);
+  background: rgba(232, 246, 238, 0.78);
+  border-color: rgba(67, 149, 96, 0.18);
 }
 
 .quick-chip.time {
-  background: rgba(250, 252, 248, 0.82);
-  border-color: rgba(89, 125, 101, 0.12);
+  background: rgba(234, 242, 255, 0.78);
+  border-color: rgba(94, 142, 216, 0.18);
 }
 
 .quick-chip.lab {
-  background: rgba(250, 252, 248, 0.82);
-  border-color: rgba(89, 125, 101, 0.12);
+  background: rgba(240, 234, 255, 0.78);
+  border-color: rgba(143, 101, 214, 0.18);
 }
 
 .quick-chip.io {
-  background: rgba(250, 252, 248, 0.82);
-  border-color: rgba(89, 125, 101, 0.12);
+  background: rgba(231, 247, 251, 0.78);
+  border-color: rgba(58, 153, 174, 0.18);
 }
 
 .quick-chip.is-selected {
@@ -1432,17 +1432,17 @@ select:focus {
 }
 
 .notepad-editor .tag-time {
-  background: rgba(247, 250, 245, 0.7);
-  border-color: rgba(94, 118, 88, 0.1);
-  color: rgba(49, 65, 48, 0.88);
+  background: rgba(234, 242, 255, 0.76);
+  border-color: rgba(94, 142, 216, 0.15);
+  color: rgba(45, 76, 122, 0.9);
   font-size: 0.94em;
   font-weight: inherit;
 }
 
 .notepad-editor .tag-lab {
-  background: rgba(247, 250, 245, 0.7);
-  border-color: rgba(94, 118, 88, 0.1);
-  color: rgba(49, 65, 48, 0.88);
+  background: rgba(240, 234, 255, 0.76);
+  border-color: rgba(143, 101, 214, 0.15);
+  color: rgba(88, 57, 135, 0.9);
   font-size: 0.94em;
   font-weight: inherit;
 }
@@ -1460,10 +1460,10 @@ select:focus {
 }
 
 .notepad-editor .tag-io {
-  background: rgba(247, 250, 245, 0.7);
-  border-color: rgba(94, 118, 88, 0.1);
+  background: rgba(231, 247, 251, 0.76);
+  border-color: rgba(58, 153, 174, 0.15);
   border-radius: 8px;
-  color: rgba(49, 65, 48, 0.88);
+  color: rgba(33, 92, 105, 0.9);
   font-size: 0.94em;
   font-weight: inherit;
 }
@@ -1476,9 +1476,9 @@ select:focus {
   height: 22px;
   padding: 0;
   border-radius: 7px;
-  background: rgba(247, 250, 245, 0.72);
-  border: 1px solid rgba(94, 118, 88, 0.14);
-  color: rgba(49, 65, 48, 0.82);
+  background: rgba(232, 246, 238, 0.78);
+  border: 1px solid rgba(67, 149, 96, 0.18);
+  color: #285d3a;
   font-size: 0.9rem;
   font-weight: 800;
   cursor: pointer;
@@ -1488,9 +1488,9 @@ select:focus {
   content: "";
   width: 12px;
   height: 12px;
-  border: 1.5px solid rgba(69, 93, 68, 0.46);
+  border: 1.5px solid rgba(50, 116, 73, 0.56);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .notepad-editor .tag-todo[data-done="true"] {
@@ -2019,23 +2019,23 @@ select:focus {
   }
 
   .mobile-tag-option.todo {
-    background: rgba(250, 252, 248, 0.9);
-    border-color: rgba(89, 125, 101, 0.14);
+    background: rgba(232, 246, 238, 0.86);
+    border-color: rgba(67, 149, 96, 0.18);
   }
 
   .mobile-tag-option.time {
-    background: rgba(250, 252, 248, 0.9);
-    border-color: rgba(89, 125, 101, 0.14);
+    background: rgba(234, 242, 255, 0.86);
+    border-color: rgba(94, 142, 216, 0.18);
   }
 
   .mobile-tag-option.lab {
-    background: rgba(250, 252, 248, 0.9);
-    border-color: rgba(89, 125, 101, 0.14);
+    background: rgba(240, 234, 255, 0.86);
+    border-color: rgba(143, 101, 214, 0.18);
   }
 
   .mobile-tag-option.io {
-    background: rgba(250, 252, 248, 0.9);
-    border-color: rgba(89, 125, 101, 0.14);
+    background: rgba(231, 247, 251, 0.86);
+    border-color: rgba(58, 153, 174, 0.18);
   }
 
   .mobile-tag-option.custom {
