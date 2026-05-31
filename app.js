@@ -1522,6 +1522,7 @@ function renderTimelineItem(item) {
             data-summary-editor="true"
             data-note-id="${escapeHtml(note.id)}"
             data-line-index="${item.lineIndex}"
+            rows="1"
             aria-label="Reminder text"
           >${escapeHtml(reminderText)}</textarea>
         </div>
@@ -2384,8 +2385,9 @@ function stripLeadingTagMentions(text, tagTexts) {
 
 function autoSizeTextarea(textarea) {
   if (!textarea) return;
+  const minHeight = textarea.classList.contains("reminder-editor") ? 24 : 44;
   textarea.style.height = "auto";
-  textarea.style.height = `${Math.max(textarea.scrollHeight, 44)}px`;
+  textarea.style.height = `${Math.max(textarea.scrollHeight, minHeight)}px`;
 }
 
 async function handleDrawerAction(action) {
