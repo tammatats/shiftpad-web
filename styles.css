@@ -1624,6 +1624,50 @@ select:focus {
   min-height: 100%;
 }
 
+.bed-summary-editor {
+  display: block;
+  white-space: normal;
+}
+
+.bed-summary-line {
+  min-height: 1.5em;
+  line-height: 1.5;
+}
+
+.bed-summary-line + .bed-summary-line {
+  margin-top: 2px;
+}
+
+.bed-summary-todo-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45em;
+  margin-right: 7px;
+  padding: 0 8px;
+  border: 1px solid rgba(67, 149, 96, 0.18);
+  border-radius: 999px;
+  background: rgba(232, 246, 238, 0.86);
+  color: #285d3a;
+  font-size: 0.78em;
+  font-weight: 800;
+  line-height: 1;
+  vertical-align: 0.08em;
+}
+
+.bed-summary-todo-badge::before {
+  content: "To-do";
+}
+
+.bed-summary-todo-badge.is-done {
+  border-color: rgba(72, 86, 75, 0.12);
+  background: #edf0ec;
+  color: rgba(72, 86, 75, 0.72);
+}
+
+.bed-summary-todo-badge.is-done::before {
+  content: "Done";
+}
+
 .summary-controls-row {
   display: flex;
   align-items: center;

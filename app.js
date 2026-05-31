@@ -483,7 +483,7 @@ function bindEvents() {
   refs.timelineRoot.addEventListener("change", (event) => {
     const bedEditor = event.target.closest("[data-bed-editor]");
     if (bedEditor) {
-      updateBedGroupText(bedEditor.dataset.bedKey, bedEditor.value);
+      updateBedGroupText(bedEditor.dataset.bedKey, getEditorPlainText(bedEditor));
       return;
     }
 
@@ -503,7 +503,7 @@ function bindEvents() {
     const bedEditor = event.target.closest("[data-bed-editor]");
     if (bedEditor) {
       autoSizeTextarea(bedEditor);
-      updateBedGroupText(bedEditor.dataset.bedKey, bedEditor.value);
+      updateBedGroupText(bedEditor.dataset.bedKey, getEditorPlainText(bedEditor));
       return;
     }
 
@@ -1552,12 +1552,15 @@ function renderSummaryBedSection(groups) {
             return `
               <article class="timeline-item summary-bed-card">
                 <strong>${escapeHtml(group.label)}</strong>
-                <textarea
+                <div
                   class="summary-editor bed-summary-editor"
                   data-bed-editor="true"
                   data-bed-key="${escapeHtml(group.key)}"
+                  contenteditable="true"
+                  role="textbox"
+                  aria-multiline="true"
                   aria-label="Bed information"
-                >${escapeHtml(group.combinedText)}</textarea>
+                >${renderBedSummaryEditorHtml(group)}</div>
               </article>
             `;
           })
@@ -1565,6 +1568,21 @@ function renderSummaryBedSection(groups) {
       </div>
     </section>
   `;
+}
+
+function renderBedSummaryEditorHtml(group) {
+  return (group.items || [])
+    .map((item) => renderBedSummaryLineHtml(item.entry))
+    .join("");
+}
+
+function renderBedSummaryLineHtml(entry) {
+  const rawText = entry.bedSummaryText || entry.visibleText || entry.text || "";
+  const text = entry.todoTokenId ? rawText.replace(/^[○✓]\s*/, "") : rawText;
+  const todoBadge = entry.todoTokenId
+    ? `<span class="bed-summary-todo-badge ${entry.todoDone ? "is-done" : ""}" contenteditable="false" aria-label="${entry.todoDone ? "Done" : "To-do"}"></span>`
+    : "";
+  return `<div class="bed-summary-line">${todoBadge}${escapeHtml(text)}</div>`;
 }
 
 function renderSummaryTimedSection(items) {
@@ -2385,9 +2403,16 @@ function stripLeadingTagMentions(text, tagTexts) {
 
 function autoSizeTextarea(textarea) {
   if (!textarea) return;
+  if (textarea.tagName !== "TEXTAREA") return;
   const minHeight = textarea.classList.contains("reminder-editor") ? 24 : 44;
   textarea.style.height = "auto";
   textarea.style.height = `${Math.max(textarea.scrollHeight, minHeight)}px`;
+}
+
+function getEditorPlainText(editor) {
+  if (!editor) return "";
+  if (editor.tagName === "TEXTAREA" || editor.tagName === "INPUT") return editor.value || "";
+  return editor.innerText || editor.textContent || "";
 }
 
 async function handleDrawerAction(action) {
@@ -2825,6 +2850,8 @@ function buildSummaryGroups(scope) {
             text: line.text,
             visibleText: line.visibleText,
             bedSummaryText: formatBedSummaryLine(line),
+            todoTokenId: line.todoTokenId,
+            todoDone: line.todoDone,
             timeAtStart: line.timeAtStart,
             summaryText: formatTimedSummaryLine(line),
             bedTag: line.bedLabel,
