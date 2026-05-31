@@ -993,6 +993,7 @@ function renderEditor() {
     </div>
   `;
   applyCustomTagColors(refs.editorRoot);
+  applyEditorCompletionClasses(refs.editorRoot.querySelector("#notepad-editor"));
 
   requestAnimationFrame(() => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
@@ -1594,7 +1595,7 @@ function getBedSummaryBadges(entry) {
       const label = entry.reminderType === "time" || entry.reminderType === "lab"
         ? [tagLabel, entry.timeTag].filter(Boolean).join(" ")
         : tagLabel;
-      badges.push({ type: entry.reminderType, label });
+      badges.push({ type: entry.reminderType, label, done: entry.reminderDone });
     }
   }
 
@@ -2878,6 +2879,10 @@ function buildSummaryGroups(scope) {
     ward.notes.forEach((note) => {
       const parsed = extractTaggedLines(note);
       parsed.lines.forEach((line) => {
+        const reminderItemsForLine = getReminderItemsForLine(line);
+        const reminderDone = reminderItemsForLine.length
+          ? reminderItemsForLine.every((reminder) => reminder.done)
+          : Boolean(line.done);
         const item = {
           ward,
           note,
@@ -2891,6 +2896,7 @@ function buildSummaryGroups(scope) {
             bedSummaryText: formatBedSummaryLine(line),
             todoTokenId: line.todoTokenId,
             todoDone: line.todoDone,
+            reminderDone,
             timeAtStart: line.timeAtStart,
             summaryText: formatTimedSummaryLine(line),
             bedTag: line.bedLabel,
@@ -2912,7 +2918,7 @@ function buildSummaryGroups(scope) {
           });
         }
 
-        getReminderItemsForLine(line).forEach((reminder) => {
+        reminderItemsForLine.forEach((reminder) => {
           timed.push({
             ...item,
             reminderKey: reminder.key,
@@ -2939,9 +2945,8 @@ function buildSummaryGroups(scope) {
           }
           const group = bedMap.get(bedKey);
           group.count += 1;
-          const reminderTimes = getReminderTimesForLine(line);
-          if (reminderTimes.length) {
-            group.latestTime = reminderTimes[reminderTimes.length - 1];
+          if (reminderItemsForLine.length) {
+            group.latestTime = reminderItemsForLine[reminderItemsForLine.length - 1].time;
           }
           group.items.push(item);
           group.combinedText = group.items
@@ -4697,6 +4702,35 @@ function refreshLineTagClasses(line) {
   line.classList.toggle("timed-line", Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]')));
   line.classList.toggle("io-line", Boolean(line.querySelector('.tag-token[data-tag="io"]')));
   line.classList.toggle("todo-line", Boolean(line.querySelector('.tag-token[data-tag="todo"]')));
+  const tagTokens = Array.from(line.querySelectorAll(".tag-token"));
+  tagTokens.forEach((token) => {
+    token.classList.toggle("tag-done", isEditorTagDone(token));
+  });
+  line.classList.toggle("is-done", tagTokens.some(isEditorTagDone));
+}
+
+function applyEditorCompletionClasses(editor) {
+  if (!editor) return;
+  Array.from(editor.children).forEach((line) => {
+    if (!["DIV", "P"].includes(line.tagName)) return;
+    refreshLineTagClasses(line);
+  });
+}
+
+function isEditorTagDone(token) {
+  if (!token?.classList?.contains("tag-token")) return false;
+  const tagType = token.dataset.tag || "";
+  if (tagType === "io") {
+    const createdAt = Number(token.dataset.createdAt || Date.now());
+    const doneState = getIoDoneState({
+      done: token.dataset.done === "true",
+      done14: token.getAttribute("data-done-14") === "true",
+      done22: token.getAttribute("data-done-22") === "true"
+    });
+    const baseTimes = getIoBaseTimesForTimestamp(createdAt);
+    return Boolean(baseTimes.length) && baseTimes.every((baseTime) => doneState[getIoReminderKey(baseTime)]);
+  }
+  return token.dataset.done === "true";
 }
 
 function placeCaretInsideLine(line) {
@@ -5217,9 +5251,7 @@ function normalizeEditorBlocks(root) {
     if (!hasTime && !hasIo && !hasTodo && isEditorLineEmpty(line)) {
       line.innerHTML = "<br>";
     }
-    line.classList.toggle("timed-line", hasTime);
-    line.classList.toggle("io-line", hasIo);
-    line.classList.toggle("todo-line", hasTodo);
+    refreshLineTagClasses(line);
     ensureTagCaretBoundaries(line);
   });
   applyCustomTagColors(root);

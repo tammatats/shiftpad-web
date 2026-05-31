@@ -1361,9 +1361,12 @@ select:focus {
   line-height: 1.5;
 }
 
-.notepad-line.is-done {
-  opacity: 0.55;
+.notepad-line.is-done,
+.notepad-editor > .is-done {
+  color: rgba(118, 103, 88, 0.72);
   text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(118, 103, 88, 0.42);
 }
 
 .notepad-line:not(.is-timed) {
@@ -1509,6 +1512,13 @@ select:focus {
   line-height: 1;
 }
 
+.notepad-editor .tag-token.tag-done:not(.tag-todo) {
+  background: rgba(237, 240, 236, 0.92);
+  border-color: rgba(118, 103, 88, 0.14);
+  color: rgba(72, 86, 75, 0.72);
+  box-shadow: none;
+}
+
 .notepad-editor .tag-token[data-tag^="custom-"] {
   background: rgba(255, 245, 238, 0.95);
   background: color-mix(in srgb, var(--custom-tag-color, var(--accent)) 18%, #fffaf4 82%);
@@ -1516,6 +1526,12 @@ select:focus {
   border-radius: 999px;
   color: var(--ink);
   font-weight: 800;
+}
+
+.notepad-editor .tag-token.tag-done[data-tag^="custom-"] {
+  background: rgba(237, 240, 236, 0.92);
+  border-color: rgba(118, 103, 88, 0.14);
+  color: rgba(72, 86, 75, 0.72);
 }
 
 .notepad-editor .io-line {
@@ -1686,6 +1702,15 @@ select:focus {
   border-color: rgba(58, 153, 174, 0.18);
   background: rgba(231, 247, 251, 0.86);
   color: rgba(33, 92, 105, 0.9);
+}
+
+.bed-summary-tag.is-done:not(.tag-todo) {
+  border-color: rgba(118, 103, 88, 0.14);
+  background: rgba(237, 240, 236, 0.92);
+  color: rgba(72, 86, 75, 0.72);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(72, 86, 75, 0.36);
 }
 
 .summary-controls-row {
