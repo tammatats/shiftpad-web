@@ -1798,6 +1798,16 @@ select:focus {
   border-color: rgba(96, 76, 55, 0.09);
 }
 
+.reminder-row.is-done .reminder-meta {
+  color: rgba(118, 103, 88, 0.72);
+}
+
+.reminder-row.is-done .reminder-meta span:not(.reminder-meta-time) {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(118, 103, 88, 0.42);
+}
+
 .reminder-check {
   position: relative;
   display: grid;
@@ -1870,6 +1880,15 @@ select:focus {
   font-size: 0.86em;
   font-weight: 850;
   line-height: 1.1;
+}
+
+.reminder-row.is-done .reminder-meta-time {
+  border-color: rgba(118, 103, 88, 0.14);
+  background: rgba(237, 240, 236, 0.92);
+  color: rgba(72, 86, 75, 0.72);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: rgba(72, 86, 75, 0.36);
 }
 
 .reminder-meta .reminder-meta-time::before {
