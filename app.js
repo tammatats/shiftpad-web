@@ -2910,7 +2910,7 @@ function buildSummaryGroups(scope) {
 function formatBedSummaryLine(line) {
   const labels = [];
   if (line.todoTokenId) {
-    labels.push(line.todoDone ? "[x]" : "[ ]");
+    labels.push(line.todoDone ? "✓" : "○");
   }
   if (line.reminderType) {
     const tagLabel = getReminderTypeLabel(line.reminderType);
