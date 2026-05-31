@@ -1862,8 +1862,18 @@ select:focus {
 }
 
 .reminder-meta-time {
-  color: var(--muted);
-  font: inherit;
+  padding: 3px 8px;
+  border: 1px solid rgba(230, 125, 89, 0.2);
+  border-radius: 999px;
+  background: rgba(230, 125, 89, 0.13);
+  color: var(--accent-deep);
+  font-size: 0.86em;
+  font-weight: 850;
+  line-height: 1.1;
+}
+
+.reminder-meta .reminder-meta-time::before {
+  display: none;
 }
 
 .bed-editor-list {

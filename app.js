@@ -1500,7 +1500,7 @@ function renderTimelineItem(item) {
   ].filter(Boolean);
   const metadataMarkup = [
     ...metadata.map((label) => `<span>${escapeHtml(label)}</span>`),
-    reminderTimeLabel ? `<span class="reminder-meta-time">${escapeHtml(reminderTimeLabel)}</span>` : ""
+    reminderTimeLabel ? `<span class="reminder-meta-time" aria-label="Reminder time ${escapeAttribute(reminderTimeLabel)}">${escapeHtml(reminderTimeLabel)}</span>` : ""
   ].filter(Boolean).join("");
 
   return `
