@@ -1577,12 +1577,51 @@ function renderBedSummaryEditorHtml(group) {
 }
 
 function renderBedSummaryLineHtml(entry) {
-  const rawText = entry.bedSummaryText || entry.visibleText || entry.text || "";
-  const text = entry.todoTokenId ? rawText.replace(/^[○✓]\s*/, "") : rawText;
-  const todoBadge = entry.todoTokenId
-    ? `<span class="bed-summary-todo-badge ${entry.todoDone ? "is-done" : ""}" contenteditable="false" aria-label="${entry.todoDone ? "Done" : "To-do"}"></span>`
-    : "";
-  return `<div class="bed-summary-line">${todoBadge}${escapeHtml(text)}</div>`;
+  const badges = getBedSummaryBadges(entry).map(renderBedSummaryBadge).join("");
+  const text = getBedSummaryDisplayText(entry);
+  return `<div class="bed-summary-line">${badges}${escapeHtml(text)}</div>`;
+}
+
+function getBedSummaryBadges(entry) {
+  const badges = [];
+  if (entry.todoTokenId) {
+    badges.push({ type: "todo", label: entry.todoDone ? "Done" : "To-do", done: entry.todoDone });
+  }
+
+  if (entry.reminderType) {
+    const tagLabel = getReminderTypeLabel(entry.reminderType);
+    if (tagLabel) {
+      const label = entry.reminderType === "time" || entry.reminderType === "lab"
+        ? [tagLabel, entry.timeTag].filter(Boolean).join(" ")
+        : tagLabel;
+      badges.push({ type: entry.reminderType, label });
+    }
+  }
+
+  if (entry.kind && entry.kind !== "general" && entry.kind !== entry.reminderType && entry.kind !== "todo") {
+    const kindLabel = getKindMeta(entry.kind)?.label || entry.kind;
+    if (kindLabel) badges.push({ type: entry.kind, label: kindLabel });
+  }
+
+  return badges;
+}
+
+function renderBedSummaryBadge(badge) {
+  const classes = ["bed-summary-tag", `tag-${badge.type || "general"}`, badge.done ? "is-done" : ""]
+    .filter(Boolean)
+    .join(" ");
+  return `<span class="${escapeAttribute(classes)}" data-label="${escapeAttribute(badge.label)}" contenteditable="false" aria-label="${escapeAttribute(badge.label)}"></span>`;
+}
+
+function getBedSummaryDisplayText(entry) {
+  const directText = String(entry.text || "").trim();
+  if (directText) return directText;
+
+  let fallback = String(entry.visibleText || entry.bedSummaryText || "").trim();
+  const badgeLabels = getBedSummaryBadges(entry).map((badge) => badge.label);
+  fallback = stripLeadingTagMentions(fallback, badgeLabels);
+  fallback = fallback.replace(/^[○✓]\s*/, "");
+  return fallback.trim();
 }
 
 function renderSummaryTimedSection(items) {
