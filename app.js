@@ -3592,6 +3592,11 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
+    const leadingTodoToken = getLeadingTodoTagForDelete(event.target.closest?.("#notepad-editor"));
+    if (leadingTodoToken && deleteAdjacentFinalizedTag(leadingTodoToken)) {
+      return true;
+    }
+
     const adjacentToken = getAdjacentFinalizedTagForDelete(event.target.closest?.("#notepad-editor"), inputType);
     if (adjacentToken && deleteAdjacentFinalizedTag(adjacentToken)) {
       return true;
@@ -3772,6 +3777,11 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
     const inputType = key === "Delete" ? "deleteContentForward" : "deleteContentBackward";
     const freshToken = getFreshFinalizedTagForDelete(editor, inputType);
     if (freshToken && deleteFreshFinalizedTag(freshToken)) {
+      return true;
+    }
+
+    const leadingTodoToken = getLeadingTodoTagForDelete(editor);
+    if (leadingTodoToken && deleteAdjacentFinalizedTag(leadingTodoToken)) {
       return true;
     }
 
@@ -4401,6 +4411,42 @@ function getAdjacentFinalizedTagForDelete(editor, inputType) {
     getAdjacentFinalizedTagNearSelection(editor, searchBackward) ||
     getAdjacentFinalizedTagNearSelection(editor, !searchBackward)
   );
+}
+
+function getLeadingTodoTagForDelete(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return null;
+  if (!isNodeInsideEditor(editor, selection.anchorNode)) return null;
+
+  const line = getCurrentEditorLine();
+  if (!line || !isNodeInsideEditor(editor, line)) return null;
+  if (!isSelectionAtStartOfLine(line, selection)) return null;
+
+  const firstNode = getFirstMeaningfulLineNode(line);
+  if (!firstNode?.classList?.contains("tag-token")) return null;
+  if (firstNode.dataset.tag !== "todo") return null;
+  if (firstNode.dataset.editing === "true") return null;
+  return firstNode;
+}
+
+function getFirstMeaningfulLineNode(line) {
+  if (!line) return null;
+  for (const node of Array.from(line.childNodes || [])) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (String(node.textContent || "").replace(/[\s\u00a0\u200b]/g, "")) {
+        return node;
+      }
+      continue;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+    if (node.tagName === "BR") continue;
+    if (node.classList?.contains("tag-token")) return node;
+    if (String(node.textContent || "").replace(/[\s\u00a0\u200b]/g, "")) {
+      return node;
+    }
+  }
+  return null;
 }
 
 function getLastInsertedTagForDelete(editor) {
