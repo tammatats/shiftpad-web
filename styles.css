@@ -1472,9 +1472,8 @@ select:focus {
 }
 
 .notepad-editor .tag-todo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-grid;
+  place-items: center;
   width: 22px;
   height: 22px;
   padding: 0;
@@ -1484,13 +1483,18 @@ select:focus {
   color: #285d3a;
   font-size: 0.9rem;
   font-weight: 800;
+  line-height: 1;
+  vertical-align: -0.18em;
   cursor: pointer;
 }
 
 .notepad-editor .tag-todo::before {
   content: "";
+  display: grid;
+  place-items: center;
   width: 12px;
   height: 12px;
+  box-sizing: border-box;
   border: 1.5px solid rgba(50, 116, 73, 0.56);
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.82);
@@ -1503,8 +1507,6 @@ select:focus {
 
 .notepad-editor .tag-todo[data-done="true"]::before {
   content: "✓";
-  display: inline-grid;
-  place-items: center;
   background: #4f9f68;
   border-color: #4f9f68;
   color: white;
