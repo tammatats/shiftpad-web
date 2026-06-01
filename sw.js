@@ -1,4 +1,4 @@
-const CACHE_NAME = "shiftpad-shell-v5";
+const CACHE_NAME = "shiftpad-shell-v6";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
@@ -9,7 +9,13 @@ const SHELL_ASSETS = [
   "/icons/icon-192.png",
   "/icons/icon-512.png"
 ];
-const STATIC_ASSET_PATHS = new Set(SHELL_ASSETS.filter((path) => path !== "/" && path !== "/index.html"));
+const CACHE_FIRST_PATHS = new Set([
+  "/manifest.webmanifest",
+  "/icons/icon-180.png",
+  "/icons/icon-192.png",
+  "/icons/icon-512.png"
+]);
+const NETWORK_FIRST_PATHS = new Set(["/app.js", "/styles.css"]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -38,8 +44,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (STATIC_ASSET_PATHS.has(url.pathname)) {
+  if (CACHE_FIRST_PATHS.has(url.pathname)) {
     event.respondWith(cacheFirst(request));
+    return;
+  }
+
+  if (NETWORK_FIRST_PATHS.has(url.pathname)) {
+    event.respondWith(networkFirst(request));
     return;
   }
 

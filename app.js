@@ -5129,7 +5129,7 @@ function getReminderItemsForLine(line) {
   }
   const customTag = getCustomTagDefinition(line.reminderType);
   if (customTag?.hasReminder) {
-    const startTime = formatTimeFromTimestamp(line.noteCreatedAt);
+    const startTime = formatTimeFromTimestamp(line.reminderCreatedAt || line.noteCreatedAt);
     return [{ time: addMinutesToTime(startTime, customTag.delayMinutes), key: line.reminderType, done: Boolean(line.done) }];
   }
   return [];

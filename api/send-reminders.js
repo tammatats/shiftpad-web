@@ -90,6 +90,7 @@ module.exports = async function handler(req, res) {
           sent += 1;
         } catch (error) {
           failed += 1;
+          await releaseDelivery(subscription.user_id, reminder).catch(() => undefined);
           if (error.statusCode === 404 || error.statusCode === 410) {
             await removeSubscription(subscription.endpoint).catch(() => undefined);
           }
@@ -120,11 +121,27 @@ async function reserveDelivery(userId, reminder) {
   return Array.isArray(rows) && rows.length > 0;
 }
 
-async function removeSubscription(endpoint) {
-  await supabaseRest(`shiftpad_push_subscriptions?endpoint=eq.${encodeURIComponent(endpoint)}`, {
+async function releaseDelivery(userId, reminder) {
+  const query = [
+    `user_id=eq.${encodeFilterValue(userId)}`,
+    `reminder_key=eq.${encodeFilterValue(reminder.key)}`,
+    `scheduled_for=eq.${encodeFilterValue(reminder.scheduledFor)}`
+  ].join("&");
+  await supabaseRest(`shiftpad_notification_deliveries?${query}`, {
     method: "DELETE",
     serviceRole: true
   });
+}
+
+async function removeSubscription(endpoint) {
+  await supabaseRest(`shiftpad_push_subscriptions?endpoint=eq.${encodeFilterValue(endpoint)}`, {
+    method: "DELETE",
+    serviceRole: true
+  });
+}
+
+function encodeFilterValue(value) {
+  return encodeURIComponent(String(value || ""));
 }
 
 function buildDueReminders(state, { now, timeZone, windowMinutes }) {
@@ -348,7 +365,7 @@ function getReminderItemsForLine(line, preferences, timeZone = "UTC") {
   }
   const customTag = preferences.customTags.find((tag) => tag.id === line.reminderType);
   if (customTag?.hasReminder) {
-    const startTime = formatTimeFromTimestamp(line.noteCreatedAt, timeZone);
+    const startTime = formatTimeFromTimestamp(line.reminderCreatedAt || line.noteCreatedAt, timeZone);
     return [{ time: addMinutesToTime(startTime, customTag.delayMinutes), key: line.reminderType, done: Boolean(line.done) }];
   }
   return [];
