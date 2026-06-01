@@ -64,13 +64,25 @@ The app includes:
 - `/api/push-subscriptions` to store each device subscription
 - `/api/send-reminders` to send due reminder notifications
 
-Call `/api/send-reminders` every 5 to 10 minutes from a scheduler and send this header:
+The repository includes a GitHub Actions scheduler:
+
+- [.github/workflows/send-reminders.yml](/Users/tammatatsuttivejvorakul/Projects/shiftpad-web/.github/workflows/send-reminders.yml)
+
+It calls `/api/send-reminders` every 10 minutes. By default it calls:
+
+```text
+https://shiftpad-web.vercel.app/api/send-reminders
+```
+
+If your Vercel URL is different, add a GitHub repository variable named `SHIFTPAD_REMINDER_URL`.
+
+If `CRON_SECRET` is set in Vercel, add the same value as a GitHub Actions secret named `CRON_SECRET`; the workflow sends this header:
 
 ```text
 Authorization: Bearer your_CRON_SECRET
 ```
 
-Important: Vercel Hobby cron jobs can only run once per day, so exact reminder notifications need either Vercel Pro cron or an external scheduler such as cron-job.org, GitHub Actions, or Supabase scheduled jobs.
+Important: Vercel Hobby cron jobs can only run once per day, so this project uses GitHub Actions for the 10-minute reminder checks. If you later upgrade Vercel to Pro, you can use Vercel Cron instead.
 
 ## 6. What is stored
 

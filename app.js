@@ -1239,7 +1239,7 @@ async function hydrateStateFromCloud() {
   authState.isHydrating = true;
   renderAuthUi();
 
-  const fallback = loadStateForUser(authState.user.id) || loadLegacyLocalState() || createSeedState();
+  const fallback = loadStateForUser(authState.user.id) || createBlankState();
   authState.suppressCloudSave = true;
 
   let data = null;
@@ -3120,7 +3120,7 @@ function createBlankState() {
 }
 
 function loadState() {
-  return normalizeState(loadLegacyLocalState() || createSeedState());
+  return normalizeState(loadAnonymousLocalState() || loadLegacyLocalState() || createSeedState());
 }
 
 function applyUrlOverrides() {
@@ -3224,9 +3224,14 @@ function flushLocalStateSave() {
 
 function saveLocalState() {
   try {
-    const key = getScopedStorageKey(authState.user?.id);
+    const userId = authState.user?.id || "";
+    const key = getScopedStorageKey(userId);
     localStorage.setItem(key, JSON.stringify(state));
-    localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(state));
+    if (userId) {
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } else {
+      localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(state));
+    }
   } catch (error) {
     console.error("Local save failed:", error);
   }
@@ -3245,6 +3250,15 @@ function loadStateForUser(userId) {
 function loadLegacyLocalState() {
   try {
     const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadAnonymousLocalState() {
+  try {
+    const raw = localStorage.getItem(getScopedStorageKey(""));
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
