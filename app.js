@@ -82,6 +82,7 @@ const uiState = {
   drawerCloseTimer: null,
   drawerSections: new Set(),
   animateWardAdd: false,
+  editingWardId: "",
   pendingTagInsertions: new Map(),
   lastInsertedTagTokenId: "",
   notificationStatus: "",
@@ -191,6 +192,12 @@ function bindEvents() {
       return;
     }
 
+    const editWard = event.target.closest("[data-edit-ward]");
+    if (editWard) {
+      editWardNameFromDrawer(editWard.dataset.editWard);
+      return;
+    }
+
     const deleteWard = event.target.closest("[data-delete-ward]");
     if (deleteWard) {
       deleteWardFromDrawer(deleteWard.dataset.deleteWard);
@@ -234,6 +241,23 @@ function bindEvents() {
     if (checkbox) {
       const row = checkbox.closest("[data-custom-tag-row]");
       updateCustomTagDefinition(row?.dataset.customTagRow, { hasReminder: checkbox.checked });
+    }
+  });
+
+  refs.drawerRoot?.addEventListener("keydown", (event) => {
+    const wardNameInput = event.target.closest("[data-ward-name-input]");
+    if (!wardNameInput) return;
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      renameWardFromDrawer(wardNameInput.dataset.wardNameInput, wardNameInput.value);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      uiState.editingWardId = "";
+      renderDrawer();
     }
   });
 
@@ -640,6 +664,7 @@ function renderDrawer({ animateSide = "" } = {}) {
       refs.drawerRoot?.querySelector(".ward-add-reveal")?.classList.remove("should-animate");
     }, 260);
   }
+  focusEditingWardInput();
 }
 
 function clearDrawerCloseTimer() {
@@ -807,6 +832,7 @@ function renderWardOptionsMenu() {
 
 function renderDrawerWardButton(ward) {
   const active = state.timelineScope === "active" && ward.id === state.selectedWardId;
+  const editing = uiState.editingWardId === ward.id;
   return `
     <div
       class="ward-tab ${active ? "is-active" : ""}"
@@ -815,13 +841,25 @@ function renderDrawerWardButton(ward) {
       <button class="ward-select-btn ward-icon-select-btn" type="button" data-ward-id="${escapeHtml(ward.id)}" aria-label="Show ${escapeAttribute(ward.name)}">
         <span class="ward-dot"></span>
       </button>
-      <input
-        class="ward-name-input"
-        type="text"
-        value="${escapeAttribute(ward.name)}"
-        data-ward-name-input="${escapeHtml(ward.id)}"
-        aria-label="Ward name"
-      />
+      ${
+        editing
+          ? `<input
+              class="ward-name-input"
+              type="text"
+              value="${escapeAttribute(ward.name)}"
+              data-ward-name-input="${escapeHtml(ward.id)}"
+              aria-label="Ward name"
+            />`
+          : `<button class="ward-name-btn" type="button" data-ward-id="${escapeHtml(ward.id)}" aria-label="Show ${escapeAttribute(ward.name)}">
+              ${escapeHtml(ward.name)}
+            </button>`
+      }
+      <button class="ward-edit-btn" type="button" data-edit-ward="${escapeHtml(ward.id)}" aria-label="Edit ${escapeAttribute(ward.name)}">
+        <svg class="ward-edit-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"></path>
+          <path d="M13.5 6.5l4 4"></path>
+        </svg>
+      </button>
       <button class="ward-delete-btn" type="button" data-delete-ward="${escapeHtml(ward.id)}" aria-label="Delete ${escapeAttribute(ward.name)}">
         <svg class="ward-delete-icon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M3 6h18"></path>
@@ -833,6 +871,15 @@ function renderDrawerWardButton(ward) {
       </button>
     </div>
   `;
+}
+
+function focusEditingWardInput() {
+  if (!uiState.editingWardId) return;
+  window.requestAnimationFrame(() => {
+    const input = refs.drawerRoot?.querySelector(`[data-ward-name-input="${cssEscape(uiState.editingWardId)}"]`);
+    input?.focus();
+    input?.select();
+  });
 }
 
 function renderNotificationSettings() {
@@ -2709,6 +2756,7 @@ function addWard() {
   state.selectedWardId = ward.id;
   state.selectedNoteId = ward.notes[0].id;
   state.preferences.singleWardMode = false;
+  uiState.editingWardId = ward.id;
   saveState();
   render();
 }
@@ -2719,6 +2767,7 @@ function selectWardScope(scope) {
   state.activeView = "timeline";
   uiState.editorFocused = false;
   uiState.mobileTagsOpen = false;
+  uiState.editingWardId = "";
   saveState();
   render();
 }
@@ -2729,19 +2778,30 @@ function selectWardFromDrawer(wardId) {
   state.selectedWardId = ward.id;
   state.selectedNoteId = ward.notes[0]?.id || "";
   state.timelineScope = "active";
+  uiState.editingWardId = "";
   saveState();
   render();
+}
+
+function editWardNameFromDrawer(wardId) {
+  if (!state.wards.some((ward) => ward.id === wardId)) return;
+  uiState.editingWardId = wardId;
+  renderDrawer();
 }
 
 function renameWardFromDrawer(wardId, value) {
   const ward = state.wards.find((item) => item.id === wardId);
   const nextName = String(value || "").trim();
   if (!ward) return;
+  uiState.editingWardId = "";
   if (!nextName) {
     render();
     return;
   }
-  if (ward.name === nextName) return;
+  if (ward.name === nextName) {
+    renderDrawer();
+    return;
+  }
 
   ward.name = nextName;
   ward.notes.forEach((note) => {

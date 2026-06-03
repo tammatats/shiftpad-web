@@ -832,7 +832,7 @@ button:disabled {
 
 .drawer-ward-list .ward-tab {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 38px;
+  grid-template-columns: 34px minmax(0, 1fr) 38px 38px;
   align-items: center;
   gap: 7px;
   padding: 7px;
@@ -860,6 +860,7 @@ button:disabled {
   place-items: center;
 }
 
+.ward-name-btn,
 .ward-name-input {
   min-width: 0;
   width: 100%;
@@ -874,12 +875,24 @@ button:disabled {
   outline: none;
 }
 
+.ward-name-btn {
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ward-name-btn:hover {
+  background: rgba(255, 255, 255, 0.58);
+}
+
 .ward-name-input:focus {
   border-color: rgba(230, 125, 89, 0.34);
   background: rgba(255, 255, 255, 0.86);
   box-shadow: 0 0 0 3px rgba(230, 125, 89, 0.08);
 }
 
+.ward-edit-btn,
 .ward-delete-btn {
   width: 38px;
   height: 38px;
@@ -895,8 +908,18 @@ button:disabled {
   font-weight: 800;
 }
 
+.ward-edit-btn {
+  color: rgba(96, 76, 55, 0.68);
+}
+
 .ward-select-btn:hover {
   background: rgba(255, 255, 255, 0.78);
+}
+
+.ward-edit-btn:hover {
+  border-color: rgba(96, 76, 55, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
 }
 
 .ward-delete-btn:hover {
@@ -905,6 +928,7 @@ button:disabled {
   color: #9d3429;
 }
 
+.ward-edit-icon,
 .ward-delete-icon {
   width: 17px;
   height: 17px;
