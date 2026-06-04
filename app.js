@@ -21,7 +21,6 @@ const KIND_META = {
 const refs = {
   menuBtn: document.getElementById("menu-btn"),
   wardOptionsBtn: document.getElementById("ward-options-btn"),
-  newNoteBtn: document.getElementById("new-note-btn"),
   authGate: document.getElementById("auth-gate"),
   authForm: document.getElementById("auth-form"),
   authEmail: document.getElementById("auth-email"),
@@ -304,10 +303,6 @@ function bindEvents() {
     markEditorPointerMoved(event);
   }, { passive: true });
 
-  [refs.newNoteBtn].filter(Boolean).forEach((button) => {
-    button.addEventListener("click", createNewShiftNote);
-  });
-
   refs.notesTabBtn.addEventListener("click", () => {
     state.activeView = "notes";
     uiState.editorFocused = false;
@@ -329,9 +324,9 @@ function bindEvents() {
       return;
     }
 
-    const newNote = event.target.closest?.("[data-new-note]");
-    if (newNote) {
-      createNewShiftNote();
+    const resetNote = event.target.closest?.("[data-reset-note]");
+    if (resetNote) {
+      resetCurrentWardNote();
       return;
     }
 
@@ -1023,7 +1018,7 @@ function renderEditor() {
           </div>
           <div class="note-meta-actions">
             <small>Updated ${escapeHtml(formatClock(note.updatedAt || note.createdAt))}</small>
-            <button class="ghost-btn tiny-btn" type="button" data-new-note="true">New shift note</button>
+            <button class="ghost-btn tiny-btn" type="button" data-reset-note="true">Reset note</button>
           </div>
         </div>
 
@@ -1847,14 +1842,19 @@ function getPreferences() {
   return state.preferences;
 }
 
-function createNewShiftNote() {
+function resetCurrentWardNote() {
   const ward = getCurrentWard();
   if (!ward) return;
+  if (!window.confirm("Reset this ward note? This clears the notepad and reminders for this ward.")) return;
 
-  const note = createNote(`${ward.name} handover ${ward.notes.length + 1}`, "");
-  ward.notes.unshift(note);
+  const note = createNote(`${ward.name} handover`, "");
+  ward.notes = [note];
   state.selectedNoteId = note.id;
   state.activeView = "notes";
+  state.timelineScope = "active";
+  uiState.savedSelection = null;
+  uiState.editorFocused = false;
+  uiState.mobileTagsOpen = false;
   saveState();
   render();
 }
