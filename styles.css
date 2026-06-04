@@ -1125,6 +1125,59 @@ button:disabled {
   width: 100%;
 }
 
+.notepad-title-block {
+  min-width: 0;
+}
+
+.notepad-ward-title {
+  display: inline-grid;
+  grid-template-columns: 34px minmax(0, auto) 34px;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.notepad-ward-title h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ward-switch-btn {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(96, 76, 55, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  box-shadow: 0 7px 16px rgba(72, 46, 24, 0.08);
+}
+
+.ward-switch-btn:hover {
+  border-color: rgba(207, 99, 61, 0.26);
+  background: rgba(255, 249, 245, 0.94);
+}
+
+.ward-switch-btn:active {
+  transform: translateY(1px);
+}
+
+.ward-switch-icon {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .note-meta-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2402,6 +2455,16 @@ select:focus {
 
   .note-pad-card h2 {
     font-size: 1.04rem;
+  }
+
+  .notepad-ward-title {
+    grid-template-columns: 32px minmax(0, auto) 32px;
+  }
+
+  .ward-switch-btn {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
   }
 
   .note-pad-card .stack-head small {

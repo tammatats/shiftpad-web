@@ -323,6 +323,12 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
+    const wardSwitch = event.target.closest?.("[data-ward-switch]");
+    if (wardSwitch) {
+      switchWardFromEditor(wardSwitch.dataset.wardSwitch);
+      return;
+    }
+
     const newNote = event.target.closest?.("[data-new-note]");
     if (newNote) {
       createNewShiftNote();
@@ -1005,14 +1011,15 @@ function renderEditor() {
     return;
   }
   const documentHtml = getNoteDocumentHtml(note);
+  const showWardSwitcher = shouldShowWardSwitcher();
 
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
       <section class="note-pad-card">
         <div class="stack-head">
-          <div>
+          <div class="notepad-title-block">
             <p class="section-kicker">Main notepad</p>
-            <h2>${escapeHtml(ward.name || "Current ward")}</h2>
+            ${renderNotepadWardTitle(ward, showWardSwitcher)}
           </div>
           <div class="note-meta-actions">
             <small>Updated ${escapeHtml(formatClock(note.updatedAt || note.createdAt))}</small>
@@ -1049,6 +1056,33 @@ function renderEditor() {
     }
     syncMobileTagDock();
   });
+}
+
+function shouldShowWardSwitcher() {
+  return !getPreferences().singleWardMode && state.wards.length > 1;
+}
+
+function renderNotepadWardTitle(ward, showSwitcher = shouldShowWardSwitcher()) {
+  const title = escapeHtml(ward?.name || "Current ward");
+  if (!showSwitcher) {
+    return `<h2>${title}</h2>`;
+  }
+
+  return `
+    <div class="notepad-ward-title" aria-label="Ward switcher">
+      <button class="ward-switch-btn" type="button" data-ward-switch="previous" aria-label="Previous ward">
+        <svg class="ward-switch-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M15 18l-6-6 6-6"></path>
+        </svg>
+      </button>
+      <h2>${title}</h2>
+      <button class="ward-switch-btn" type="button" data-ward-switch="next" aria-label="Next ward">
+        <svg class="ward-switch-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 6l6 6-6 6"></path>
+        </svg>
+      </button>
+    </div>
+  `;
 }
 
 function renderBedIndexRail(beds) {
@@ -2778,6 +2812,30 @@ function selectWardFromDrawer(wardId) {
   state.selectedWardId = ward.id;
   state.selectedNoteId = ward.notes[0]?.id || "";
   state.timelineScope = "active";
+  uiState.editingWardId = "";
+  saveState();
+  render();
+}
+
+function switchWardFromEditor(direction) {
+  if (!shouldShowWardSwitcher()) return;
+  const currentIndex = state.wards.findIndex((ward) => ward.id === state.selectedWardId);
+  if (currentIndex < 0) return;
+
+  const offset = direction === "previous" ? -1 : 1;
+  const nextIndex = (currentIndex + offset + state.wards.length) % state.wards.length;
+  const ward = state.wards[nextIndex];
+  if (!ward) return;
+
+  if (!ward.notes.length) {
+    ward.notes.push(createNote(`${ward.name} handover`, ""));
+  }
+
+  state.selectedWardId = ward.id;
+  state.selectedNoteId = ward.notes[0]?.id || "";
+  state.timelineScope = "active";
+  uiState.editorFocused = false;
+  uiState.mobileTagsOpen = false;
   uiState.editingWardId = "";
   saveState();
   render();
