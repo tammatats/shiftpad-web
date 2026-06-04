@@ -1016,7 +1016,7 @@ function renderEditor() {
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
       <section class="note-pad-card">
-        <div class="stack-head">
+        <div class="stack-head ${showWardSwitcher ? "notepad-switch-head" : ""}">
           <div class="notepad-title-block">
             <p class="section-kicker">Main notepad</p>
             ${renderNotepadWardTitle(ward, showWardSwitcher)}

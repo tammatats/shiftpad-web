@@ -1126,14 +1126,32 @@ button:disabled {
 }
 
 .notepad-title-block {
+  flex: 1;
   min-width: 0;
 }
 
+.notepad-switch-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.notepad-switch-head .notepad-title-block {
+  width: 100%;
+}
+
+.notepad-switch-head .note-meta-actions {
+  align-self: center;
+  justify-self: end;
+}
+
 .notepad-ward-title {
-  display: inline-grid;
-  grid-template-columns: 34px minmax(0, auto) 34px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
   align-items: center;
   gap: 8px;
+  width: 100%;
   max-width: 100%;
 }
 
@@ -1141,6 +1159,7 @@ button:disabled {
   min-width: 0;
   margin: 0;
   overflow: hidden;
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2458,7 +2477,7 @@ select:focus {
   }
 
   .notepad-ward-title {
-    grid-template-columns: 32px minmax(0, auto) 32px;
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
   }
 
   .ward-switch-btn {
