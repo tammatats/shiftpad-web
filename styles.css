@@ -25,6 +25,7 @@
   --keyboard-offset: 0px;
   --viewport-offset-top: 0px;
   --viewport-offset-left: 0px;
+  --desktop-tags-top: calc(env(safe-area-inset-top) + 92px);
 }
 
 * {
@@ -1252,8 +1253,8 @@ select:focus {
   gap: 9px;
   margin-top: 10px;
   position: sticky;
-  top: max(8px, env(safe-area-inset-top));
-  z-index: 20;
+  top: var(--desktop-tags-top);
+  z-index: 80;
   padding: 8px 0 10px;
   background: linear-gradient(180deg, rgba(244, 239, 231, 0.98), rgba(244, 239, 231, 0.88));
   backdrop-filter: blur(10px);

@@ -21,6 +21,7 @@ const KIND_META = {
 const refs = {
   menuBtn: document.getElementById("menu-btn"),
   wardOptionsBtn: document.getElementById("ward-options-btn"),
+  appHeader: document.querySelector(".app-header"),
   authGate: document.getElementById("auth-gate"),
   authForm: document.getElementById("auth-form"),
   authEmail: document.getElementById("auth-email"),
@@ -108,6 +109,7 @@ function initMobileViewportDock() {
       document.documentElement.style.setProperty("--keyboard-offset", "0px");
       document.documentElement.style.setProperty("--viewport-offset-top", "0px");
       document.documentElement.style.setProperty("--viewport-offset-left", "0px");
+      updateDesktopTagBarOffset();
       return;
     }
 
@@ -115,6 +117,7 @@ function initMobileViewportDock() {
     document.documentElement.style.setProperty("--keyboard-offset", `${keyboardOffset}px`);
     document.documentElement.style.setProperty("--viewport-offset-top", `${Math.max(0, viewport.offsetTop)}px`);
     document.documentElement.style.setProperty("--viewport-offset-left", `${Math.max(0, viewport.offsetLeft)}px`);
+    updateDesktopTagBarOffset();
   };
 
   const requestViewportOffsetUpdate = () => {
@@ -136,6 +139,12 @@ function initMobileViewportDock() {
   window.addEventListener("orientationchange", () => {
     window.setTimeout(requestViewportOffsetUpdate, 120);
   });
+}
+
+function updateDesktopTagBarOffset() {
+  const headerRect = refs.appHeader?.getBoundingClientRect?.();
+  const headerBottom = Math.max(0, Math.round(headerRect?.bottom || 0));
+  document.documentElement.style.setProperty("--desktop-tags-top", `${headerBottom + 8}px`);
 }
 
 function bindEvents() {
