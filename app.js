@@ -3059,27 +3059,18 @@ function buildSummaryGroups(scope) {
         });
 
         if (line.bedLabel) {
-          const bedKey = `${ward.id}:${line.bedLabel.toUpperCase()}`;
-          if (!bedMap.has(bedKey)) {
-            bedMap.set(bedKey, {
-              key: bedKey,
-              label: `${ward.name} · Bed ${line.bedLabel.toUpperCase()}`,
-              count: 0,
-              latestTime: "",
-              items: [],
-              combinedText: ""
-            });
+          const group = ensureBedSummaryGroup(bedMap, ward, line.bedLabel);
+          if (!line.bedHeaderOnly) {
+            group.count += 1;
+            if (reminderItemsForLine.length) {
+              group.latestTime = reminderItemsForLine[reminderItemsForLine.length - 1].time;
+            }
+            group.items.push(item);
+            group.combinedText = group.items
+              .map((entryItem) => entryItem.entry.bedSummaryText || entryItem.entry.visibleText || entryItem.entry.text)
+              .filter(Boolean)
+              .join("\n");
           }
-          const group = bedMap.get(bedKey);
-          group.count += 1;
-          if (reminderItemsForLine.length) {
-            group.latestTime = reminderItemsForLine[reminderItemsForLine.length - 1].time;
-          }
-          group.items.push(item);
-          group.combinedText = group.items
-            .map((entryItem) => entryItem.entry.bedSummaryText || entryItem.entry.visibleText || entryItem.entry.text)
-            .filter(Boolean)
-            .join("\n");
         }
       });
     });
@@ -3103,6 +3094,22 @@ function buildSummaryGroups(scope) {
     todo,
     byBed: Array.from(bedMap.values())
   };
+}
+
+function ensureBedSummaryGroup(bedMap, ward, bedLabel) {
+  const normalizedBed = String(bedLabel || "").toUpperCase();
+  const bedKey = `${ward.id}:${normalizedBed}`;
+  if (!bedMap.has(bedKey)) {
+    bedMap.set(bedKey, {
+      key: bedKey,
+      label: `${ward.name} · Bed ${normalizedBed}`,
+      count: 0,
+      latestTime: "",
+      items: [],
+      combinedText: ""
+    });
+  }
+  return bedMap.get(bedKey);
 }
 
 function formatBedSummaryLine(line) {
@@ -5081,7 +5088,6 @@ function extractTaggedLines(note) {
     const bedTag = line.tags.find((tag) => tag.type === "bed");
     if (bedTag) {
       currentBed = bedTag.text.replace(/^Bed\s*/i, "").trim();
-      return;
     }
 
     const reminderTag = line.tags.find((tag) => isReminderTagType(tag.type));
@@ -5090,36 +5096,103 @@ function extractTaggedLines(note) {
     const primaryTag = line.tags.find((tag) => tag.type !== "bed" && tag.type !== "todo" && !isReminderTagType(tag.type));
     const cleanedText = stripTagPrefixes(line.text, line.tags);
     const visibleText = line.visibleText.trim();
+    const hasNonBedContent = Boolean(cleanedText || reminderTag || todoTag || primaryTag);
+    if (!hasNonBedContent && bedTag && currentBed) {
+      lines.push(createParsedLine({
+        lineIndex: lines.length,
+        text: "",
+        visibleText: "",
+        bedLabel: currentBed,
+        note,
+        bedHeaderOnly: true
+      }));
+      return;
+    }
+
     if (!cleanedText && !reminderTag && !todoTag && !primaryTag && !visibleText) {
       return;
     }
     if (isTextReminderOnlyLine(reminderTag, cleanedText, primaryTag)) {
+      if (bedTag && currentBed) {
+        lines.push(createParsedLine({
+          lineIndex: lines.length,
+          text: "",
+          visibleText: "",
+          bedLabel: currentBed,
+          note,
+          bedHeaderOnly: true
+        }));
+      }
       return;
     }
 
-    lines.push({
+    lines.push(createParsedLine({
       lineIndex: lines.length,
       text: cleanedText,
       visibleText,
       bedLabel: currentBed,
-      timeTag: timeTag?.text || "",
-      noteCreatedAt: Number(note.createdAt) || Date.now(),
       reminderType: reminderTag?.type || "",
       reminderTokenId: reminderTag?.id || "",
       reminderCreatedAt: reminderTag?.createdAt || 0,
+      timeTag: timeTag?.text || "",
       timeTokenId: timeTag?.id || reminderTag?.id || "",
       done: Boolean(reminderTag?.done),
       todoTokenId: todoTag?.id || "",
       todoDone: Boolean(todoTag?.done),
+      note,
       ioCreatedAt: reminderTag?.type === "io" ? Number(reminderTag.createdAt || note.createdAt || Date.now()) : 0,
       ioDoneByTime: reminderTag?.type === "io" ? getIoDoneState(reminderTag) : {},
       timeAtStart: Boolean(line.timeAtStart && reminderTag && reminderTag.type !== "io"),
       primaryKind: primaryTag?.type || "general",
       primaryTokenId: primaryTag?.id || ""
-    });
+    }));
   });
 
   return { lines };
+}
+
+function createParsedLine({
+  lineIndex,
+  text,
+  visibleText,
+  bedLabel,
+  note,
+  timeTag = "",
+  reminderType = "",
+  reminderTokenId = "",
+  reminderCreatedAt = 0,
+  timeTokenId = "",
+  done = false,
+  todoTokenId = "",
+  todoDone = false,
+  ioCreatedAt = 0,
+  ioDoneByTime = {},
+  timeAtStart = false,
+  primaryKind = "general",
+  primaryTokenId = "",
+  bedHeaderOnly = false
+}) {
+  return {
+    lineIndex,
+    text,
+    visibleText,
+    bedLabel,
+    timeTag,
+    noteCreatedAt: Number(note.createdAt) || Date.now(),
+    reminderType,
+    reminderTokenId,
+    reminderCreatedAt,
+    timeTokenId,
+    done,
+    todoTokenId,
+    todoDone,
+    ioCreatedAt,
+    ioDoneByTime,
+    timeAtStart,
+    primaryKind,
+    primaryTokenId,
+    bedHeaderOnly
+  };
 }
 
 function isTextReminderOnlyLine(reminderTag, cleanedText, primaryTag) {
