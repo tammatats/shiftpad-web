@@ -1571,8 +1571,11 @@ select:focus {
 .notepad-editor .tag-todo {
   display: inline-grid;
   place-items: center;
+  position: relative;
   width: 22px;
+  min-width: 22px;
   height: 22px;
+  min-height: 22px;
   padding: 0;
   border-radius: 7px;
   background: rgba(232, 246, 238, 0.78);
@@ -1581,14 +1584,14 @@ select:focus {
   font-size: 0.9rem;
   font-weight: 800;
   line-height: 1;
-  vertical-align: -0.18em;
+  vertical-align: middle;
+  transform: translateY(-0.03em);
   cursor: pointer;
 }
 
 .notepad-editor .tag-todo::before {
   content: "";
-  display: grid;
-  place-items: center;
+  grid-area: 1 / 1;
   width: 12px;
   height: 12px;
   box-sizing: border-box;
@@ -1597,18 +1600,30 @@ select:focus {
   background: rgba(255, 255, 255, 0.82);
 }
 
+.notepad-editor .tag-todo::after {
+  content: "";
+  grid-area: 1 / 1;
+  width: 5px;
+  height: 9px;
+  border-right: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  opacity: 0;
+  transform: translateY(-1px) rotate(40deg) scale(0.86);
+  transform-origin: center;
+}
+
 .notepad-editor .tag-todo[data-done="true"] {
   background: #edf0ec;
   color: rgba(72, 86, 75, 0.72);
 }
 
 .notepad-editor .tag-todo[data-done="true"]::before {
-  content: "✓";
   background: #4f9f68;
   border-color: #4f9f68;
-  color: white;
-  font-size: 0.72rem;
-  line-height: 1;
+}
+
+.notepad-editor .tag-todo[data-done="true"]::after {
+  opacity: 1;
 }
 
 .notepad-editor .tag-token.tag-done:not(.tag-todo) {
