@@ -3776,6 +3776,10 @@ function handleNotepadBeforeInput(event) {
 function handleEditingTimeTextInput(token, text) {
   if (!token || !text) return;
 
+  if (isWhitespaceInput(text) && finalizeDefaultTimeTokenWithCurrentTime(token)) {
+    return;
+  }
+
   if (!isTimeEditingCharacter(text)) {
     if (isDefaultEditingTimeToken(token)) {
       removeTagToken(token, { restoreRepair: false });
@@ -3796,6 +3800,7 @@ function handleEditingTimeTextInput(token, text) {
   const nextText = `${currentText.slice(0, start)}${text}${currentText.slice(end)}`;
   const nextOffset = start + text.length;
   const completed = extractCompletedTimeTokenText(nextText);
+  delete token.dataset.defaultTime;
 
   if (completed) {
     token.textContent = normalizeTimeTagValue(completed.timePart) || completed.timePart;
@@ -3885,6 +3890,9 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
 
     if (isTimeLikeTag(tagType) && token.dataset.editing === "true") {
       if (key === " " || key === "Tab") {
+        if (key === " " && finalizeDefaultTimeTokenWithCurrentTime(token)) {
+          return true;
+        }
         finalizeTagToken(token, { moveToNewLine: false });
         return true;
       }
@@ -4033,7 +4041,7 @@ function insertTagIntoEditor(editor, tag) {
     insertHtmlAtSelection(
       `<span class="tag-token tag-${escapeAttribute(tag)} tag-editing" data-tag="${escapeAttribute(tag)}" data-token-id="${escapeAttribute(
         tokenId
-      )}" data-created-at="${createdAt}" data-done="false" data-editing="true">00.00</span>`
+      )}" data-created-at="${createdAt}" data-done="false" data-editing="true" data-default-time="true">00.00</span>`
     );
     const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
     rememberPendingTagInsertion(tokenId, editor, insertionPoint);
@@ -4891,6 +4899,23 @@ function isDefaultEditingTimeToken(token) {
   return text === "00.00" && selectedText === text;
 }
 
+function isUntouchedDefaultTimeToken(token) {
+  if (!token || !isTimeLikeTag(token.dataset.tag) || token.dataset.editing !== "true") return false;
+  const text = String(token.textContent || "").replace(/\u00a0/g, " ").trim();
+  return token.dataset.defaultTime === "true" && text === "00.00";
+}
+
+function finalizeDefaultTimeTokenWithCurrentTime(token, options = {}) {
+  if (!isUntouchedDefaultTimeToken(token)) return false;
+  token.textContent = formatTimeFromTimestamp(Date.now());
+  finalizeTagToken(token, options);
+  return true;
+}
+
+function isWhitespaceInput(text) {
+  return /^[\s\u00a0]+$/.test(String(text || ""));
+}
+
 function refreshLineTagClasses(line) {
   if (!line) return;
   line.classList.toggle("timed-line", Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]')));
@@ -5368,6 +5393,7 @@ function finalizeTagToken(token, { moveToNewLine = false } = {}) {
 
   token.setAttribute("contenteditable", "false");
   token.dataset.editing = "false";
+  delete token.dataset.defaultTime;
   token.classList.remove("tag-editing");
   discardPendingTagInsertion(token);
 
