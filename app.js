@@ -397,6 +397,10 @@ function bindEvents() {
     }, 50);
   });
 
+  refs.editorRoot.addEventListener("paste", (event) => {
+    handleNotepadPaste(event);
+  });
+
   refs.editorRoot.addEventListener("input", (event) => {
     const editor = event.target.closest?.("#notepad-editor");
     if (!editor) return;
@@ -4270,6 +4274,194 @@ function insertHtmlAtSelection(html) {
   marker.remove();
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+function handleNotepadPaste(event) {
+  const editor = event.target.closest?.("#notepad-editor");
+  if (!editor) return;
+
+  const clipboard = event.clipboardData;
+  const pastedHtml = clipboard?.getData("text/html") || "";
+  const pastedText = clipboard?.getData("text/plain") || "";
+  const sanitizedHtml = sanitizeClipboardHtml(pastedHtml, pastedText);
+  if (!sanitizedHtml) return;
+
+  event.preventDefault();
+  editor.focus({ preventScroll: true });
+  insertHtmlAtSelection(sanitizedHtml);
+  syncEditorDocument();
+  rememberEditorSelection(editor);
+  hideBedIndex();
+  requestAnimationFrame(() => keepEditorCaretVisible(editor));
+}
+
+function sanitizeClipboardHtml(html, plainText = "") {
+  if (html) {
+    const root = parseHtmlRoot(html);
+    sanitizePastedDom(root);
+    normalizeEditorBlocks(root);
+    const sanitized = root.innerHTML.trim();
+    if (sanitized && sanitized !== "<br>") {
+      return sanitized;
+    }
+  }
+
+  return plainTextToEditorHtml(plainText);
+}
+
+function sanitizePastedDom(root) {
+  Array.from(root.querySelectorAll("*")).forEach((element) => {
+    if (!root.contains(element)) return;
+
+    if (element.classList?.contains("tag-token")) {
+      element.replaceWith(createCleanPastedTagToken(element));
+      return;
+    }
+
+    if (element.tagName === "BR") {
+      stripElementAttributes(element);
+      return;
+    }
+
+    if (["DIV", "P", "SPAN"].includes(element.tagName)) {
+      stripElementAttributes(element);
+      return;
+    }
+
+    if (isPastedBlockElement(element)) {
+      const replacement = element.ownerDocument.createElement("div");
+      while (element.firstChild) {
+        replacement.appendChild(element.firstChild);
+      }
+      element.replaceWith(replacement);
+      return;
+    }
+
+    unwrapPastedElement(element);
+  });
+}
+
+function createCleanPastedTagToken(token) {
+  const doc = token.ownerDocument;
+  const tag = String(token.dataset.tag || "").trim();
+  if (!isPreservablePastedTag(tag)) {
+    return doc.createTextNode(token.textContent || "");
+  }
+
+  const clean = doc.createElement("span");
+  clean.classList.add("tag-token");
+  if (/^[\w-]+$/.test(tag)) {
+    clean.classList.add(`tag-${tag}`);
+  }
+  clean.dataset.tag = tag;
+  clean.dataset.tokenId = createId("tag");
+  clean.dataset.createdAt = String(Number(token.dataset.createdAt || 0) || Date.now());
+  clean.setAttribute("contenteditable", "false");
+
+  if (tag === "todo") {
+    const done = token.dataset.done === "true";
+    clean.classList.add("tag-todo");
+    clean.dataset.done = done ? "true" : "false";
+    clean.setAttribute("role", "checkbox");
+    clean.setAttribute("aria-checked", done ? "true" : "false");
+    clean.setAttribute("aria-label", "To-do item");
+    return clean;
+  }
+
+  if (tag === "io") {
+    clean.classList.add("tag-io");
+    clean.setAttribute("data-done-14", token.getAttribute("data-done-14") === "true" ? "true" : "false");
+    clean.setAttribute("data-done-22", token.getAttribute("data-done-22") === "true" ? "true" : "false");
+    clean.textContent = "I/O";
+    return clean;
+  }
+
+  if (tag === "bed") {
+    clean.classList.add("tag-bed");
+    const rawBed = String(token.textContent || "").replace(/\u00a0/g, " ").trim();
+    clean.textContent = /^Bed\b/i.test(rawBed) ? rawBed : `Bed ${rawBed}`.trim();
+    return clean;
+  }
+
+  if (tag === "time" || tag === "lab") {
+    clean.classList.add(`tag-${tag}`);
+    clean.dataset.done = token.dataset.done === "true" ? "true" : "false";
+    clean.textContent = normalizeTimeTagValue(token.textContent) || formatTimeFromTimestamp(Date.now());
+    return clean;
+  }
+
+  const customTag = getCustomTagDefinition(tag);
+  clean.textContent = String(token.textContent || customTag?.label || tag).replace(/\u00a0/g, " ").trim();
+  if (customTag?.color) {
+    clean.style.setProperty("--custom-tag-color", customTag.color);
+  }
+  return clean;
+}
+
+function isPreservablePastedTag(tag) {
+  return ["bed", "time", "lab", "io", "todo"].includes(tag) || Boolean(getCustomTagDefinition(tag));
+}
+
+function stripElementAttributes(element) {
+  Array.from(element.attributes || []).forEach((attribute) => {
+    element.removeAttribute(attribute.name);
+  });
+}
+
+function isPastedBlockElement(element) {
+  return [
+    "ADDRESS",
+    "ARTICLE",
+    "ASIDE",
+    "BLOCKQUOTE",
+    "DD",
+    "DL",
+    "DT",
+    "FIGCAPTION",
+    "FIGURE",
+    "FOOTER",
+    "FORM",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "HEADER",
+    "HR",
+    "LI",
+    "MAIN",
+    "NAV",
+    "OL",
+    "PRE",
+    "SECTION",
+    "TABLE",
+    "TBODY",
+    "TD",
+    "TFOOT",
+    "TH",
+    "THEAD",
+    "TR",
+    "UL"
+  ].includes(element.tagName);
+}
+
+function unwrapPastedElement(element) {
+  const parent = element.parentNode;
+  if (!parent) return;
+  while (element.firstChild) {
+    parent.insertBefore(element.firstChild, element);
+  }
+  element.remove();
+}
+
+function plainTextToEditorHtml(text) {
+  const normalized = String(text || "").replace(/\r\n?/g, "\n");
+  if (!normalized) return "";
+  return normalized
+    .split("\n")
+    .map((line) => `<div>${line ? escapeHtml(line) : "<br>"}</div>`)
+    .join("");
 }
 
 function insertEditorLine(editor, html) {
