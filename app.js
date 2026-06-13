@@ -3765,9 +3765,14 @@ function handleNotepadBeforeInput(event) {
       finalizeEditingBedLine(bedLine);
       return true;
     }
+
+    if (handleTaggedLineEnter(event.target.closest?.("#notepad-editor"))) {
+      return true;
+    }
   }
 
   if (isDeleteInput) {
+    const editor = event.target.closest?.("#notepad-editor");
     if (uiState.suppressNextDeleteInput) {
       uiState.suppressNextDeleteInput = false;
       return true;
@@ -3780,22 +3785,26 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
-    const freshToken = getFreshFinalizedTagForDelete(event.target.closest?.("#notepad-editor"), inputType);
+    if (removeEmptyAutoTodoContinuation(editor)) {
+      return true;
+    }
+
+    const freshToken = getFreshFinalizedTagForDelete(editor, inputType);
     if (freshToken && deleteFreshFinalizedTag(freshToken)) {
       return true;
     }
 
-    const leadingTodoToken = getLeadingTodoTagForDelete(event.target.closest?.("#notepad-editor"));
+    const leadingTodoToken = getLeadingTodoTagForDelete(editor);
     if (leadingTodoToken && deleteAdjacentFinalizedTag(leadingTodoToken)) {
       return true;
     }
 
-    const adjacentToken = getAdjacentFinalizedTagForDelete(event.target.closest?.("#notepad-editor"), inputType);
+    const adjacentToken = getAdjacentFinalizedTagForDelete(editor, inputType);
     if (adjacentToken && deleteAdjacentFinalizedTag(adjacentToken)) {
       return true;
     }
 
-    if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(event.target.closest?.("#notepad-editor"))) {
+    if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(editor)) {
       return true;
     }
 
@@ -3975,6 +3984,10 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
 
   if (key === "Backspace" || key === "Delete") {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
+    if (removeEmptyAutoTodoContinuation(editor)) {
+      return true;
+    }
+
     const inputType = key === "Delete" ? "deleteContentForward" : "deleteContentBackward";
     const freshToken = getFreshFinalizedTagForDelete(editor, inputType);
     if (freshToken && deleteFreshFinalizedTag(freshToken)) {
@@ -3993,15 +4006,79 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
   }
 
   if (key === "Enter" && !shiftKey) {
-    const currentLine = getCurrentEditorLine();
-    if (currentLine?.classList.contains("timed-line") || currentLine?.classList.contains("io-line") || currentLine?.classList.contains("todo-line")) {
-      placeCaretOnNewLine(currentLine);
-      syncEditorDocument();
+    if (handleTaggedLineEnter(refs.editorRoot.querySelector("#notepad-editor"))) {
       return true;
     }
   }
 
   return false;
+}
+
+function handleTaggedLineEnter(editor) {
+  if (!editor) return false;
+  const currentLine = getCurrentEditorLine();
+  if (!currentLine || !isNodeInsideEditor(editor, currentLine)) return false;
+
+  if (removeEmptyAutoTodoContinuation(editor)) {
+    return true;
+  }
+
+  if (currentLine.querySelector('.tag-token[data-tag="todo"]')) {
+    insertAutoTodoContinuationLineAfter(editor, currentLine);
+    return true;
+  }
+
+  if (currentLine.classList.contains("timed-line") || currentLine.classList.contains("io-line")) {
+    placeCaretOnNewLine(currentLine);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return true;
+  }
+
+  return false;
+}
+
+function insertAutoTodoContinuationLineAfter(editor, referenceLine) {
+  const tokenId = createId("tag");
+  const line = document.createElement("div");
+  line.innerHTML = `${renderTodoTokenHtml(tokenId, false, { autoContinuation: true })}&nbsp;`;
+
+  if (referenceLine.nextSibling) {
+    referenceLine.parentNode.insertBefore(line, referenceLine.nextSibling);
+  } else {
+    referenceLine.parentNode.appendChild(line);
+  }
+
+  refreshLineTagClasses(line);
+  placeCaretAtEndOfLine(line);
+  syncEditorDocument();
+  rememberEditorSelection(editor);
+}
+
+function removeEmptyAutoTodoContinuation(editor) {
+  const line = getCurrentEditorLine();
+  if (!editor || !line || !isNodeInsideEditor(editor, line)) return false;
+  if (!isEmptyAutoTodoContinuationLine(line)) return false;
+
+  const token = line.querySelector('.tag-token[data-tag="todo"][data-auto-continuation="true"]');
+  consumePendingTagInsertion(token);
+  removeInsertedTagSpacer(token);
+  removeTagCaretBoundaries(token);
+  token?.remove();
+  line.innerHTML = "<br>";
+  refreshLineTagClasses(line);
+  placeCaretInsideLine(line);
+  syncEditorDocument();
+  rememberEditorSelection(editor);
+  return true;
+}
+
+function isEmptyAutoTodoContinuationLine(line) {
+  const token = line?.querySelector?.('.tag-token[data-tag="todo"][data-auto-continuation="true"]');
+  if (!token) return false;
+  const extraTags = Array.from(line.querySelectorAll(".tag-token")).some((candidate) => candidate !== token);
+  if (extraTags) return false;
+  return getEditableTextFromLine(line).trim() === "";
 }
 
 function deleteFreshFinalizedTag(token) {
@@ -4211,10 +4288,11 @@ function insertTodoTagIntoLine(editor, insertionPoint) {
   syncEditorDocument();
 }
 
-function renderTodoTokenHtml(tokenId, done = false) {
+function renderTodoTokenHtml(tokenId, done = false, options = {}) {
+  const autoContinuationAttr = options.autoContinuation ? ' data-auto-continuation="true"' : "";
   return `<span class="tag-token tag-todo" contenteditable="false" data-tag="todo" data-token-id="${escapeAttribute(
     tokenId
-  )}" data-done="${done ? "true" : "false"}" role="checkbox" aria-checked="${done ? "true" : "false"}" aria-label="To-do item"></span>`;
+  )}" data-done="${done ? "true" : "false"}"${autoContinuationAttr} role="checkbox" aria-checked="${done ? "true" : "false"}" aria-label="To-do item"></span>`;
 }
 
 function ensureSelectionLineForInsertion(range) {
