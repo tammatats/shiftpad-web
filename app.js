@@ -586,6 +586,12 @@ function bindEvents() {
       return;
     }
 
+    const scopeToggle = event.target.closest("[data-summary-scope-toggle]");
+    if (scopeToggle) {
+      toggleSummaryScopeFromTimeline();
+      return;
+    }
+
     const emptyAction = event.target.closest("[data-empty-action]");
     if (!emptyAction) return;
 
@@ -1151,6 +1157,7 @@ function renderTimeline() {
   const openReminderCount = summary.timed.filter((item) => !item.entry.done).length;
   const openTodoCount = summary.todo.filter((item) => !item.entry.done).length;
   const scopeLabel = scope === "active" ? getCurrentWard()?.name || "Selected ward" : "All wards";
+  const nextScopeLabel = scope === "active" ? "Show all wards" : `Show ${getCurrentWard()?.name || "active ward"}`;
 
   refs.timelineRoot.innerHTML = `
     <div class="summary-controls-row">
@@ -1159,7 +1166,10 @@ function renderTimeline() {
         <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" data-summary-tab="reminders">Reminders</button>
         <button class="summary-tab ${summaryTab === "todo" ? "is-active" : ""}" type="button" data-summary-tab="todo">To-do list</button>
       </div>
-      <strong class="summary-count">${escapeHtml(scopeLabel)} · ${openReminderCount} reminder${openReminderCount === 1 ? "" : "s"} · ${openTodoCount} to-do</strong>
+      <div class="summary-scope-actions">
+        <button class="summary-scope-btn" type="button" data-summary-scope-toggle="true">${escapeHtml(nextScopeLabel)}</button>
+        <strong class="summary-count">${escapeHtml(scopeLabel)} · ${openReminderCount} reminder${openReminderCount === 1 ? "" : "s"} · ${openTodoCount} to-do</strong>
+      </div>
     </div>
     ${summaryTab === "beds" ? renderSummaryBedSection(summary.byBed) : ""}
     ${summaryTab === "reminders" ? renderSummaryTimedSection(summary.timed) : ""}
@@ -2881,6 +2891,15 @@ function selectWardFromDrawer(wardId) {
   render();
 }
 
+function toggleSummaryScopeFromTimeline() {
+  state.timelineScope = state.timelineScope === "active" ? "all" : "active";
+  uiState.editorFocused = false;
+  uiState.mobileTagsOpen = false;
+  saveState();
+  renderTimeline();
+  renderDrawer();
+}
+
 function switchWardFromEditor(direction) {
   if (!shouldShowWardSwitcher()) return;
   const currentIndex = state.wards.findIndex((ward) => ward.id === state.selectedWardId);
@@ -2897,7 +2916,6 @@ function switchWardFromEditor(direction) {
 
   state.selectedWardId = ward.id;
   state.selectedNoteId = ward.notes[0]?.id || "";
-  state.timelineScope = "active";
   uiState.editorFocused = false;
   uiState.mobileTagsOpen = false;
   uiState.editingWardId = "";

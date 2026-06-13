@@ -1926,6 +1926,33 @@ select:focus {
   white-space: nowrap;
 }
 
+.summary-scope-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.summary-scope-btn {
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(96, 76, 55, 0.1);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 800;
+  white-space: nowrap;
+  box-shadow: 0 8px 18px rgba(72, 46, 24, 0.06);
+}
+
+.summary-scope-btn:hover {
+  border-color: rgba(230, 125, 89, 0.22);
+  background: rgba(255, 248, 242, 0.96);
+}
+
 .summary-tab {
   border: 0;
   border-radius: 14px;
@@ -2606,6 +2633,17 @@ select:focus {
 
   .summary-count {
     justify-self: start;
+  }
+
+  .summary-scope-actions {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .summary-scope-btn {
+    min-height: 34px;
+    padding: 7px 10px;
   }
 
   .reminder-row {
