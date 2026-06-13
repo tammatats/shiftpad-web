@@ -7,7 +7,9 @@ const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
 const CLOUD_SAVE_DEBOUNCE_MS = 300;
 const CLOUD_SYNC_POLL_MS = 1500;
-const CLOUD_REMOTE_APPLY_IDLE_MS = 450;
+const CLOUD_REMOTE_APPLY_IDLE_MS = 1200;
+const CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS = 2500;
+const CLOUD_LOCAL_EDIT_PROTECTION_MS = 8000;
 const LOCAL_SAVE_DEBOUNCE_MS = 180;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
@@ -389,6 +391,7 @@ function bindEvents() {
       uiState.editorFocused = Boolean(document.activeElement?.closest?.("#notepad-editor"));
       if (!uiState.editorFocused) {
         uiState.mobileTagsOpen = false;
+        applyPendingRemoteStateIfReady();
       }
       syncMobileTagDock();
     }, 50);
@@ -945,7 +948,7 @@ function getSyncStatusText() {
   if (authState.isHydrating) return "Loading cloud notes...";
   if (authState.saveTimer) return "Saving soon...";
   if (authState.isSaving) return "Saving to cloud...";
-  if (authState.pendingRemoteRecord) return "Loading newer cloud edits...";
+  if (authState.pendingRemoteRecord) return isEditorActivelyFocused() ? "Cloud update waiting" : "Loading newer cloud edits...";
   if (authState.lastRemoteAppliedAt) return formatLiveSyncStatus();
   if (authState.realtimeStatus === "subscribed") return "Live sync on";
   if (authState.realtimeStatus === "polling") return "Live sync polling";
@@ -1467,17 +1470,19 @@ function handleRemoteCloudRecord(record) {
 
 function shouldDeferRemoteStateApply() {
   if (authState.saveTimer || authState.isSaving) return true;
-  return uiState.editorFocused && Date.now() - authState.lastLocalMutationAt < CLOUD_REMOTE_APPLY_IDLE_MS;
+  if (isEditorActivelyFocused()) return true;
+  return hasRecentLocalMutation(CLOUD_REMOTE_APPLY_IDLE_MS);
 }
 
 function schedulePendingRemoteStateApply() {
   if (authState.remoteApplyTimer) {
     window.clearTimeout(authState.remoteApplyTimer);
   }
+  const delay = isEditorActivelyFocused() ? CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS : CLOUD_REMOTE_APPLY_IDLE_MS;
   authState.remoteApplyTimer = window.setTimeout(() => {
     authState.remoteApplyTimer = null;
     applyPendingRemoteStateIfReady();
-  }, CLOUD_REMOTE_APPLY_IDLE_MS);
+  }, delay);
 }
 
 function applyPendingRemoteStateIfReady() {
@@ -1489,6 +1494,19 @@ function applyPendingRemoteStateIfReady() {
   const record = authState.pendingRemoteRecord;
   authState.pendingRemoteRecord = null;
   applyRemoteCloudState(record);
+}
+
+function isEditorActivelyFocused() {
+  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  return Boolean(uiState.editorFocused || editor?.contains(document.activeElement));
+}
+
+function hasRecentLocalMutation(windowMs = CLOUD_LOCAL_EDIT_PROTECTION_MS) {
+  return Boolean(authState.lastLocalMutationAt && Date.now() - authState.lastLocalMutationAt < windowMs);
+}
+
+function shouldProtectLocalStateFromCloudConflict() {
+  return authState.saveTimer || isEditorActivelyFocused() || hasRecentLocalMutation(CLOUD_LOCAL_EDIT_PROTECTION_MS);
 }
 
 function applyRemoteCloudState(record, { force = false } = {}) {
@@ -3425,7 +3443,7 @@ function fetchCloudStateRecord() {
     .maybeSingle();
 }
 
-async function saveCloudStateNow() {
+async function saveCloudStateNow({ conflictRetry = false } = {}) {
   if (!authState.client || !authState.user || authState.suppressCloudSave) return;
 
   authState.isSaving = true;
@@ -3462,7 +3480,7 @@ async function saveCloudStateNow() {
 
   if (error) {
     if (isCloudVersionConflictError(error)) {
-      await handleCloudSaveConflict();
+      await handleCloudSaveConflict({ conflictRetry });
       return;
     }
     console.error("Cloud save failed:", error);
@@ -3472,7 +3490,7 @@ async function saveCloudStateNow() {
   }
 
   if (!data) {
-    await handleCloudSaveConflict();
+    await handleCloudSaveConflict({ conflictRetry });
     return;
   }
 
@@ -3489,11 +3507,24 @@ function isCloudVersionConflictError(error) {
   return code === "23505" || /duplicate key|violates unique constraint/i.test(message);
 }
 
-async function handleCloudSaveConflict() {
+async function handleCloudSaveConflict({ conflictRetry = false } = {}) {
   try {
     const { data, error } = await fetchCloudStateRecord();
     if (error) throw error;
     if (data?.state_json) {
+      if (shouldProtectLocalStateFromCloudConflict()) {
+        authState.pendingRemoteRecord = null;
+        rememberCloudVersion(data.updated_at);
+        setAuthMessage(conflictRetry ? "Cloud changed again while typing. Keeping your current edit and retrying sync." : "");
+        renderAuthUi();
+        if (conflictRetry) {
+          scheduleCloudSave();
+        } else {
+          await saveCloudStateNow({ conflictRetry: true });
+        }
+        return;
+      }
+
       if (authState.pendingDoneToggles.size) {
         const mergedState = normalizeState(data.state_json);
         let didReplayDoneToggle = false;
