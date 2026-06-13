@@ -4591,12 +4591,7 @@ function getFreshFinalizedTagForDelete(editor, inputType) {
   if (!isNodeInsideEditor(editor, selection.anchorNode)) return null;
 
   const searchBackward = inputType !== "deleteContentForward";
-  return (
-    getFreshFinalizedTagNearSelection(editor, searchBackward) ||
-    getFreshFinalizedTagNearSelection(editor, !searchBackward) ||
-    getLastInsertedTagForDelete(editor) ||
-    getFreshFinalizedTagInCurrentLine(editor)
-  );
+  return getFreshFinalizedTagNearSelection(editor, searchBackward);
 }
 
 function getAdjacentFinalizedTagForDelete(editor, inputType) {
@@ -4604,10 +4599,7 @@ function getAdjacentFinalizedTagForDelete(editor, inputType) {
   if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return null;
   if (!isNodeInsideEditor(editor, selection.anchorNode)) return null;
   const searchBackward = inputType !== "deleteContentForward";
-  return (
-    getAdjacentFinalizedTagNearSelection(editor, searchBackward) ||
-    getAdjacentFinalizedTagNearSelection(editor, !searchBackward)
-  );
+  return getAdjacentFinalizedTagNearSelection(editor, searchBackward);
 }
 
 function getLeadingTodoTagForDelete(editor) {
@@ -4646,28 +4638,6 @@ function getFirstMeaningfulLineNode(line) {
   return null;
 }
 
-function getLastInsertedTagForDelete(editor) {
-  const tokenId = uiState.lastInsertedTagTokenId;
-  if (!tokenId || !editor) return null;
-  const token = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
-  if (!token?.classList?.contains("tag-token")) return null;
-  const line = findEditorLine(token);
-  const currentLine = getCurrentEditorLine();
-  if (!line || !currentLine || line !== currentLine) return null;
-  return token;
-}
-
-function getFreshFinalizedTagInCurrentLine(editor) {
-  const line = getCurrentEditorLine();
-  if (!line || !isNodeInsideEditor(editor, line)) return null;
-  return (
-    Array.from(line.querySelectorAll(".tag-token")).find((token) => {
-      const pending = getPendingTagInsertion(token);
-      return pending?.finalized;
-    }) || null
-  );
-}
-
 function getFreshFinalizedTagNearSelection(editor, searchBackward) {
   const selection = window.getSelection();
   if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return null;
@@ -4694,6 +4664,7 @@ function getFreshFinalizedTagNearSelection(editor, searchBackward) {
   }
 
   if (!candidate?.classList?.contains("tag-token")) return null;
+  if (findEditorLine(candidate) !== getCurrentEditorLine()) return null;
   const tokenId = candidate.dataset.tokenId;
   const pending = tokenId ? uiState.pendingTagInsertions.get(tokenId) : null;
   return pending?.finalized ? candidate : null;
@@ -4725,6 +4696,7 @@ function getAdjacentFinalizedTagNearSelection(editor, searchBackward) {
   }
 
   if (!candidate?.classList?.contains("tag-token")) return null;
+  if (findEditorLine(candidate) !== getCurrentEditorLine()) return null;
   if (candidate.dataset.editing === "true") return null;
   return candidate;
 }
