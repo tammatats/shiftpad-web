@@ -861,7 +861,7 @@ button:disabled {
   place-items: center;
 }
 
-.ward-name-btn,
+.ward-name-label,
 .ward-name-input {
   min-width: 0;
   width: 100%;
@@ -876,15 +876,18 @@ button:disabled {
   outline: none;
 }
 
-.ward-name-btn {
-  text-align: left;
+.ward-name-label {
+  display: flex;
+  align-items: center;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: default;
 }
 
-.ward-name-btn:hover {
-  background: rgba(255, 255, 255, 0.58);
+.ward-name-input {
+  background: rgba(255, 255, 255, 0.68);
+  border-color: rgba(96, 76, 55, 0.08);
 }
 
 .ward-name-input:focus {
@@ -913,6 +916,12 @@ button:disabled {
   color: rgba(96, 76, 55, 0.68);
 }
 
+.ward-edit-btn.is-editing {
+  border-color: rgba(67, 149, 96, 0.16);
+  background: rgba(232, 246, 238, 0.82);
+  color: #4f9f68;
+}
+
 .ward-select-btn:hover {
   background: rgba(255, 255, 255, 0.78);
 }
@@ -921,6 +930,12 @@ button:disabled {
   border-color: rgba(96, 76, 55, 0.12);
   background: rgba(255, 255, 255, 0.72);
   color: var(--ink);
+}
+
+.ward-edit-btn.is-editing:hover {
+  border-color: rgba(67, 149, 96, 0.22);
+  background: rgba(221, 242, 229, 0.94);
+  color: #327449;
 }
 
 .ward-delete-btn:hover {

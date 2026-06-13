@@ -863,14 +863,18 @@ function renderDrawerWardButton(ward) {
               data-ward-name-input="${escapeHtml(ward.id)}"
               aria-label="Ward name"
             />`
-          : `<button class="ward-name-btn" type="button" data-ward-id="${escapeHtml(ward.id)}" aria-label="Show ${escapeAttribute(ward.name)}">
+          : `<span class="ward-name-label" title="${escapeAttribute(ward.name)}">
               ${escapeHtml(ward.name)}
-            </button>`
+            </span>`
       }
-      <button class="ward-edit-btn" type="button" data-edit-ward="${escapeHtml(ward.id)}" aria-label="Edit ${escapeAttribute(ward.name)}">
+      <button class="ward-edit-btn ${editing ? "is-editing" : ""}" type="button" data-edit-ward="${escapeHtml(ward.id)}" aria-label="${editing ? "Done editing" : `Edit ${escapeAttribute(ward.name)}`}">
         <svg class="ward-edit-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"></path>
-          <path d="M13.5 6.5l4 4"></path>
+          ${
+            editing
+              ? `<path d="M5 12.5l4.2 4.2L19 7"></path>`
+              : `<path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"></path>
+                <path d="M13.5 6.5l4 4"></path>`
+          }
         </svg>
       </button>
       <button class="ward-delete-btn" type="button" data-delete-ward="${escapeHtml(ward.id)}" aria-label="Delete ${escapeAttribute(ward.name)}">
@@ -2869,7 +2873,13 @@ function switchWardFromEditor(direction) {
 }
 
 function editWardNameFromDrawer(wardId) {
-  if (!state.wards.some((ward) => ward.id === wardId)) return;
+  const ward = state.wards.find((item) => item.id === wardId);
+  if (!ward) return;
+  if (uiState.editingWardId === wardId) {
+    const input = refs.drawerRoot?.querySelector(`[data-ward-name-input="${cssEscape(wardId)}"]`);
+    renameWardFromDrawer(wardId, input?.value ?? ward.name);
+    return;
+  }
   uiState.editingWardId = wardId;
   renderDrawer();
 }
