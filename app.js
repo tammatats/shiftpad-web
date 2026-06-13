@@ -5575,6 +5575,7 @@ function parseHtmlRoot(html) {
 
 function extractTaggedLines(note) {
   const root = parseHtmlRoot(getNoteDocumentHtml(note));
+  normalizeEditorBlocks(root);
   const rawLines = [];
 
   Array.from(root.childNodes).forEach((node) => {
@@ -6006,6 +6007,9 @@ function normalizeEditorBlocks(root) {
   while (liftNestedBlockLines(root)) {
     // Keep flattening until every visible line is a direct child of the editor root.
   }
+  while (splitEditorLineBreaks(root)) {
+    // Pasted text often stores visual lines as <br> inside one block.
+  }
   scrubEditorTagTokens(root);
   splitMultiTagEditorLines(root);
 
@@ -6061,6 +6065,75 @@ function splitMultiTagEditorLines(root) {
     root.insertBefore(fragment, line);
     line.remove();
   });
+}
+
+function splitEditorLineBreaks(root) {
+  let changed = false;
+
+  Array.from(root.children || []).forEach((line) => {
+    if (!(line.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(line.tagName))) return;
+
+    const children = Array.from(line.childNodes);
+    if (!children.some(isLineBreakNode)) return;
+
+    const doc = root.ownerDocument;
+    const replacements = [];
+    let nextLine = doc.createElement("div");
+
+    const pushLine = (force = false) => {
+      if (!nextLine.childNodes.length) {
+        if (!force) return;
+        nextLine.innerHTML = "<br>";
+      }
+      replacements.push(nextLine);
+      nextLine = doc.createElement("div");
+    };
+
+    children.forEach((child, index) => {
+      if (isLineBreakNode(child)) {
+        const previousWasBreak = index > 0 && isLineBreakNode(children[index - 1]);
+        pushLine(hasMeaningfulLineContentAfter(children, index + 1) || previousWasBreak);
+        return;
+      }
+
+      nextLine.appendChild(child.cloneNode(true));
+    });
+
+    pushLine();
+
+    if (!replacements.length) {
+      line.innerHTML = "<br>";
+      return;
+    }
+
+    const fragment = doc.createDocumentFragment();
+    replacements.forEach((replacement) => fragment.appendChild(replacement));
+    root.insertBefore(fragment, line);
+    line.remove();
+    changed = true;
+  });
+
+  return changed;
+}
+
+function isLineBreakNode(node) {
+  return node?.nodeType === Node.ELEMENT_NODE && node.tagName === "BR";
+}
+
+function hasMeaningfulLineContentAfter(nodes, startIndex) {
+  return nodes.slice(startIndex).some(isMeaningfulLineNode);
+}
+
+function isMeaningfulLineNode(node) {
+  if (!node) return false;
+  if (isLineBreakNode(node)) return false;
+  if (node.nodeType === Node.TEXT_NODE) {
+    return Boolean(String(node.textContent || "").replace(/[\s\u00a0\u200b]/g, ""));
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  if (node.dataset?.caretMarker) return true;
+  if (node.classList?.contains("tag-token")) return true;
+  return Boolean(String(node.textContent || "").replace(/[\s\u00a0\u200b]/g, ""));
 }
 
 function scrubEditorTagTokens(root) {
