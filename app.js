@@ -6074,7 +6074,7 @@ function splitEditorLineBreaks(root) {
     if (!(line.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(line.tagName))) return;
 
     const children = Array.from(line.childNodes);
-    if (!children.some(isLineBreakNode)) return;
+    if (!children.some((child) => isLineBreakNode(child) || isTextNodeWithLineBreak(child))) return;
 
     const doc = root.ownerDocument;
     const replacements = [];
@@ -6093,6 +6093,23 @@ function splitEditorLineBreaks(root) {
       if (isLineBreakNode(child)) {
         const previousWasBreak = index > 0 && isLineBreakNode(children[index - 1]);
         pushLine(hasMeaningfulLineContentAfter(children, index + 1) || previousWasBreak);
+        return;
+      }
+
+      if (isTextNodeWithLineBreak(child)) {
+        const chunks = String(child.textContent || "").replace(/\r\n?/g, "\n").split("\n");
+        chunks.forEach((chunk, chunkIndex) => {
+          if (chunk) {
+            nextLine.appendChild(doc.createTextNode(chunk));
+          }
+
+          if (chunkIndex < chunks.length - 1) {
+            const hasMoreTextInNode = chunks
+              .slice(chunkIndex + 1)
+              .some((part) => part.replace(/[\s\u00a0\u200b]/g, ""));
+            pushLine(hasMoreTextInNode || hasMeaningfulLineContentAfter(children, index + 1) || chunkIndex > 0);
+          }
+        });
         return;
       }
 
@@ -6118,6 +6135,10 @@ function splitEditorLineBreaks(root) {
 
 function isLineBreakNode(node) {
   return node?.nodeType === Node.ELEMENT_NODE && node.tagName === "BR";
+}
+
+function isTextNodeWithLineBreak(node) {
+  return node?.nodeType === Node.TEXT_NODE && /\n/.test(node.textContent || "");
 }
 
 function hasMeaningfulLineContentAfter(nodes, startIndex) {
