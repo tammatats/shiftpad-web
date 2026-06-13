@@ -88,7 +88,9 @@ const uiState = {
   pendingTagInsertions: new Map(),
   lastInsertedTagTokenId: "",
   notificationStatus: "",
-  pointerTracking: null
+  pointerTracking: null,
+  wardDrag: null,
+  suppressWardHandleClick: false
 };
 applyUrlOverrides();
 
@@ -202,6 +204,16 @@ function bindEvents() {
       return;
     }
 
+    const wardDragHandle = event.target.closest("[data-ward-drag-handle]");
+    if (wardDragHandle) {
+      if (uiState.suppressWardHandleClick) {
+        uiState.suppressWardHandleClick = false;
+        return;
+      }
+      selectWardFromDrawer(wardDragHandle.dataset.wardDragHandle);
+      return;
+    }
+
     const editWard = event.target.closest("[data-edit-ward]");
     if (editWard) {
       editWardNameFromDrawer(editWard.dataset.editWard);
@@ -224,6 +236,16 @@ function bindEvents() {
     if (removeCustomTag) {
       removeCustomTagDefinition(removeCustomTag.dataset.removeCustomTag);
       return;
+    }
+  });
+
+  refs.drawerRoot?.addEventListener("pointerdown", handleWardDragPointerDown);
+  refs.drawerRoot?.addEventListener("pointermove", handleWardDragPointerMove);
+  refs.drawerRoot?.addEventListener("pointerup", handleWardDragPointerUp);
+  refs.drawerRoot?.addEventListener("pointercancel", handleWardDragPointerCancel);
+  refs.drawerRoot?.addEventListener("contextmenu", (event) => {
+    if (event.target.closest?.("[data-ward-drag-handle]")) {
+      event.preventDefault();
     }
   });
 
@@ -809,7 +831,7 @@ function renderWardOptionsMenu() {
       <div class="drawer-section-title">
         <span>Active lists</span>
       </div>
-      <div class="ward-list drawer-ward-list">
+      <div class="ward-list drawer-ward-list" data-ward-sort-list="true">
         <button
           class="ward-tab all-wards-tab ${allSelected ? "is-active" : ""}"
           type="button"
@@ -854,8 +876,15 @@ function renderDrawerWardButton(ward) {
     <div
       class="ward-tab ${active ? "is-active" : ""}"
       style="--ward-color:${escapeHtml(ward.color)}"
+      data-ward-row="${escapeHtml(ward.id)}"
     >
-      <button class="ward-select-btn ward-icon-select-btn" type="button" data-ward-id="${escapeHtml(ward.id)}" aria-label="Show ${escapeAttribute(ward.name)}">
+      <button
+        class="ward-drag-handle"
+        type="button"
+        data-ward-drag-handle="${escapeHtml(ward.id)}"
+        aria-label="Move ${escapeAttribute(ward.name)}"
+        ${state.wards.length <= 1 ? "disabled" : ""}
+      >
         <span class="ward-dot"></span>
       </button>
       ${
@@ -867,9 +896,9 @@ function renderDrawerWardButton(ward) {
               data-ward-name-input="${escapeHtml(ward.id)}"
               aria-label="Ward name"
             />`
-          : `<span class="ward-name-label" title="${escapeAttribute(ward.name)}">
+          : `<button class="ward-name-label ward-name-select-btn" type="button" data-ward-id="${escapeHtml(ward.id)}" title="${escapeAttribute(ward.name)}" aria-label="Show ${escapeAttribute(ward.name)}">
               ${escapeHtml(ward.name)}
-            </span>`
+            </button>`
       }
       <button class="ward-edit-btn ${editing ? "is-editing" : ""}" type="button" data-edit-ward="${escapeHtml(ward.id)}" aria-label="${editing ? "Done editing" : `Edit ${escapeAttribute(ward.name)}`}">
         <svg class="ward-edit-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -2936,6 +2965,178 @@ function deleteWardFromDrawer(wardId) {
   }
 
   ensureSelection();
+  saveState();
+  render();
+}
+
+function handleWardDragPointerDown(event) {
+  const handle = event.target.closest?.("[data-ward-drag-handle]");
+  if (!handle || handle.disabled || state.wards.length <= 1) return;
+  if (event.button !== undefined && event.button !== 0) return;
+
+  const row = handle.closest("[data-ward-row]");
+  const list = row?.closest("[data-ward-sort-list]");
+  const wardId = handle.dataset.wardDragHandle;
+  if (!row || !list || !wardId) return;
+
+  event.preventDefault();
+  clearWardDragState();
+  safelySetPointerCapture(handle, event.pointerId);
+
+  const delay = event.pointerType === "mouse" ? 120 : 260;
+  uiState.wardDrag = {
+    wardId,
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    currentY: event.clientY,
+    targetIndex: state.wards.findIndex((ward) => ward.id === wardId),
+    row,
+    list,
+    handle,
+    dragging: false,
+    timer: window.setTimeout(() => beginWardDrag(), delay)
+  };
+}
+
+function handleWardDragPointerMove(event) {
+  const drag = uiState.wardDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+
+  drag.currentY = event.clientY;
+  const moved = Math.abs(drag.currentY - drag.startY);
+  if (!drag.dragging && event.pointerType === "mouse" && moved > 6) {
+    beginWardDrag();
+  }
+
+  if (!drag.dragging) return;
+  event.preventDefault();
+  updateWardDragPosition(event.clientY);
+}
+
+function handleWardDragPointerUp(event) {
+  const drag = uiState.wardDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  if (drag.dragging) {
+    event.preventDefault();
+  }
+  finishWardDrag(true);
+}
+
+function handleWardDragPointerCancel(event) {
+  const drag = uiState.wardDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  finishWardDrag(false);
+}
+
+function beginWardDrag() {
+  const drag = uiState.wardDrag;
+  if (!drag || drag.dragging || !document.contains(drag.row)) return;
+  window.clearTimeout(drag.timer);
+  drag.dragging = true;
+  drag.row.classList.add("is-dragging");
+  drag.list.classList.add("is-sorting");
+  drag.handle.classList.add("is-grabbing");
+  updateWardDragPosition(drag.currentY);
+}
+
+function updateWardDragPosition(clientY) {
+  const drag = uiState.wardDrag;
+  if (!drag || !drag.dragging) return;
+
+  drag.row.style.transform = `translateY(${Math.round(clientY - drag.startY)}px)`;
+  drag.targetIndex = getWardDropIndex(drag.list, drag.row, clientY);
+  updateWardDropIndicator(drag.list, drag.row, drag.targetIndex);
+}
+
+function getWardDropIndex(list, draggedRow, clientY) {
+  const rows = getSortableWardRows(list).filter((row) => row !== draggedRow);
+  let targetIndex = rows.length;
+
+  rows.some((row, index) => {
+    const rect = row.getBoundingClientRect();
+    if (clientY < rect.top + rect.height / 2) {
+      targetIndex = index;
+      return true;
+    }
+    return false;
+  });
+
+  return targetIndex;
+}
+
+function updateWardDropIndicator(list, draggedRow, targetIndex) {
+  const rows = getSortableWardRows(list).filter((row) => row !== draggedRow);
+  rows.forEach((row) => row.classList.remove("is-drop-before", "is-drop-after"));
+
+  if (!rows.length) return;
+  if (targetIndex >= rows.length) {
+    rows[rows.length - 1].classList.add("is-drop-after");
+    return;
+  }
+
+  rows[targetIndex].classList.add("is-drop-before");
+}
+
+function getSortableWardRows(list) {
+  return Array.from(list?.querySelectorAll?.("[data-ward-row]") || []);
+}
+
+function finishWardDrag(commit) {
+  const drag = uiState.wardDrag;
+  if (!drag) return;
+
+  const wasDragging = drag.dragging;
+  const targetIndex = drag.targetIndex;
+  window.clearTimeout(drag.timer);
+  safelyReleasePointerCapture(drag.handle, drag.pointerId);
+  drag.row.classList.remove("is-dragging");
+  drag.handle.classList.remove("is-grabbing");
+  drag.row.style.transform = "";
+  drag.list.classList.remove("is-sorting");
+  getSortableWardRows(drag.list).forEach((row) => row.classList.remove("is-drop-before", "is-drop-after"));
+  uiState.wardDrag = null;
+
+  if (!wasDragging) return;
+  uiState.suppressWardHandleClick = true;
+  window.setTimeout(() => {
+    uiState.suppressWardHandleClick = false;
+  }, 0);
+
+  if (commit) {
+    reorderWardFromDrawer(drag.wardId, targetIndex);
+  }
+}
+
+function clearWardDragState() {
+  const drag = uiState.wardDrag;
+  if (!drag) return;
+  finishWardDrag(false);
+}
+
+function safelySetPointerCapture(element, pointerId) {
+  try {
+    element?.setPointerCapture?.(pointerId);
+  } catch {
+    // Pointer capture can fail if the browser already ended the gesture.
+  }
+}
+
+function safelyReleasePointerCapture(element, pointerId) {
+  try {
+    element?.releasePointerCapture?.(pointerId);
+  } catch {
+    // Some browsers release capture automatically before pointerup.
+  }
+}
+
+function reorderWardFromDrawer(wardId, targetIndex) {
+  const sourceIndex = state.wards.findIndex((ward) => ward.id === wardId);
+  if (sourceIndex < 0) return;
+
+  const [ward] = state.wards.splice(sourceIndex, 1);
+  const boundedIndex = Math.max(0, Math.min(Number(targetIndex) || 0, state.wards.length));
+  state.wards.splice(boundedIndex, 0, ward);
+  uiState.editingWardId = "";
   saveState();
   render();
 }
