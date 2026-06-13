@@ -5551,6 +5551,16 @@ function getCurrentEditorLine() {
 
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   let node = selection.anchorNode.nodeType === Node.TEXT_NODE ? selection.anchorNode.parentNode : selection.anchorNode;
+  if (node === editor) {
+    const offset = Math.max(0, Math.min(selection.anchorOffset, editor.childNodes.length));
+    const nextNode = editor.childNodes[offset];
+    const previousNode = offset > 0 ? editor.childNodes[offset - 1] : null;
+    const line = [nextNode, previousNode].find((candidate) =>
+      candidate?.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(candidate.tagName)
+    );
+    return line || null;
+  }
+
   while (node && node !== refs.editorRoot && node !== editor) {
     if (node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)) {
       return node;
@@ -5968,7 +5978,20 @@ function restoreSelectionMarker(marker, editor) {
     return;
   }
   if (!marker.parentNode || !marker.isConnected) {
-    placeCaretAtEndOfLine(getCurrentEditorLine() || editor);
+    const liveMarker = editor?.querySelector?.("[data-caret-marker]");
+    if (liveMarker) {
+      const range = document.createRange();
+      range.setStartAfter(liveMarker);
+      range.collapse(true);
+      liveMarker.remove();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      rememberEditorSelection(editor);
+      return;
+    }
+
+    const currentLine = getCurrentEditorLine();
+    placeCaretAtEndOfLine(currentLine && document.contains(currentLine) ? currentLine : editor.lastElementChild || editor);
     return;
   }
 
@@ -6053,7 +6076,7 @@ function splitMultiTagEditorLines(root) {
       if (nodeIsTag && nextLineHasTag) {
         pushLine();
       }
-      nextLine.appendChild(node.cloneNode(true));
+      nextLine.appendChild(node);
       nextLineHasTag = nextLineHasTag || nodeIsTag;
     });
 
@@ -6113,7 +6136,7 @@ function splitEditorLineBreaks(root) {
         return;
       }
 
-      nextLine.appendChild(child.cloneNode(true));
+      nextLine.appendChild(child);
     });
 
     pushLine();
@@ -6325,11 +6348,11 @@ function liftNestedBlockLines(root) {
     children.forEach((child) => {
       if (child.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(child.tagName)) {
         pushCurrentLine();
-        replacements.push(child.cloneNode(true));
+        replacements.push(child);
         return;
       }
 
-      currentLine.appendChild(child.cloneNode(true));
+      currentLine.appendChild(child);
     });
 
     pushCurrentLine();
