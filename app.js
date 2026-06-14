@@ -79,6 +79,7 @@ const uiState = {
   bedFinalizeTimer: null,
   editorTapScroll: null,
   suppressNextDeleteInput: false,
+  suppressNextParagraphInput: false,
   drawerOpen: false,
   wardOptionsOpen: false,
   drawerCloseTimer: null,
@@ -3963,6 +3964,7 @@ function convertEntriesToDocumentHtml(entries) {
 
 function handleNotepadKeydown(event) {
   if (handleEditorSpecialKey(event.key, { shiftKey: event.shiftKey, keyboardEvent: event })) {
+    suppressFollowupBeforeInput(event.key);
     event.preventDefault();
   }
 }
@@ -3972,6 +3974,10 @@ function handleNotepadBeforeInput(event) {
   const isDeleteInput = inputType === "deleteContentBackward" || inputType === "deleteContentForward";
 
   if (inputType === "insertParagraph") {
+    if (consumeSuppressedParagraphInput()) {
+      return true;
+    }
+
     discardFreshFinalizedTagInsertions();
     const activeToken = getActiveTagToken();
     if (activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true") {
@@ -3992,8 +3998,7 @@ function handleNotepadBeforeInput(event) {
 
   if (isDeleteInput) {
     const editor = event.target.closest?.("#notepad-editor");
-    if (uiState.suppressNextDeleteInput) {
-      uiState.suppressNextDeleteInput = false;
+    if (consumeSuppressedDeleteInput(inputType)) {
       return true;
     }
 
@@ -4027,6 +4032,10 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
+    if (inputType === "deleteContentForward" && blockTaggedLineMergeOnDeleteForward(editor)) {
+      return true;
+    }
+
     const bedLine = getCurrentEditingBedLine();
     if (bedLine && isEditingBedLineEmpty(bedLine)) {
       removeEditingBedLine(bedLine);
@@ -4043,6 +4052,42 @@ function handleNotepadBeforeInput(event) {
     discardFreshFinalizedTagInsertions();
   }
 
+  return false;
+}
+
+function suppressFollowupBeforeInput(key) {
+  if (key === "Enter") {
+    uiState.suppressNextParagraphInput = true;
+    window.setTimeout(() => {
+      uiState.suppressNextParagraphInput = false;
+    }, 200);
+    return;
+  }
+
+  if (key === "Backspace" || key === "Delete") {
+    const inputType = key === "Delete" ? "deleteContentForward" : "deleteContentBackward";
+    uiState.suppressNextDeleteInput = inputType;
+    window.setTimeout(() => {
+      if (uiState.suppressNextDeleteInput === inputType) {
+        uiState.suppressNextDeleteInput = false;
+      }
+    }, 200);
+  }
+}
+
+function consumeSuppressedParagraphInput() {
+  if (!uiState.suppressNextParagraphInput) return false;
+  uiState.suppressNextParagraphInput = false;
+  return true;
+}
+
+function consumeSuppressedDeleteInput(inputType) {
+  const suppressed = uiState.suppressNextDeleteInput;
+  if (!suppressed) return false;
+  if (suppressed === true || suppressed === inputType) {
+    uiState.suppressNextDeleteInput = false;
+    return true;
+  }
   return false;
 }
 
@@ -4220,6 +4265,14 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
 
     const adjacentToken = getAdjacentFinalizedTagForDelete(editor, inputType);
     if (adjacentToken && deleteAdjacentFinalizedTag(adjacentToken)) {
+      return true;
+    }
+
+    if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(editor)) {
+      return true;
+    }
+
+    if (inputType === "deleteContentForward" && blockTaggedLineMergeOnDeleteForward(editor)) {
       return true;
     }
   }
@@ -4985,9 +5038,23 @@ function blockTaggedLineMergeOnBackspace(editor) {
   const previousLine = getPreviousEditorLine(currentLine);
   if (!currentLine || !previousLine) return false;
   if (!isSelectionAtStartOfLine(currentLine, selection)) return false;
-  if (!lineHasTag(currentLine) || !lineHasTag(previousLine)) return false;
+  if (!lineHasTag(currentLine) && !lineHasTag(previousLine)) return false;
 
   placeCaretAtEndOfLine(previousLine);
+  rememberEditorSelection(editor);
+  return true;
+}
+
+function blockTaggedLineMergeOnDeleteForward(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return false;
+  const currentLine = getCurrentEditorLine();
+  const nextLine = getNextEditorLine(currentLine);
+  if (!currentLine || !nextLine) return false;
+  if (!isSelectionAtEndOfLine(currentLine, selection)) return false;
+  if (!lineHasTag(currentLine) && !lineHasTag(nextLine)) return false;
+
+  placeCaretAtEndOfLine(currentLine);
   rememberEditorSelection(editor);
   return true;
 }
@@ -4997,6 +5064,15 @@ function getPreviousEditorLine(line) {
   while (node) {
     if (node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)) return node;
     node = node.previousSibling;
+  }
+  return null;
+}
+
+function getNextEditorLine(line) {
+  let node = line?.nextSibling || null;
+  while (node) {
+    if (node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)) return node;
+    node = node.nextSibling;
   }
   return null;
 }
@@ -5012,6 +5088,19 @@ function isSelectionAtStartOfLine(line, selection) {
     return false;
   }
   return !String(beforeRange.toString() || "").replace(/[\u00a0\u200b]/g, " ").trim();
+}
+
+function isSelectionAtEndOfLine(line, selection) {
+  if (!line || !selection?.rangeCount) return false;
+  const range = selection.getRangeAt(0);
+  const afterRange = document.createRange();
+  afterRange.selectNodeContents(line);
+  try {
+    afterRange.setStart(range.startContainer, range.startOffset);
+  } catch {
+    return false;
+  }
+  return !String(afterRange.toString() || "").replace(/[\u00a0\u200b]/g, " ").trim();
 }
 
 function lineHasTag(line) {
@@ -5998,18 +6087,31 @@ function restoreSelectionMarker(marker, editor) {
   if (!marker.parentNode || !marker.isConnected) {
     const liveMarker = editor?.querySelector?.("[data-caret-marker]");
     if (liveMarker) {
-      const range = document.createRange();
-      range.setStartAfter(liveMarker);
-      range.collapse(true);
-      liveMarker.remove();
-      selection.removeAllRanges();
-      selection.addRange(range);
-      rememberEditorSelection(editor);
+      restoreCaretFromMarker(liveMarker, editor);
       return;
     }
 
     const currentLine = getCurrentEditorLine();
     placeCaretAtEndOfLine(currentLine && document.contains(currentLine) ? currentLine : editor.lastElementChild || editor);
+    return;
+  }
+
+  restoreCaretFromMarker(marker, editor);
+}
+
+function restoreCaretFromMarker(marker, editor) {
+  const selection = window.getSelection();
+  if (!marker || !selection) {
+    marker?.remove();
+    return;
+  }
+
+  const markerLine = findEditorLine(marker);
+  if (markerLine && isEditorLineEmpty(markerLine)) {
+    marker.remove();
+    markerLine.innerHTML = "<br>";
+    placeCaretInsideLine(markerLine);
+    rememberEditorSelection(editor);
     return;
   }
 
@@ -6019,9 +6121,7 @@ function restoreSelectionMarker(marker, editor) {
   marker.remove();
   selection.removeAllRanges();
   selection.addRange(range);
-  if (editor) {
-    rememberEditorSelection(editor);
-  }
+  rememberEditorSelection(editor);
 }
 
 function normalizeEditorBlocks(root) {
@@ -6063,7 +6163,8 @@ function normalizeEditorBlocks(root) {
     const hasTime = Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]'));
     const hasIo = Boolean(line.querySelector('.tag-token[data-tag="io"]'));
     const hasTodo = Boolean(line.querySelector('.tag-token[data-tag="todo"]'));
-    if (!hasTime && !hasIo && !hasTodo && isEditorLineEmpty(line)) {
+    const hasCaretMarker = Boolean(line.querySelector("[data-caret-marker]"));
+    if (!hasTime && !hasIo && !hasTodo && !hasCaretMarker && isEditorLineEmpty(line)) {
       line.innerHTML = "<br>";
     }
     refreshLineTagClasses(line);
