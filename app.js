@@ -3966,7 +3966,9 @@ function handleNotepadKeydown(event) {
   if (handleEditorSpecialKey(event.key, { shiftKey: event.shiftKey, keyboardEvent: event })) {
     suppressFollowupBeforeInput(event.key);
     event.preventDefault();
+    return;
   }
+  clearSuppressedBeforeInputForKey(event.key);
 }
 
 function handleNotepadBeforeInput(event) {
@@ -4060,7 +4062,7 @@ function suppressFollowupBeforeInput(key) {
     uiState.suppressNextParagraphInput = true;
     window.setTimeout(() => {
       uiState.suppressNextParagraphInput = false;
-    }, 200);
+    }, 120);
     return;
   }
 
@@ -4071,7 +4073,18 @@ function suppressFollowupBeforeInput(key) {
       if (uiState.suppressNextDeleteInput === inputType) {
         uiState.suppressNextDeleteInput = false;
       }
-    }, 200);
+    }, 120);
+  }
+}
+
+function clearSuppressedBeforeInputForKey(key) {
+  if (key === "Enter") {
+    uiState.suppressNextParagraphInput = false;
+    return;
+  }
+
+  if (key === "Backspace" || key === "Delete") {
+    uiState.suppressNextDeleteInput = false;
   }
 }
 
