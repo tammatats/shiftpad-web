@@ -11,6 +11,7 @@ const CLOUD_REMOTE_APPLY_IDLE_MS = 1200;
 const CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS = 2500;
 const CLOUD_LOCAL_EDIT_PROTECTION_MS = 8000;
 const LOCAL_SAVE_DEBOUNCE_MS = 180;
+const EDITOR_HISTORY_LIMIT = 80;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const KIND_META = {
@@ -91,7 +92,12 @@ const uiState = {
   notificationStatus: "",
   pointerTracking: null,
   wardDrag: null,
-  suppressWardHandleClick: false
+  suppressWardHandleClick: false,
+  editorHistory: {
+    undo: [],
+    redo: [],
+    current: null
+  }
 };
 applyUrlOverrides();
 
@@ -2061,7 +2067,10 @@ function handleQuickTag(tag) {
 
   editor.focus({ preventScroll: true });
   restoreSavedEditorSelection(editor);
-  insertTagIntoEditor(editor, tag);
+  withEditorHistoryTransaction(editor, () => {
+    insertTagIntoEditor(editor, tag);
+    return true;
+  });
 
   note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
   note.updatedAt = Date.now();
@@ -2348,13 +2357,16 @@ function toggleTodoTokenInEditor(token) {
   if (!token) return;
   const note = getCurrentNote();
   const tokenId = token.dataset.tokenId || "";
-  const done = token.dataset.done !== "true";
-  token.dataset.done = done ? "true" : "false";
-  token.setAttribute("aria-checked", done ? "true" : "false");
-  const line = findEditorLine(token);
-  refreshLineTagClasses(line);
-  rememberPendingDoneToggle(note?.id || "", tokenId, done, "");
-  syncEditorDocument();
+  withEditorHistoryTransaction(refs.editorRoot.querySelector("#notepad-editor"), () => {
+    const done = token.dataset.done !== "true";
+    token.dataset.done = done ? "true" : "false";
+    token.setAttribute("aria-checked", done ? "true" : "false");
+    const line = findEditorLine(token);
+    refreshLineTagClasses(line);
+    rememberPendingDoneToggle(note?.id || "", tokenId, done, "");
+    syncEditorDocument();
+    return true;
+  });
 }
 
 function rememberPendingDoneToggle(noteId, tokenId, done, reminderKey = "") {
@@ -3963,7 +3975,17 @@ function convertEntriesToDocumentHtml(entries) {
 }
 
 function handleNotepadKeydown(event) {
-  if (handleEditorSpecialKey(event.key, { shiftKey: event.shiftKey, keyboardEvent: event })) {
+  const editor = event.target.closest?.("#notepad-editor") || refs.editorRoot.querySelector("#notepad-editor");
+  if (handleEditorHistoryShortcut(event, editor)) {
+    event.preventDefault();
+    return;
+  }
+
+  const handled = shouldCaptureKeydownHistory(event, editor)
+    ? withEditorHistoryTransaction(editor, () => handleEditorSpecialKey(event.key, { shiftKey: event.shiftKey, keyboardEvent: event }))
+    : handleEditorSpecialKey(event.key, { shiftKey: event.shiftKey, keyboardEvent: event });
+
+  if (handled) {
     suppressFollowupBeforeInput(event.key);
     event.preventDefault();
     return;
@@ -3972,6 +3994,23 @@ function handleNotepadKeydown(event) {
 }
 
 function handleNotepadBeforeInput(event) {
+  const inputType = event.inputType || "";
+  const editor = event.target.closest?.("#notepad-editor");
+  if (inputType === "historyUndo") {
+    return applyEditorHistory("undo", editor);
+  }
+  if (inputType === "historyRedo") {
+    return applyEditorHistory("redo", editor);
+  }
+
+  if (shouldCaptureBeforeInputHistory(event, editor)) {
+    return withEditorHistoryTransaction(editor, () => handleNotepadBeforeInputMutation(event, editor));
+  }
+
+  return handleNotepadBeforeInputMutation(event, editor);
+}
+
+function handleNotepadBeforeInputMutation(event, editor) {
   const inputType = event.inputType || "";
   const isDeleteInput = inputType === "deleteContentBackward" || inputType === "deleteContentForward";
 
@@ -3999,7 +4038,6 @@ function handleNotepadBeforeInput(event) {
   }
 
   if (isDeleteInput) {
-    const editor = event.target.closest?.("#notepad-editor");
     if (consumeSuppressedDeleteInput(inputType)) {
       return true;
     }
@@ -4102,6 +4140,144 @@ function consumeSuppressedDeleteInput(inputType) {
     return true;
   }
   return false;
+}
+
+function shouldCaptureBeforeInputHistory(event, editor) {
+  const inputType = event.inputType || "";
+  if (!editor) return false;
+  if (inputType === "insertParagraph") return true;
+  if (inputType === "deleteContentBackward" || inputType === "deleteContentForward") return true;
+  if (inputType !== "insertText") return false;
+
+  const activeToken = getActiveTagToken();
+  return Boolean(activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true");
+}
+
+function shouldCaptureKeydownHistory(event, editor) {
+  if (!editor) return false;
+  const key = event.key;
+  if (["Enter", "Tab", "Escape", "Backspace", "Delete"].includes(key)) return true;
+
+  const activeToken = getActiveTagToken();
+  if (!activeToken) return false;
+  if (key === " ") return true;
+  return activeToken.dataset.editing === "true" && isPrintableKey(event);
+}
+
+function handleEditorHistoryShortcut(event, editor) {
+  if (!editor || event.altKey || (!event.metaKey && !event.ctrlKey)) return false;
+
+  const key = String(event.key || "").toLowerCase();
+  if (key === "z" && !event.shiftKey) {
+    return applyEditorHistory("undo", editor);
+  }
+
+  if ((key === "z" && event.shiftKey) || key === "y") {
+    return applyEditorHistory("redo", editor);
+  }
+
+  return false;
+}
+
+function withEditorHistoryTransaction(editor, callback) {
+  if (!editor) return Boolean(callback?.());
+  const before = createEditorHistorySnapshot(editor);
+  const handled = Boolean(callback?.());
+  if (handled) {
+    commitEditorHistoryTransaction(editor, before);
+  }
+  return handled;
+}
+
+function commitEditorHistoryTransaction(editor, before) {
+  if (!editor || !before) return;
+  const after = createEditorHistorySnapshot(editor);
+  if (!after || before.html === after.html) {
+    return;
+  }
+
+  const history = uiState.editorHistory;
+  history.undo.push(before);
+  if (history.undo.length > EDITOR_HISTORY_LIMIT) {
+    history.undo.shift();
+  }
+  history.redo = [];
+  history.current = after;
+}
+
+function applyEditorHistory(action, editor) {
+  if (!editor) return false;
+  const note = getCurrentNote();
+  if (!note) return false;
+  const history = uiState.editorHistory;
+  const source = action === "redo" ? history.redo : history.undo;
+  const target = action === "redo" ? history.undo : history.redo;
+  if (!source.length) return false;
+
+  const snapshot = source[source.length - 1];
+  if (snapshot.noteId && snapshot.noteId !== note.id) return false;
+  if (history.current?.noteId && history.current.noteId !== note.id) return false;
+
+  const cleanHtml = getCleanEditorHtml(editor);
+  if (history.current?.html && cleanHtml !== history.current.html) {
+    return false;
+  }
+
+  const current = createEditorHistorySnapshot(editor);
+  source.pop();
+  if (current) {
+    target.push(current);
+    if (target.length > EDITOR_HISTORY_LIMIT) {
+      target.shift();
+    }
+  }
+
+  restoreEditorHistorySnapshot(editor, snapshot);
+  history.current = createEditorHistorySnapshot(editor) || snapshot;
+  return true;
+}
+
+function createEditorHistorySnapshot(editor) {
+  const note = getCurrentNote();
+  if (!editor || !note) return null;
+
+  const marker = insertSelectionMarker(editor);
+  const markedHtml = marker ? editor.innerHTML : "";
+  if (marker) {
+    restoreCaretFromMarker(marker, editor);
+  }
+
+  return {
+    noteId: note.id || "",
+    html: getCleanEditorHtml(editor),
+    markedHtml
+  };
+}
+
+function restoreEditorHistorySnapshot(editor, snapshot) {
+  const note = getCurrentNote();
+  if (!editor || !note || !snapshot) return;
+
+  editor.innerHTML = snapshot.markedHtml || snapshot.html || "<div><br></div>";
+  normalizeEditorBlocks(editor);
+  const marker = editor.querySelector("[data-caret-marker]");
+  if (marker) {
+    restoreCaretFromMarker(marker, editor);
+  } else {
+    placeCaretAtEndOfLine(editor.lastElementChild || editor);
+    rememberEditorSelection(editor);
+  }
+
+  note.documentHtml = snapshot.html || sanitizeEditorHtml(editor.innerHTML);
+  note.updatedAt = Date.now();
+  saveState();
+  applyCustomTagColors(editor);
+  applyEditorCompletionClasses(editor);
+  rememberEditorSelection(editor);
+}
+
+function getCleanEditorHtml(editor) {
+  return sanitizeEditorHtml(editor?.innerHTML || "");
 }
 
 function handleEditingTimeTextInput(token, text) {
