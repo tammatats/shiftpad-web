@@ -5053,6 +5053,14 @@ function blockTaggedLineMergeOnBackspace(editor) {
   if (!isSelectionAtStartOfLine(currentLine, selection)) return false;
   if (!lineHasTag(currentLine) && !lineHasTag(previousLine)) return false;
 
+  if (isEditorLineEmpty(currentLine)) {
+    currentLine.remove();
+    placeCaretAtEndOfLine(previousLine);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return true;
+  }
+
   placeCaretAtEndOfLine(previousLine);
   rememberEditorSelection(editor);
   return true;
@@ -5066,6 +5074,14 @@ function blockTaggedLineMergeOnDeleteForward(editor) {
   if (!currentLine || !nextLine) return false;
   if (!isSelectionAtEndOfLine(currentLine, selection)) return false;
   if (!lineHasTag(currentLine) && !lineHasTag(nextLine)) return false;
+
+  if (isEditorLineEmpty(nextLine)) {
+    nextLine.remove();
+    placeCaretAtEndOfLine(currentLine);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return true;
+  }
 
   placeCaretAtEndOfLine(currentLine);
   rememberEditorSelection(editor);
