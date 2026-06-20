@@ -318,7 +318,7 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("pointerdown", (event) => {
-    const editor = event.target.closest?.("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     rememberEditorTapScroll(event);
   }, { passive: true });
@@ -328,7 +328,7 @@ function bindEvents() {
   }, { passive: true });
 
   refs.editorRoot.addEventListener("touchstart", (event) => {
-    const editor = event.target.closest?.("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     rememberEditorTapScroll(event);
   }, { passive: true });
@@ -382,7 +382,7 @@ function bindEvents() {
       return;
     }
 
-    if (event.target.closest("#notepad-editor")) {
+    if (getEditorFromEventTarget(event.target)) {
       const editor = refs.editorRoot.querySelector("#notepad-editor");
       uiState.editorFocused = true;
       syncMobileTagDock();
@@ -399,8 +399,8 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("focusin", (event) => {
-    if (!event.target.closest?.("#notepad-editor")) return;
-    const editor = event.target.closest("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
+    if (!editor) return;
     uiState.editorFocused = true;
     hideBedIndex();
     syncMobileTagDock();
@@ -409,7 +409,7 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("focusout", (event) => {
-    if (!event.target.closest?.("#notepad-editor")) return;
+    if (!getEditorFromEventTarget(event.target)) return;
     window.setTimeout(() => {
       uiState.editorFocused = Boolean(document.activeElement?.closest?.("#notepad-editor"));
       if (!uiState.editorFocused) {
@@ -425,14 +425,31 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("input", (event) => {
-    const editor = event.target.closest?.("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     const note = getCurrentNote();
     if (!note) return;
 
+    if ((event.inputType || "").startsWith("deleteContent")) {
+      repairCaretAtEditorLineBoundary(editor);
+      syncEditorDocument();
+      hideBedIndex();
+      requestAnimationFrame(() => keepEditorCaretVisible(editor));
+      return;
+    }
     discardFreshFinalizedTagInsertions();
     maybeFinalizeEditingTimeToken(editor);
-    note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
+    if ((event.inputType || "") === "insertText") {
+      removeBrowserTrailingEmptyLineAfterInput(editor);
+    }
+    const nextHtml = sanitizeEditorHtml(editor.innerHTML);
+    if (nextHtml === note.documentHtml) {
+      rememberEditorSelection(editor);
+      hideBedIndex();
+      requestAnimationFrame(() => keepEditorCaretVisible(editor));
+      return;
+    }
+    note.documentHtml = nextHtml;
     note.updatedAt = Date.now();
     rememberEditorSelection(editor);
     saveState();
@@ -442,43 +459,62 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("blur", (event) => {
-    const editor = event.target.closest?.("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     const note = getCurrentNote();
     if (!note) return;
 
-    note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
+    const nextHtml = sanitizeEditorHtml(editor.innerHTML);
+    if (nextHtml === note.documentHtml) {
+      rememberEditorSelection(editor);
+      return;
+    }
+    note.documentHtml = nextHtml;
     note.updatedAt = Date.now();
     rememberEditorSelection(editor);
     saveState();
   }, true);
 
   refs.editorRoot.addEventListener("keyup", (event) => {
-    const editor = event.target.closest?.("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     const note = getCurrentNote();
     if (!note) return;
 
-    note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
+    if (event.key === "Backspace" || event.key === "Delete") {
+      repairCaretAtEditorLineBoundary(editor);
+    }
+    const nextHtml = sanitizeEditorHtml(editor.innerHTML);
+    if (nextHtml === note.documentHtml) {
+      rememberEditorSelection(editor);
+      return;
+    }
+    note.documentHtml = nextHtml;
     note.updatedAt = Date.now();
     rememberEditorSelection(editor);
     saveState();
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
-    const editor = event.target.closest("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (editor) {
       const note = getCurrentNote();
       if (!note) return;
 
-      note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
+      const nextHtml = sanitizeEditorHtml(editor.innerHTML);
+      if (nextHtml === note.documentHtml) {
+        rememberEditorSelection(editor);
+        return;
+      }
+      note.documentHtml = nextHtml;
+      note.updatedAt = Date.now();
       rememberEditorSelection(editor);
       saveState();
     }
   });
 
   refs.editorRoot.addEventListener("mouseup", (event) => {
-    const editor = event.target.closest?.("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     rememberEditorSelection(editor);
     stabilizeEditorTapScroll(editor);
@@ -507,14 +543,14 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("keydown", (event) => {
-    if (event.target.closest?.("#notepad-editor")) {
+    if (getEditorFromEventTarget(event.target)) {
       hideBedIndex();
       handleNotepadKeydown(event);
     }
   });
 
   refs.editorRoot.addEventListener("beforeinput", (event) => {
-    const editor = event.target.closest?.("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     if (handleNotepadBeforeInput(event)) {
       event.preventDefault();
@@ -1605,6 +1641,83 @@ function mergeRemoteStatePreservingLocalView(remoteState) {
 
   ensureSelectionForState(nextState);
   return nextState;
+}
+
+function mergeCloudStateForSave(localState, remoteState) {
+  const local = normalizeState(localState);
+  const remote = normalizeState(remoteState);
+  const localWardMap = new Map(local.wards.map((ward) => [ward.id, ward]));
+  const remoteWardMap = new Map(remote.wards.map((ward) => [ward.id, ward]));
+  const wardIds = [
+    ...local.wards.map((ward) => ward.id),
+    ...remote.wards.map((ward) => ward.id).filter((wardId) => !localWardMap.has(wardId))
+  ];
+
+  const wards = wardIds
+    .map((wardId) => {
+      const localWard = localWardMap.get(wardId);
+      const remoteWard = remoteWardMap.get(wardId);
+      if (!localWard) return remoteWard;
+      if (!remoteWard) return localWard;
+
+      const localNoteMap = new Map(localWard.notes.map((note) => [note.id, note]));
+      const remoteNoteMap = new Map(remoteWard.notes.map((note) => [note.id, note]));
+      const noteIds = [
+        ...localWard.notes.map((note) => note.id),
+        ...remoteWard.notes.map((note) => note.id).filter((noteId) => !localNoteMap.has(noteId))
+      ];
+      let localWardHasNewestNote = false;
+
+      const notes = noteIds
+        .map((noteId) => {
+          const localNote = localNoteMap.get(noteId);
+          const remoteNote = remoteNoteMap.get(noteId);
+          if (!localNote) return remoteNote;
+          if (!remoteNote) {
+            localWardHasNewestNote = true;
+            return localNote;
+          }
+
+          const localUpdatedAt = getNoteUpdatedAt(localNote);
+          const remoteUpdatedAt = getNoteUpdatedAt(remoteNote);
+          if (localUpdatedAt >= remoteUpdatedAt) {
+            localWardHasNewestNote = localWardHasNewestNote || localUpdatedAt > remoteUpdatedAt;
+            return localNote;
+          }
+          return remoteNote;
+        })
+        .filter(Boolean);
+
+      return {
+        ...remoteWard,
+        name: localWardHasNewestNote ? localWard.name : remoteWard.name,
+        color: localWardHasNewestNote ? localWard.color : remoteWard.color,
+        notes
+      };
+    })
+    .filter(Boolean);
+
+  const mergedState = normalizeState({
+    ...remote,
+    activeView: local.activeView,
+    selectedWardId: local.selectedWardId,
+    selectedNoteId: local.selectedNoteId,
+    timelineScope: local.timelineScope,
+    summaryTab: local.summaryTab,
+    preferences: local.preferences,
+    wards
+  });
+  ensureSelectionForState(mergedState);
+  return mergedState;
+}
+
+function getNoteUpdatedAt(note) {
+  return Number(note?.updatedAt) || Number(note?.createdAt) || 0;
+}
+
+function getStateNoteById(targetState, wardId, noteId) {
+  const targetWard = targetState?.wards?.find?.((ward) => ward.id === wardId);
+  return targetWard?.notes?.find?.((note) => note.id === noteId) || null;
 }
 
 function ensureSelectionForState(targetState) {
@@ -3746,44 +3859,58 @@ async function handleCloudSaveConflict({ conflictRetry = false } = {}) {
     const { data, error } = await fetchCloudStateRecord();
     if (error) throw error;
     if (data?.state_json) {
-      if (shouldProtectLocalStateFromCloudConflict()) {
-        authState.pendingRemoteRecord = null;
-        rememberCloudVersion(data.updated_at);
-        setAuthMessage(conflictRetry ? "Cloud changed again while typing. Keeping your current edit and retrying sync." : "");
-        renderAuthUi();
-        if (conflictRetry) {
-          scheduleCloudSave();
-        } else {
-          await saveCloudStateNow({ conflictRetry: true });
-        }
-        return;
-      }
-
+      const currentView = {
+        selectedWardId: state.selectedWardId,
+        selectedNoteId: state.selectedNoteId
+      };
+      const localActiveNote = getCurrentNote();
+      let mergedState = mergeCloudStateForSave(state, data.state_json);
+      let replayedDoneToggle = false;
       if (authState.pendingDoneToggles.size) {
-        const mergedState = normalizeState(data.state_json);
         let didReplayDoneToggle = false;
         authState.pendingDoneToggles.forEach((toggle) => {
           didReplayDoneToggle = applyDoneToggleToState(mergedState, toggle) || didReplayDoneToggle;
         });
 
         if (didReplayDoneToggle) {
-          authState.pendingRemoteRecord = null;
-          state = mergeRemoteStatePreservingLocalView(mergedState);
-          rememberCloudVersion(data.updated_at);
-          authState.suppressCloudSave = true;
-          saveState({ skipCloud: true, markDirty: false });
-          authState.suppressCloudSave = false;
-          render();
+          replayedDoneToggle = true;
           setAuthMessage("Cloud changed, so ShiftPad kept your checkbox change and saved it on top of the newer copy.");
-          await saveCloudStateNow();
-          return;
         }
         authState.pendingDoneToggles.clear();
       }
 
       authState.pendingRemoteRecord = null;
-      applyRemoteCloudState(data, { force: true });
-      setAuthMessage("Cloud changed on another device, so ShiftPad loaded the newer cloud copy instead of overwriting it.");
+      state = mergeRemoteStatePreservingLocalView(mergedState);
+      rememberCloudVersion(data.updated_at);
+      authState.suppressCloudSave = true;
+      saveState({ skipCloud: true, markDirty: false });
+      authState.suppressCloudSave = false;
+
+      const mergedActiveNote = getStateNoteById(state, currentView.selectedWardId, currentView.selectedNoteId);
+      const activeNoteChangedToRemote =
+        localActiveNote &&
+        mergedActiveNote &&
+        mergedActiveNote.documentHtml !== localActiveNote.documentHtml &&
+        getNoteUpdatedAt(mergedActiveNote) > getNoteUpdatedAt(localActiveNote);
+      if (!isEditorActivelyFocused() || activeNoteChangedToRemote) {
+        render();
+      } else {
+        renderAuthUi();
+      }
+
+      if (!replayedDoneToggle) {
+        setAuthMessage(
+          shouldProtectLocalStateFromCloudConflict()
+            ? "Cloud changed on another device. ShiftPad merged the newer note changes and is saving this edit on top."
+            : "Cloud changed on another device. ShiftPad merged the newer notes instead of overwriting them."
+        );
+      }
+
+      if (conflictRetry) {
+        scheduleCloudSave();
+      } else {
+        await saveCloudStateNow({ conflictRetry: true });
+      }
       return;
     }
   } catch (error) {
@@ -3993,13 +4120,13 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
-    if (handleTaggedLineEnter(event.target.closest?.("#notepad-editor"))) {
+    if (handleTaggedLineEnter(getEditorFromEventTarget(event.target))) {
       return true;
     }
   }
 
   if (isDeleteInput) {
-    const editor = event.target.closest?.("#notepad-editor");
+    const editor = getEditorFromEventTarget(event.target);
     if (consumeSuppressedDeleteInput(inputType)) {
       return true;
     }
@@ -4030,6 +4157,10 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
+    if (removeEmptyEditorLineOnDelete(editor, inputType)) {
+      return true;
+    }
+
     if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(editor)) {
       return true;
     }
@@ -4051,10 +4182,24 @@ function handleNotepadBeforeInput(event) {
       return true;
     }
 
+    const editor = getEditorFromEventTarget(event.target);
+    if (inputType === "insertText" && event.data && shouldManuallyInsertTextIntoEmptyLine(editor)) {
+      insertTextAtSelection(event.data);
+      syncEditorDocument();
+      return true;
+    }
+
     discardFreshFinalizedTagInsertions();
   }
 
   return false;
+}
+
+function shouldManuallyInsertTextIntoEmptyLine(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return false;
+  const line = getCurrentEditorLine();
+  return Boolean(line && isNodeInsideEditor(editor, line) && isEditorLineEmpty(line));
 }
 
 function suppressFollowupBeforeInput(key) {
@@ -4281,6 +4426,10 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
       return true;
     }
 
+    if (removeEmptyEditorLineOnDelete(editor, inputType)) {
+      return true;
+    }
+
     if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(editor)) {
       return true;
     }
@@ -4291,7 +4440,11 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
   }
 
   if (key === "Enter" && !shiftKey) {
-    if (handleTaggedLineEnter(refs.editorRoot.querySelector("#notepad-editor"))) {
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    if (handleTaggedLineEnter(editor)) {
+      return true;
+    }
+    if (insertPlainEditorLineBreak(editor)) {
       return true;
     }
   }
@@ -4321,6 +4474,45 @@ function handleTaggedLineEnter(editor) {
   }
 
   return false;
+}
+
+function insertPlainEditorLineBreak(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount) return false;
+  const currentLine = getCurrentEditorLine();
+  if (!currentLine || !isNodeInsideEditor(editor, currentLine)) return false;
+
+  const range = selection.getRangeAt(0);
+  if (!selection.isCollapsed) {
+    range.deleteContents();
+  }
+
+  const newLine = document.createElement("div");
+  const afterRange = document.createRange();
+  afterRange.selectNodeContents(currentLine);
+  try {
+    afterRange.setStart(range.startContainer, range.startOffset);
+  } catch {
+    newLine.innerHTML = "<br>";
+  }
+
+  if (!newLine.innerHTML) {
+    const fragment = afterRange.extractContents();
+    newLine.appendChild(fragment);
+  }
+
+  if (isEditorLineEmpty(currentLine)) {
+    currentLine.innerHTML = "<br>";
+  }
+  if (isEditorLineEmpty(newLine)) {
+    newLine.innerHTML = "<br>";
+  }
+
+  currentLine.parentNode.insertBefore(newLine, currentLine.nextSibling);
+  placeCaretInsideLine(newLine);
+  syncEditorDocument();
+  rememberEditorSelection(editor);
+  return true;
 }
 
 function insertAutoTodoContinuationLineAfter(editor, referenceLine) {
@@ -4601,6 +4793,15 @@ function ensureSelectionLineForInsertion(range) {
   return line;
 }
 
+function getEditorFromEventTarget(target) {
+  if (!target) return null;
+  const element =
+    target.nodeType === Node.ELEMENT_NODE
+      ? target
+      : target.parentElement || target.parentNode;
+  return element?.closest?.("#notepad-editor") || null;
+}
+
 function isNodeInsideEditor(editor, node) {
   if (!editor || !node) return false;
   let current = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
@@ -4640,7 +4841,7 @@ function insertHtmlAtSelection(html) {
 }
 
 function handleNotepadPaste(event) {
-  const editor = event.target.closest?.("#notepad-editor");
+  const editor = getEditorFromEventTarget(event.target);
   if (!editor) return;
 
   const clipboard = event.clipboardData;
@@ -5014,6 +5215,10 @@ function deleteBackwardAtSelection(editor) {
     return;
   }
 
+  if (removeEmptyEditorLineOnDelete(editor, "deleteContentBackward")) {
+    return;
+  }
+
   if (blockTaggedLineMergeOnBackspace(editor)) {
     return;
   }
@@ -5086,6 +5291,70 @@ function blockTaggedLineMergeOnDeleteForward(editor) {
   placeCaretAtEndOfLine(currentLine);
   rememberEditorSelection(editor);
   return true;
+}
+
+function removeEmptyEditorLineOnDelete(editor, inputType) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return false;
+  const currentLine = getCurrentEditorLine();
+  if (!currentLine || !isNodeInsideEditor(editor, currentLine)) return false;
+  if (!isEditorLineEmpty(currentLine)) {
+    if (inputType !== "deleteContentForward" || !isSelectionAtEndOfLine(currentLine, selection)) return false;
+    const nextLine = getNextEditorLine(currentLine);
+    if (!nextLine || !isEditorLineEmpty(nextLine)) return false;
+    nextLine.remove();
+    placeCaretAtEndOfLine(currentLine);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return true;
+  }
+
+  const previousLine = getPreviousEditorLine(currentLine);
+  const nextLine = getNextEditorLine(currentLine);
+  if (!previousLine && !nextLine) return false;
+
+  if (inputType === "deleteContentBackward") {
+    if (!previousLine || !isSelectionAtStartOfLine(currentLine, selection)) return false;
+    currentLine.remove();
+    placeCaretAtEndOfLine(previousLine);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return true;
+  }
+
+  if (inputType === "deleteContentForward") {
+    if (!nextLine || !isSelectionAtEndOfLine(currentLine, selection)) return false;
+    currentLine.remove();
+    placeCaretInsideLine(nextLine);
+    syncEditorDocument();
+    rememberEditorSelection(editor);
+    return true;
+  }
+
+  return false;
+}
+
+function removeBrowserTrailingEmptyLineAfterInput(editor) {
+  const currentLine = getCurrentEditorLine();
+  const lastLine = editor?.lastElementChild || null;
+  if (!editor || !currentLine || !lastLine) return false;
+
+  if (currentLine === lastLine && isEditorLineEmpty(currentLine)) {
+    const previousLine = getPreviousEditorLine(currentLine);
+    if (!previousLine || isEditorLineEmpty(previousLine)) return false;
+    currentLine.remove();
+    placeCaretAtEndOfLine(previousLine);
+    rememberEditorSelection(editor);
+    return true;
+  }
+
+  if (currentLine !== lastLine && lastLine.previousElementSibling === currentLine && isEditorLineEmpty(lastLine)) {
+    lastLine.remove();
+    repairCaretAtEditorLineBoundary(editor);
+    return true;
+  }
+
+  return false;
 }
 
 function getPreviousEditorLine(line) {
@@ -5586,10 +5855,76 @@ function placeCaretAtEndOfLine(line) {
   const selection = window.getSelection();
   if (!line || !selection) return;
   const range = document.createRange();
-  range.selectNodeContents(line);
-  range.collapse(false);
+  const textNode = getLastEditableTextNode(line);
+  if (textNode) {
+    range.setStart(textNode, textNode.textContent.length);
+  } else {
+    range.selectNodeContents(line);
+    range.collapse(false);
+  }
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+function repairCaretAtEditorLineBoundary(editor) {
+  const selection = window.getSelection();
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return false;
+  const line = getCurrentEditorLine();
+  if (!line || !isNodeInsideEditor(editor, line) || selection.anchorNode !== line) return false;
+
+  const offset = selection.anchorOffset;
+  if (offset === line.childNodes.length) {
+    const textNode = getLastEditableTextNode(line);
+    if (!textNode) return false;
+    const range = document.createRange();
+    range.setStart(textNode, textNode.textContent.length);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    rememberEditorSelection(editor);
+    return true;
+  }
+
+  if (offset === 0) {
+    const textNode = getFirstEditableTextNode(line);
+    if (!textNode) return false;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    rememberEditorSelection(editor);
+    return true;
+  }
+
+  return false;
+}
+
+function getFirstEditableTextNode(root) {
+  if (!root) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    if (!node.parentElement?.closest?.(".tag-token") && String(node.textContent || "").length) {
+      return node;
+    }
+    node = walker.nextNode();
+  }
+  return null;
+}
+
+function getLastEditableTextNode(root) {
+  if (!root) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let last = null;
+  let node = walker.nextNode();
+  while (node) {
+    if (!node.parentElement?.closest?.(".tag-token") && String(node.textContent || "").length) {
+      last = node;
+    }
+    node = walker.nextNode();
+  }
+  return last;
 }
 
 function getCurrentEditingBedLine() {
@@ -6083,9 +6418,12 @@ function syncEditorDocument() {
   const marker = insertSelectionMarker(editor);
   normalizeEditorBlocks(editor);
   restoreSelectionMarker(marker, editor);
-  note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
-  note.updatedAt = Date.now();
-  saveState();
+  const nextHtml = sanitizeEditorHtml(editor.innerHTML);
+  if (nextHtml !== note.documentHtml) {
+    note.documentHtml = nextHtml;
+    note.updatedAt = Date.now();
+    saveState();
+  }
 }
 
 function insertSelectionMarker(editor) {
