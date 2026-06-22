@@ -4753,11 +4753,8 @@ function insertTodoTagIntoLine(editor, insertionPoint) {
   rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
 
   if (selection && line) {
-    const range = document.createRange();
-    range.selectNodeContents(line);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
+    placeCaretAtEndOfLine(line);
+    rememberEditorSelection(editor);
   } else {
     placeCaretAfterNode(inserted, true);
   }
