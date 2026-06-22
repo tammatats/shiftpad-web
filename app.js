@@ -5482,13 +5482,29 @@ function getLeadingTodoTagForDelete(editor) {
 
   const line = getCurrentEditorLine();
   if (!line || !isNodeInsideEditor(editor, line)) return null;
-  if (!isSelectionAtStartOfLine(line, selection)) return null;
+  if (!isSelectionBeforeEditableLineText(line, selection)) return null;
 
   const firstNode = getFirstMeaningfulLineNode(line);
   if (!firstNode?.classList?.contains("tag-token")) return null;
   if (firstNode.dataset.tag !== "todo") return null;
   if (firstNode.dataset.editing === "true") return null;
   return firstNode;
+}
+
+function isSelectionBeforeEditableLineText(line, selection) {
+  if (!line || !selection?.rangeCount) return false;
+  const range = selection.getRangeAt(0);
+  const beforeRange = document.createRange();
+  beforeRange.selectNodeContents(line);
+  try {
+    beforeRange.setEnd(range.startContainer, range.startOffset);
+  } catch {
+    return false;
+  }
+
+  const fragment = beforeRange.cloneContents();
+  fragment.querySelectorAll?.(".tag-token").forEach((token) => token.remove());
+  return !String(fragment.textContent || "").replace(/[\s\u00a0\u200b]/g, "");
 }
 
 function getFirstMeaningfulLineNode(line) {
