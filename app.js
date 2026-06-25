@@ -5296,14 +5296,27 @@ function removeEmptyEditorLineOnDelete(editor, inputType) {
   const currentLine = getCurrentEditorLine();
   if (!currentLine || !isNodeInsideEditor(editor, currentLine)) return false;
   if (!isEditorLineEmpty(currentLine)) {
-    if (inputType !== "deleteContentForward" || !isSelectionAtEndOfLine(currentLine, selection)) return false;
-    const nextLine = getNextEditorLine(currentLine);
-    if (!nextLine || !isEditorLineEmpty(nextLine)) return false;
-    nextLine.remove();
-    placeCaretAtEndOfLine(currentLine);
-    syncEditorDocument();
-    rememberEditorSelection(editor);
-    return true;
+    if (inputType === "deleteContentBackward" && isSelectionAtStartOfLine(currentLine, selection)) {
+      const previousLine = getPreviousEditorLine(currentLine);
+      if (!previousLine || !isEditorLineEmpty(previousLine)) return false;
+      previousLine.remove();
+      placeCaretAtStartOfLine(currentLine);
+      syncEditorDocument();
+      rememberEditorSelection(editor);
+      return true;
+    }
+
+    if (inputType === "deleteContentForward" && isSelectionAtEndOfLine(currentLine, selection)) {
+      const nextLine = getNextEditorLine(currentLine);
+      if (!nextLine || !isEditorLineEmpty(nextLine)) return false;
+      nextLine.remove();
+      placeCaretAtEndOfLine(currentLine);
+      syncEditorDocument();
+      rememberEditorSelection(editor);
+      return true;
+    }
+
+    return false;
   }
 
   const previousLine = getPreviousEditorLine(currentLine);
@@ -5860,6 +5873,21 @@ function placeCaretInsideLine(line) {
   const range = document.createRange();
   range.selectNodeContents(line);
   range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function placeCaretAtStartOfLine(line) {
+  const selection = window.getSelection();
+  if (!line || !selection) return;
+  const range = document.createRange();
+  const textNode = getFirstEditableTextNode(line);
+  if (textNode) {
+    range.setStart(textNode, 0);
+  } else {
+    range.selectNodeContents(line);
+    range.collapse(true);
+  }
   selection.removeAllRanges();
   selection.addRange(range);
 }
