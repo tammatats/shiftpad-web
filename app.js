@@ -5388,6 +5388,12 @@ function getNextEditorLine(line) {
 function isSelectionAtStartOfLine(line, selection) {
   if (!line || !selection?.rangeCount) return false;
   const range = selection.getRangeAt(0);
+  const boundaryOffset = getSelectionBoundaryOffsetInLineParent(line, range.startContainer, range.startOffset);
+  if (boundaryOffset !== null) {
+    const lineIndex = getNodeIndex(line.parentNode, line);
+    return lineIndex >= 0 && boundaryOffset <= lineIndex;
+  }
+
   const beforeRange = document.createRange();
   beforeRange.selectNodeContents(line);
   try {
@@ -5401,6 +5407,12 @@ function isSelectionAtStartOfLine(line, selection) {
 function isSelectionAtEndOfLine(line, selection) {
   if (!line || !selection?.rangeCount) return false;
   const range = selection.getRangeAt(0);
+  const boundaryOffset = getSelectionBoundaryOffsetInLineParent(line, range.startContainer, range.startOffset);
+  if (boundaryOffset !== null) {
+    const lineIndex = getNodeIndex(line.parentNode, line);
+    return lineIndex >= 0 && boundaryOffset >= lineIndex + 1;
+  }
+
   const afterRange = document.createRange();
   afterRange.selectNodeContents(line);
   try {
@@ -5409,6 +5421,31 @@ function isSelectionAtEndOfLine(line, selection) {
     return false;
   }
   return !String(afterRange.toString() || "").replace(/[\u00a0\u200b]/g, " ").trim();
+}
+
+function getSelectionBoundaryOffsetInLineParent(line, container, offset) {
+  const parent = line?.parentNode;
+  if (!parent) return null;
+
+  if (container === parent) {
+    return Math.max(0, Math.min(Number(offset) || 0, parent.childNodes.length));
+  }
+
+  if (container === line && offset === 0) {
+    return getNodeIndex(parent, line);
+  }
+
+  if (container === line && offset === line.childNodes.length) {
+    const lineIndex = getNodeIndex(parent, line);
+    return lineIndex >= 0 ? lineIndex + 1 : null;
+  }
+
+  return null;
+}
+
+function getNodeIndex(parent, node) {
+  if (!parent || !node) return -1;
+  return Array.prototype.indexOf.call(parent.childNodes, node);
 }
 
 function lineHasTag(line) {
