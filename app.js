@@ -1066,7 +1066,7 @@ function renderEditorDebugSettings() {
           <span class="switch-track"></span>
         </span>
       </label>
-      <p class="drawer-help">Local only. Records cursor position, line counts, key type, and handler names, but not note text.</p>
+      <p class="drawer-help">Local only. Includes note text, editor HTML, line details, cursor position, key type, and handler names.</p>
       <div class="debug-actions">
         <button class="accent-btn" type="button" data-drawer-action="copy-debug-logs" ${logs.length ? "" : "disabled"}>Copy latest logs</button>
         <button class="ghost-btn" type="button" data-drawer-action="clear-debug-logs" ${logs.length ? "" : "disabled"}>Clear logs</button>
@@ -3891,22 +3891,45 @@ function getEditorDebugLogs() {
 }
 
 function setEditorDebugLogs(logs) {
+  let nextLogs = logs.slice(-EDITOR_DEBUG_LIMIT);
   try {
-    localStorage.setItem(getEditorDebugLogKey(), JSON.stringify(logs.slice(-EDITOR_DEBUG_LIMIT)));
+    localStorage.setItem(getEditorDebugLogKey(), JSON.stringify(nextLogs));
+    return;
   } catch {
-    // Debug logging should never break the notepad.
+    // Verbose note snapshots can get large. Keep the newest logs if storage fills up.
+  }
+
+  while (nextLogs.length > 1) {
+    nextLogs = nextLogs.slice(Math.floor(nextLogs.length / 2));
+    try {
+      localStorage.setItem(getEditorDebugLogKey(), JSON.stringify(nextLogs));
+      return;
+    } catch {
+      // Try a smaller set below.
+    }
   }
 }
 
 function appendEditorDebugLog(entry) {
   if (!isEditorDebugLoggingEnabled()) return;
+  const ward = getCurrentWard();
+  const note = getCurrentNote();
   const logs = getEditorDebugLogs();
   logs.push({
     timestamp: new Date().toISOString(),
     browser: getEditorDebugBrowserLabel(),
     path: window.location.pathname,
-    wardId: getCurrentWard()?.id || "",
-    noteId: getCurrentNote()?.id || "",
+    activeView: state.activeView,
+    summaryTab: state.summaryTab,
+    timelineScope: state.timelineScope,
+    wardId: ward?.id || "",
+    wardName: ward?.name || "",
+    noteId: note?.id || "",
+    noteTitle: note?.title || "",
+    noteShiftLabel: note?.shiftLabel || "",
+    noteCreatedAt: note?.createdAt || 0,
+    noteUpdatedAt: note?.updatedAt || 0,
+    preferences: getPreferences(),
     ...entry
   });
   setEditorDebugLogs(logs);
@@ -3924,9 +3947,16 @@ function clearEditorDebugLogs() {
 
 async function copyEditorDebugLogs() {
   const logs = getEditorDebugLogs();
+  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
   const payload = {
     exportedAt: new Date().toISOString(),
     browser: getEditorDebugBrowserLabel(),
+    activeView: state.activeView,
+    wardId: getCurrentWard()?.id || "",
+    wardName: getCurrentWard()?.name || "",
+    noteId: getCurrentNote()?.id || "",
+    noteTitle: getCurrentNote()?.title || "",
+    currentEditorSnapshot: captureEditorDebugSnapshot(editor),
     logCount: logs.length,
     logs
   };
@@ -4043,10 +4073,14 @@ function captureEditorDebugSnapshot(editor) {
   const currentLineIndex = currentLine ? lines.indexOf(currentLine) : -1;
   const previousLine = currentLine ? getPreviousEditorLine(currentLine) : null;
   const nextLine = currentLine ? getNextEditorLine(currentLine) : null;
+  const lineDetails = lines.map((line, index) => captureEditorDebugLine(line, index, currentLine));
 
   return {
     lineCount: lines.length,
     emptyLineCount: lines.filter((line) => isEditorLineEmpty(line)).length,
+    editorText: getEditorDebugReadableText(editor),
+    editorTextRaw: editor.textContent || "",
+    editorHtml: editor.innerHTML,
     currentLineIndex,
     currentLineEmpty: currentLine ? isEditorLineEmpty(currentLine) : null,
     previousLineEmpty: previousLine ? isEditorLineEmpty(previousLine) : null,
@@ -4054,6 +4088,10 @@ function captureEditorDebugSnapshot(editor) {
     currentLineHasTag: currentLine ? lineHasTag(currentLine) : null,
     previousLineHasTag: previousLine ? lineHasTag(previousLine) : null,
     nextLineHasTag: nextLine ? lineHasTag(nextLine) : null,
+    currentLine: currentLine ? captureEditorDebugLine(currentLine, currentLineIndex, currentLine) : null,
+    previousLine: previousLine ? captureEditorDebugLine(previousLine, lines.indexOf(previousLine), currentLine) : null,
+    nextLine: nextLine ? captureEditorDebugLine(nextLine, lines.indexOf(nextLine), currentLine) : null,
+    lines: lineDetails,
     selection: getEditorDebugSelection(editor, selection)
   };
 }
@@ -4062,6 +4100,76 @@ function getEditorDebugLines(editor) {
   return Array.from(editor?.childNodes || []).filter(
     (node) => node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)
   );
+}
+
+function captureEditorDebugLine(line, index, currentLine) {
+  if (!line) return null;
+  return {
+    index,
+    active: line === currentLine,
+    tagName: line.tagName || "",
+    className: line.className || "",
+    empty: isEditorLineEmpty(line),
+    hasTag: lineHasTag(line),
+    text: getEditorDebugReadableText(line),
+    textRaw: line.textContent || "",
+    html: line.innerHTML,
+    tags: Array.from(line.querySelectorAll?.(".tag-token") || []).map(captureEditorDebugTag),
+    childNodes: Array.from(line.childNodes || []).map(captureEditorDebugChildNode)
+  };
+}
+
+function captureEditorDebugTag(token) {
+  return {
+    tag: token.dataset?.tag || "",
+    text: getEditorDebugReadableText(token),
+    textRaw: token.textContent || "",
+    html: token.outerHTML || "",
+    className: token.className || "",
+    dataset: getEditorDebugDataset(token),
+    attributes: getEditorDebugAttributes(token)
+  };
+}
+
+function captureEditorDebugChildNode(node) {
+  if (!node) return { type: "none" };
+  if (node.nodeType === Node.TEXT_NODE) {
+    return {
+      type: "text",
+      text: node.textContent || "",
+      length: (node.textContent || "").length
+    };
+  }
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const element = node;
+    return {
+      type: element.classList?.contains("tag-token") ? "tag-token" : String(element.tagName || "").toLowerCase(),
+      tag: element.dataset?.tag || "",
+      text: getEditorDebugReadableText(element),
+      textRaw: element.textContent || "",
+      html: element.outerHTML || "",
+      className: element.className || "",
+      dataset: getEditorDebugDataset(element),
+      attributes: getEditorDebugAttributes(element)
+    };
+  }
+  return {
+    type: `node:${node.nodeType}`,
+    text: node.textContent || ""
+  };
+}
+
+function getEditorDebugReadableText(node) {
+  const text = typeof node?.innerText === "string" ? node.innerText : node?.textContent || "";
+  return String(text).replace(/\u200b/g, "");
+}
+
+function getEditorDebugDataset(element) {
+  return Object.fromEntries(Object.entries(element?.dataset || {}));
+}
+
+function getEditorDebugAttributes(element) {
+  return Object.fromEntries(Array.from(element?.attributes || []).map((attribute) => [attribute.name, attribute.value]));
 }
 
 function getEditorDebugSelection(editor, selection) {
