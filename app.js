@@ -5205,8 +5205,23 @@ function handleNotepadPaste(event) {
   const clipboard = event.clipboardData;
   const pastedHtml = clipboard?.getData("text/html") || "";
   const pastedText = clipboard?.getData("text/plain") || "";
+  const useClipboardHtml = shouldUseClipboardHtmlForPaste(pastedHtml, pastedText);
+  const debugEntry = beginEditorDebugAction(editor, {
+    action: "paste",
+    source: "clipboard",
+    htmlLength: pastedHtml.length,
+    textLength: pastedText.length,
+    pasteMode: useClipboardHtml ? "html-tags" : "plain-text"
+  });
   const sanitizedHtml = sanitizeClipboardHtml(pastedHtml, pastedText);
-  if (!sanitizedHtml) return;
+  if (!sanitizedHtml) {
+    finishEditorDebugUnhandled(debugEntry, "empty-clipboard-paste", editor, {
+      htmlLength: pastedHtml.length,
+      textLength: pastedText.length,
+      pasteMode: useClipboardHtml ? "html-tags" : "plain-text"
+    });
+    return;
+  }
 
   event.preventDefault();
   editor.focus({ preventScroll: true });
@@ -5215,9 +5230,19 @@ function handleNotepadPaste(event) {
   rememberEditorSelection(editor);
   hideBedIndex();
   requestAnimationFrame(() => keepEditorCaretVisible(editor));
+  finishEditorDebugHandled(debugEntry, "handleNotepadPaste", editor, {
+    htmlLength: pastedHtml.length,
+    textLength: pastedText.length,
+    pasteMode: useClipboardHtml ? "html-tags" : "plain-text",
+    insertedLineCount: countClipboardEditorLines(sanitizedHtml)
+  });
 }
 
 function sanitizeClipboardHtml(html, plainText = "") {
+  if (plainText && !shouldUseClipboardHtmlForPaste(html, plainText)) {
+    return plainTextToEditorHtml(plainText);
+  }
+
   if (html) {
     const root = parseHtmlRoot(html);
     sanitizePastedDom(root);
@@ -5229,6 +5254,28 @@ function sanitizeClipboardHtml(html, plainText = "") {
   }
 
   return plainTextToEditorHtml(plainText);
+}
+
+function shouldUseClipboardHtmlForPaste(html, plainText = "") {
+  if (!html) return false;
+  if (!plainText) return true;
+  return clipboardHtmlContainsPreservableTags(html);
+}
+
+function clipboardHtmlContainsPreservableTags(html) {
+  if (!html) return false;
+  const root = parseHtmlRoot(html);
+  return Array.from(root.querySelectorAll?.(".tag-token") || []).some((token) =>
+    isPreservablePastedTag(String(token.dataset.tag || "").trim())
+  );
+}
+
+function countClipboardEditorLines(html) {
+  const root = parseHtmlRoot(html);
+  const lineCount = Array.from(root.childNodes || []).filter(
+    (node) => node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)
+  ).length;
+  return lineCount || (String(root.textContent || "").trim() ? 1 : 0);
 }
 
 function sanitizePastedDom(root) {
@@ -5380,10 +5427,11 @@ function unwrapPastedElement(element) {
 function plainTextToEditorHtml(text) {
   const normalized = String(text || "").replace(/\r\n?/g, "\n");
   if (!normalized) return "";
-  return normalized
-    .split("\n")
-    .map((line) => `<div>${line ? escapeHtml(line) : "<br>"}</div>`)
-    .join("");
+  const lines = normalized.split("\n");
+  if (lines.length === 1) {
+    return escapeHtml(lines[0]);
+  }
+  return lines.map((line) => `<div>${line ? escapeHtml(line) : "<br>"}</div>`).join("");
 }
 
 function insertEditorLine(editor, html) {
