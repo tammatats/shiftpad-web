@@ -5687,7 +5687,12 @@ function removeEmptyEditorLineOnDelete(editor, inputType) {
   if (inputType === "deleteContentBackward") {
     if (!previousLine || !isSelectionAtStartOfLine(currentLine, selection)) return false;
     currentLine.remove();
-    placeCaretAtEndOfLine(previousLine);
+    if (isEditorLineEmpty(previousLine)) {
+      previousLine.innerHTML = "<br>";
+      placeCaretInsideLine(previousLine);
+    } else {
+      placeCaretAtEndOfLine(previousLine);
+    }
     syncEditorDocument();
     rememberEditorSelection(editor);
     return true;
