@@ -453,6 +453,42 @@ h2 {
   background: rgba(255, 255, 255, 0.62);
 }
 
+.debug-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(96, 76, 55, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.debug-card .drawer-help {
+  margin: 0;
+}
+
+.debug-toggle {
+  min-height: 44px;
+}
+
+.debug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.debug-actions .accent-btn,
+.debug-actions .ghost-btn {
+  min-height: 40px;
+  padding: 9px 12px;
+}
+
+.debug-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
 .notification-card p {
   margin: 4px 0 0;
   color: var(--muted);

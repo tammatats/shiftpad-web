@@ -13,6 +13,9 @@ const CLOUD_LOCAL_EDIT_PROTECTION_MS = 8000;
 const LOCAL_SAVE_DEBOUNCE_MS = 180;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
+const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
+const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
+const EDITOR_DEBUG_LIMIT = 200;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
   lab: { label: "Lab", icon: "Lab", className: "kind-lab" },
@@ -91,7 +94,8 @@ const uiState = {
   notificationStatus: "",
   pointerTracking: null,
   wardDrag: null,
-  suppressWardHandleClick: false
+  suppressWardHandleClick: false,
+  debugLogStatus: ""
 };
 applyUrlOverrides();
 
@@ -264,6 +268,14 @@ function bindEvents() {
       return;
     }
 
+    const debugLogsSetting = event.target.closest("[data-debug-logs-enabled]");
+    if (debugLogsSetting) {
+      setEditorDebugLoggingEnabled(debugLogsSetting.checked);
+      uiState.debugLogStatus = debugLogsSetting.checked ? "Editor debug logging is on for this device." : "Editor debug logging is off.";
+      renderDrawer();
+      return;
+    }
+
     const delayInput = event.target.closest("[data-tag-delay]");
     if (delayInput) {
       updateTagDelay(delayInput.dataset.tagDelay, delayInput.value);
@@ -432,6 +444,15 @@ function bindEvents() {
 
     if ((event.inputType || "").startsWith("deleteContent")) {
       repairCaretAtEditorLineBoundary(editor);
+      appendEditorDebugLog({
+        action: event.inputType === "deleteContentForward" ? "delete-forward" : "backspace",
+        source: "input",
+        inputType: event.inputType || "",
+        success: true,
+        handledBy: "browser-input",
+        before: null,
+        after: captureEditorDebugSnapshot(editor)
+      });
       syncEditorDocument();
       hideBedIndex();
       requestAnimationFrame(() => keepEditorCaretVisible(editor));
@@ -815,6 +836,7 @@ function renderSettingsMenu() {
   const tagDelaysOpen = isDrawerSectionOpen("tag-delays");
   const notificationsOpen = isDrawerSectionOpen("notifications");
   const customOpen = isDrawerSectionOpen("custom-tags");
+  const debugOpen = isDrawerSectionOpen("debug-logs");
   const resetOpen = isDrawerSectionOpen("reset");
   return `
     <section class="drawer-section ${tagDelaysOpen ? "is-open" : ""}">
@@ -849,6 +871,12 @@ function renderSettingsMenu() {
         <div class="custom-tag-list">
           ${customTags.length ? customTags.map(renderCustomTagSettingRow).join("") : `<p class="drawer-help">No custom tags yet.</p>`}
         </div>
+      </div>
+    </section>
+    <section class="drawer-section ${debugOpen ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("debug-logs", "Debug logs", debugOpen)}
+      <div class="drawer-panel">
+        ${renderEditorDebugSettings()}
       </div>
     </section>
     <section class="drawer-section danger-zone ${resetOpen ? "is-open" : ""}">
@@ -1012,6 +1040,38 @@ function renderNotificationSettings() {
       </div>
       ${configured ? "" : `<p class="drawer-help">Vercel needs VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY before notifications can be enabled.</p>`}
       ${authState.user ? "" : `<p class="drawer-help">Sign in before enabling notifications.</p>`}
+    </div>
+  `;
+}
+
+function renderEditorDebugSettings() {
+  const enabled = isEditorDebugLoggingEnabled();
+  const logs = getEditorDebugLogs();
+  const latest = logs[logs.length - 1];
+  const latestText = latest ? `Latest ${formatClock(Date.parse(latest.timestamp) || Date.now())}` : "No logs yet";
+  const status = uiState.debugLogStatus || `${logs.length} local log${logs.length === 1 ? "" : "s"}. ${latestText}.`;
+
+  return `
+    <div class="debug-card">
+      <label class="drawer-section-toggle drawer-direct-toggle debug-toggle" for="debug-logs-toggle">
+        <span>Record editor actions</span>
+        <strong>${enabled ? "On" : "Off"}</strong>
+        <span class="switch">
+          <input
+            id="debug-logs-toggle"
+            type="checkbox"
+            data-debug-logs-enabled="true"
+            ${enabled ? "checked" : ""}
+          />
+          <span class="switch-track"></span>
+        </span>
+      </label>
+      <p class="drawer-help">Local only. Records cursor position, line counts, key type, and handler names, but not note text.</p>
+      <div class="debug-actions">
+        <button class="accent-btn" type="button" data-drawer-action="copy-debug-logs" ${logs.length ? "" : "disabled"}>Copy latest logs</button>
+        <button class="ghost-btn" type="button" data-drawer-action="clear-debug-logs" ${logs.length ? "" : "disabled"}>Clear logs</button>
+      </div>
+      <p class="debug-status">${escapeHtml(status)}</p>
     </div>
   `;
 }
@@ -2171,6 +2231,11 @@ function handleQuickTag(tag) {
   if (!note) return;
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!editor) return;
+  const debugEntry = beginEditorDebugAction(editor, {
+    action: "tag-insert",
+    source: "quick-tag",
+    tag
+  });
 
   editor.focus({ preventScroll: true });
   restoreSavedEditorSelection(editor);
@@ -2180,6 +2245,12 @@ function handleQuickTag(tag) {
   note.updatedAt = Date.now();
   saveState();
   rememberEditorSelection(editor);
+  finishEditorDebugAction(debugEntry, {
+    success: true,
+    handledBy: "insertTagIntoEditor",
+    editor,
+    extra: { tag }
+  });
 }
 
 function isCompactMobileLayout() {
@@ -2744,6 +2815,16 @@ async function handleDrawerAction(action) {
 
   if (action === "disable-notifications") {
     await disablePushNotifications();
+    return;
+  }
+
+  if (action === "copy-debug-logs") {
+    await copyEditorDebugLogs();
+    return;
+  }
+
+  if (action === "clear-debug-logs") {
+    clearEditorDebugLogs();
     return;
   }
 
@@ -3768,6 +3849,271 @@ function getScopedStorageKey(userId) {
   return `${STORAGE_NAMESPACE}:${userId || "anon"}`;
 }
 
+function getEditorDebugLogKey() {
+  return `${EDITOR_DEBUG_NAMESPACE}:logs:${authState.user?.id || "anon"}`;
+}
+
+function isEditorDebugLoggingEnabled() {
+  try {
+    return localStorage.getItem(EDITOR_DEBUG_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function setEditorDebugLoggingEnabled(enabled) {
+  try {
+    localStorage.setItem(EDITOR_DEBUG_ENABLED_KEY, enabled ? "true" : "false");
+  } catch {
+    return;
+  }
+
+  if (enabled) {
+    appendEditorDebugLog({
+      action: "debug-logging",
+      source: "settings",
+      success: true,
+      handledBy: "setEditorDebugLoggingEnabled",
+      before: null,
+      after: captureEditorDebugSnapshot(refs.editorRoot?.querySelector("#notepad-editor"))
+    });
+  }
+}
+
+function getEditorDebugLogs() {
+  try {
+    const raw = localStorage.getItem(getEditorDebugLogKey());
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function setEditorDebugLogs(logs) {
+  try {
+    localStorage.setItem(getEditorDebugLogKey(), JSON.stringify(logs.slice(-EDITOR_DEBUG_LIMIT)));
+  } catch {
+    // Debug logging should never break the notepad.
+  }
+}
+
+function appendEditorDebugLog(entry) {
+  if (!isEditorDebugLoggingEnabled()) return;
+  const logs = getEditorDebugLogs();
+  logs.push({
+    timestamp: new Date().toISOString(),
+    browser: getEditorDebugBrowserLabel(),
+    path: window.location.pathname,
+    wardId: getCurrentWard()?.id || "",
+    noteId: getCurrentNote()?.id || "",
+    ...entry
+  });
+  setEditorDebugLogs(logs);
+}
+
+function clearEditorDebugLogs() {
+  try {
+    localStorage.removeItem(getEditorDebugLogKey());
+  } catch {
+    // Ignore localStorage failures.
+  }
+  uiState.debugLogStatus = "Debug logs cleared.";
+  renderDrawer();
+}
+
+async function copyEditorDebugLogs() {
+  const logs = getEditorDebugLogs();
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    browser: getEditorDebugBrowserLabel(),
+    logCount: logs.length,
+    logs
+  };
+
+  try {
+    await copyTextToClipboard(JSON.stringify(payload, null, 2));
+    uiState.debugLogStatus = `Copied ${logs.length} debug log${logs.length === 1 ? "" : "s"}.`;
+  } catch {
+    uiState.debugLogStatus = "Could not copy logs. Try again from Safari/Chrome after tapping the page.";
+  }
+  renderDrawer();
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard copy failed");
+}
+
+function getEditorDebugBrowserLabel() {
+  const ua = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  const isIos = /iPad|iPhone|iPod/.test(ua) || (platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const browser = /EdgiOS|Edg\//i.test(ua)
+    ? "Edge"
+    : /CriOS|Chrome/i.test(ua)
+      ? "Chrome"
+    : /FxiOS/i.test(ua)
+      ? "Firefox"
+      : /Safari/i.test(ua)
+        ? "Safari"
+        : "Browser";
+  return `${isIos ? "iOS " : ""}${browser}`.trim();
+}
+
+function beginEditorDebugAction(editor, details = {}) {
+  if (!isEditorDebugLoggingEnabled() || !editor) return null;
+  return {
+    ...details,
+    before: captureEditorDebugSnapshot(editor)
+  };
+}
+
+function getEditorDebugActionFromBeforeInput(event) {
+  const inputType = event.inputType || "";
+  if (inputType === "deleteContentBackward") return "backspace";
+  if (inputType === "deleteContentForward") return "delete-forward";
+  if (inputType === "insertParagraph") return "enter";
+  if (inputType === "insertText") {
+    const activeToken = getActiveTagToken();
+    if (activeToken) return "tag-edit-text";
+    const editor = getEditorFromEventTarget(event.target);
+    return shouldManuallyInsertTextIntoEmptyLine(editor) ? "insert-empty-line-text" : "";
+  }
+  return "";
+}
+
+function getEditorDebugActionFromKey(key) {
+  if (key === "Backspace") return "backspace";
+  if (key === "Delete") return "delete-forward";
+  if (key === "Enter") return "enter";
+  if (key === "Escape") return "escape";
+  if (key === "Tab") return "tab";
+  if (key === " ") {
+    const token = getActiveTagToken();
+    return token ? "space-on-tag" : "";
+  }
+  return "";
+}
+
+function finishEditorDebugAction(debugEntry, { success, handledBy, editor, extra = {} } = {}) {
+  if (!debugEntry) return;
+  const after = captureEditorDebugSnapshot(editor);
+  appendEditorDebugLog({
+    ...debugEntry,
+    success: Boolean(success),
+    handledBy: handledBy || "",
+    after,
+    lineCountDelta:
+      debugEntry.before && after
+        ? Number(after.lineCount || 0) - Number(debugEntry.before.lineCount || 0)
+        : 0,
+    ...extra
+  });
+}
+
+function finishEditorDebugHandled(debugEntry, handledBy, editor, extra = {}) {
+  finishEditorDebugAction(debugEntry, { success: true, handledBy, editor, extra });
+  return true;
+}
+
+function finishEditorDebugUnhandled(debugEntry, handledBy, editor, extra = {}) {
+  finishEditorDebugAction(debugEntry, { success: false, handledBy, editor, extra });
+  return false;
+}
+
+function captureEditorDebugSnapshot(editor) {
+  if (!editor) return null;
+  const lines = getEditorDebugLines(editor);
+  const selection = window.getSelection();
+  const currentLine = getCurrentEditorLine();
+  const currentLineIndex = currentLine ? lines.indexOf(currentLine) : -1;
+  const previousLine = currentLine ? getPreviousEditorLine(currentLine) : null;
+  const nextLine = currentLine ? getNextEditorLine(currentLine) : null;
+
+  return {
+    lineCount: lines.length,
+    emptyLineCount: lines.filter((line) => isEditorLineEmpty(line)).length,
+    currentLineIndex,
+    currentLineEmpty: currentLine ? isEditorLineEmpty(currentLine) : null,
+    previousLineEmpty: previousLine ? isEditorLineEmpty(previousLine) : null,
+    nextLineEmpty: nextLine ? isEditorLineEmpty(nextLine) : null,
+    currentLineHasTag: currentLine ? lineHasTag(currentLine) : null,
+    previousLineHasTag: previousLine ? lineHasTag(previousLine) : null,
+    nextLineHasTag: nextLine ? lineHasTag(nextLine) : null,
+    selection: getEditorDebugSelection(editor, selection)
+  };
+}
+
+function getEditorDebugLines(editor) {
+  return Array.from(editor?.childNodes || []).filter(
+    (node) => node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)
+  );
+}
+
+function getEditorDebugSelection(editor, selection) {
+  if (!editor || !selection || !selection.rangeCount) {
+    return { available: false };
+  }
+
+  const range = selection.getRangeAt(0);
+  return {
+    available: true,
+    collapsed: selection.isCollapsed,
+    anchorNode: getEditorDebugNodeKind(editor, selection.anchorNode),
+    focusNode: getEditorDebugNodeKind(editor, selection.focusNode),
+    anchorOffset: selection.anchorOffset,
+    focusOffset: selection.focusOffset,
+    startContainer: getEditorDebugNodeKind(editor, range.startContainer),
+    startOffset: range.startOffset,
+    endContainer: getEditorDebugNodeKind(editor, range.endContainer),
+    endOffset: range.endOffset,
+    anchorLineIndex: getEditorDebugLineIndex(editor, selection.anchorNode),
+    focusLineIndex: getEditorDebugLineIndex(editor, selection.focusNode),
+    editorBoundaryOffset: range.startContainer === editor ? range.startOffset : null
+  };
+}
+
+function getEditorDebugNodeKind(editor, node) {
+  if (!node) return "none";
+  if (node === editor) return "editor";
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.parentElement?.closest?.(".tag-token") ? "tag-text" : "text";
+  }
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    if (node.classList?.contains("tag-token")) return `tag:${node.dataset.tag || "unknown"}`;
+    if (["DIV", "P"].includes(node.tagName)) return "line";
+    return String(node.tagName || "element").toLowerCase();
+  }
+  return `node:${node.nodeType}`;
+}
+
+function getEditorDebugLineIndex(editor, node) {
+  if (!editor || !node) return -1;
+  const lines = getEditorDebugLines(editor);
+  let current = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+  while (current && current !== editor) {
+    if (current.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(current.tagName)) {
+      return lines.indexOf(current);
+    }
+    current = current.parentNode;
+  }
+  return -1;
+}
+
 function scheduleCloudSave() {
   if (!authState.client || !authState.user || authState.suppressCloudSave) return;
   window.clearTimeout(authState.saveTimer);
@@ -4101,98 +4447,106 @@ function handleNotepadKeydown(event) {
 function handleNotepadBeforeInput(event) {
   const inputType = event.inputType || "";
   const isDeleteInput = inputType === "deleteContentBackward" || inputType === "deleteContentForward";
+  const editor = getEditorFromEventTarget(event.target);
+  const debugAction = getEditorDebugActionFromBeforeInput(event);
+  const debugEntry = debugAction
+    ? beginEditorDebugAction(editor, {
+        action: debugAction,
+        source: "beforeinput",
+        inputType,
+        dataLength: event.data ? String(event.data).length : 0
+      })
+    : null;
 
   if (inputType === "insertParagraph") {
     if (consumeSuppressedParagraphInput()) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "suppressed-paragraph-beforeinput", editor);
     }
 
     discardFreshFinalizedTagInsertions();
     const activeToken = getActiveTagToken();
     if (activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true") {
       finalizeTagToken(activeToken, { moveToNewLine: true });
-      return true;
+      return finishEditorDebugHandled(debugEntry, "finalize-time-tag-enter", editor);
     }
 
     const bedLine = getCurrentEditingBedLine();
     if (bedLine) {
       finalizeEditingBedLine(bedLine);
-      return true;
+      return finishEditorDebugHandled(debugEntry, "finalize-bed-line-enter", editor);
     }
 
-    if (handleTaggedLineEnter(getEditorFromEventTarget(event.target))) {
-      return true;
+    if (handleTaggedLineEnter(editor)) {
+      return finishEditorDebugHandled(debugEntry, "handleTaggedLineEnter", editor);
     }
   }
 
   if (isDeleteInput) {
-    const editor = getEditorFromEventTarget(event.target);
     if (consumeSuppressedDeleteInput(inputType)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "suppressed-delete-beforeinput", editor);
     }
 
     const activeToken = getActiveTagToken();
     if (activeToken && shouldDeleteEditingTag(activeToken)) {
       removeTagToken(activeToken);
       syncEditorDocument();
-      return true;
+      return finishEditorDebugHandled(debugEntry, "delete-editing-tag", editor);
     }
 
     if (removeEmptyAutoTodoContinuation(editor)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "removeEmptyAutoTodoContinuation", editor);
     }
 
     const freshToken = getFreshFinalizedTagForDelete(editor, inputType);
     if (freshToken && deleteFreshFinalizedTag(freshToken)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "deleteFreshFinalizedTag", editor);
     }
 
     const leadingTodoToken = getLeadingTodoTagForDelete(editor);
     if (leadingTodoToken && deleteAdjacentFinalizedTag(leadingTodoToken)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "deleteLeadingTodoTag", editor);
     }
 
     const adjacentToken = getAdjacentFinalizedTagForDelete(editor, inputType);
     if (adjacentToken && deleteAdjacentFinalizedTag(adjacentToken)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "deleteAdjacentFinalizedTag", editor);
     }
 
     if (removeEmptyEditorLineOnDelete(editor, inputType)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "removeEmptyEditorLineOnDelete", editor);
     }
 
     if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(editor)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "blockTaggedLineMergeOnBackspace", editor);
     }
 
     if (inputType === "deleteContentForward" && blockTaggedLineMergeOnDeleteForward(editor)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "blockTaggedLineMergeOnDeleteForward", editor);
     }
 
     const bedLine = getCurrentEditingBedLine();
     if (bedLine && isEditingBedLineEmpty(bedLine)) {
       removeEditingBedLine(bedLine);
       syncEditorDocument();
-      return true;
+      return finishEditorDebugHandled(debugEntry, "removeEmptyEditingBedLine", editor);
     }
   } else if (inputType.startsWith("insert") || inputType === "formatSetBlockTextDirection") {
     const activeToken = getActiveTagToken();
     if (inputType === "insertText" && activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true") {
       handleEditingTimeTextInput(activeToken, event.data || "");
-      return true;
+      return finishEditorDebugHandled(debugEntry, "handleEditingTimeTextInput", editor);
     }
 
-    const editor = getEditorFromEventTarget(event.target);
     if (inputType === "insertText" && event.data && shouldManuallyInsertTextIntoEmptyLine(editor)) {
       insertTextAtSelection(event.data);
       syncEditorDocument();
-      return true;
+      return finishEditorDebugHandled(debugEntry, "insertTextAtSelection-empty-line", editor);
     }
 
     discardFreshFinalizedTagInsertions();
   }
 
-  return false;
+  return finishEditorDebugUnhandled(debugEntry, "browser-default-beforeinput", editor);
 }
 
 function shouldManuallyInsertTextIntoEmptyLine(editor) {
@@ -4336,17 +4690,26 @@ function placeCaretInsideTextNode(node, offset) {
 }
 
 function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } = {}) {
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  const debugAction = getEditorDebugActionFromKey(key);
+  const debugEntry = debugAction
+    ? beginEditorDebugAction(editor, {
+        action: debugAction,
+        source: "keydown",
+        key
+      })
+    : null;
   const editingBedLine = getCurrentEditingBedLine();
   if (editingBedLine) {
     if (key === "Escape") {
       removeEditingBedLine(editingBedLine);
       syncEditorDocument();
-      return true;
+      return finishEditorDebugHandled(debugEntry, "removeEditingBedLine-escape", editor);
     }
 
     if (key === "Enter" || key === "Tab") {
       finalizeEditingBedLine(editingBedLine);
-      return true;
+      return finishEditorDebugHandled(debugEntry, "finalizeEditingBedLine", editor);
     }
   }
 
@@ -4355,28 +4718,28 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
     if (key === "Escape") {
       removeTagToken(token);
       syncEditorDocument();
-      return true;
+      return finishEditorDebugHandled(debugEntry, "removeActiveTag-escape", editor);
     }
 
     const tagType = token.dataset.tag;
     if (tagType === "bed" && (key === " " || key === "Tab")) {
       finalizeTagToken(token, { moveToNewLine: true });
-      return true;
+      return finishEditorDebugHandled(debugEntry, "finalize-bed-tag-space-tab", editor);
     }
 
     if (isTimeLikeTag(tagType) && token.dataset.editing === "true") {
       if (key === " " || key === "Tab") {
         if (key === " " && finalizeDefaultTimeTokenWithCurrentTime(token)) {
-          return true;
+          return finishEditorDebugHandled(debugEntry, "finalizeDefaultTimeTokenWithCurrentTime", editor);
         }
         finalizeTagToken(token, { moveToNewLine: false });
-        return true;
+        return finishEditorDebugHandled(debugEntry, "finalize-time-tag-space-tab", editor);
       }
 
       const isPrintable = keyboardEvent ? isPrintableKey(keyboardEvent) : key.length === 1;
       if (isPrintable && isTimeEditingCharacter(key)) {
         handleEditingTimeTextInput(token, key);
-        return true;
+        return finishEditorDebugHandled(debugEntry, "handleEditingTimeTextInput", editor);
       }
 
       if (isPrintable && !isTimeEditingCharacter(key)) {
@@ -4384,72 +4747,70 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
           removeTagToken(token, { restoreRepair: false });
           insertTextAtSelection(key);
           syncEditorDocument();
-          return true;
+          return finishEditorDebugHandled(debugEntry, "replace-default-time-tag-with-text", editor);
         }
         finalizeTagToken(token, { moveToNewLine: false });
         insertTextAtSelection(key);
         syncEditorDocument();
-        return true;
+        return finishEditorDebugHandled(debugEntry, "finalize-time-tag-before-text", editor);
       }
     }
 
     if (tagType === "bed" && key === "Enter") {
       finalizeTagToken(token, { moveToNewLine: true });
-      return true;
+      return finishEditorDebugHandled(debugEntry, "finalize-bed-tag-enter", editor);
     }
 
     if (isTimeLikeTag(tagType) && key === "Enter") {
       finalizeTagToken(token, { moveToNewLine: true });
-      return true;
+      return finishEditorDebugHandled(debugEntry, "finalize-time-tag-enter", editor);
     }
   }
 
   if (key === "Backspace" || key === "Delete") {
-    const editor = refs.editorRoot.querySelector("#notepad-editor");
     if (removeEmptyAutoTodoContinuation(editor)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "removeEmptyAutoTodoContinuation", editor);
     }
 
     const inputType = key === "Delete" ? "deleteContentForward" : "deleteContentBackward";
     const freshToken = getFreshFinalizedTagForDelete(editor, inputType);
     if (freshToken && deleteFreshFinalizedTag(freshToken)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "deleteFreshFinalizedTag", editor);
     }
 
     const leadingTodoToken = getLeadingTodoTagForDelete(editor);
     if (leadingTodoToken && deleteAdjacentFinalizedTag(leadingTodoToken)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "deleteLeadingTodoTag", editor);
     }
 
     const adjacentToken = getAdjacentFinalizedTagForDelete(editor, inputType);
     if (adjacentToken && deleteAdjacentFinalizedTag(adjacentToken)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "deleteAdjacentFinalizedTag", editor);
     }
 
     if (removeEmptyEditorLineOnDelete(editor, inputType)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "removeEmptyEditorLineOnDelete", editor);
     }
 
     if (inputType === "deleteContentBackward" && blockTaggedLineMergeOnBackspace(editor)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "blockTaggedLineMergeOnBackspace", editor);
     }
 
     if (inputType === "deleteContentForward" && blockTaggedLineMergeOnDeleteForward(editor)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "blockTaggedLineMergeOnDeleteForward", editor);
     }
   }
 
   if (key === "Enter" && !shiftKey) {
-    const editor = refs.editorRoot.querySelector("#notepad-editor");
     if (handleTaggedLineEnter(editor)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "handleTaggedLineEnter", editor);
     }
     if (insertPlainEditorLineBreak(editor)) {
-      return true;
+      return finishEditorDebugHandled(debugEntry, "insertPlainEditorLineBreak", editor);
     }
   }
 
-  return false;
+  return finishEditorDebugUnhandled(debugEntry, "browser-default-keydown", editor);
 }
 
 function handleTaggedLineEnter(editor) {
