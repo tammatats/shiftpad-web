@@ -114,3 +114,60 @@ grant select, insert, update, delete on table public.shiftpad_push_subscriptions
 grant usage, select on sequence public.shiftpad_push_subscriptions_id_seq to authenticated, service_role;
 grant select, insert, update, delete on table public.shiftpad_notification_deliveries to service_role;
 grant usage, select on sequence public.shiftpad_notification_deliveries_id_seq to service_role;
+
+create table if not exists public.shiftpad_editor_debug_logs (
+  id bigserial primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  client_log_id text not null,
+  logged_at timestamptz not null,
+  browser text not null default '',
+  path text not null default '',
+  ward_id text not null default '',
+  ward_name text not null default '',
+  note_id text not null default '',
+  note_title text not null default '',
+  action text not null default '',
+  handled_by text not null default '',
+  success boolean,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  unique (user_id, client_log_id)
+);
+
+create index if not exists shiftpad_editor_debug_logs_user_created_idx
+on public.shiftpad_editor_debug_logs (user_id, created_at desc);
+
+alter table public.shiftpad_editor_debug_logs enable row level security;
+
+drop policy if exists "shiftpad_editor_debug_logs_select_own" on public.shiftpad_editor_debug_logs;
+create policy "shiftpad_editor_debug_logs_select_own"
+on public.shiftpad_editor_debug_logs
+for select
+to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_editor_debug_logs_insert_own" on public.shiftpad_editor_debug_logs;
+create policy "shiftpad_editor_debug_logs_insert_own"
+on public.shiftpad_editor_debug_logs
+for insert
+to authenticated
+with check ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_editor_debug_logs_update_own" on public.shiftpad_editor_debug_logs;
+create policy "shiftpad_editor_debug_logs_update_own"
+on public.shiftpad_editor_debug_logs
+for update
+to authenticated
+using ((select auth.uid()) = user_id)
+with check ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_editor_debug_logs_delete_own" on public.shiftpad_editor_debug_logs;
+create policy "shiftpad_editor_debug_logs_delete_own"
+on public.shiftpad_editor_debug_logs
+for delete
+to authenticated
+using ((select auth.uid()) = user_id);
+
+grant select, insert, update, delete on table public.shiftpad_editor_debug_logs to authenticated, service_role;
+grant usage, select on sequence public.shiftpad_editor_debug_logs_id_seq to authenticated, service_role;

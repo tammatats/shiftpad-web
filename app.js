@@ -5,12 +5,15 @@ const WARD_COLORS = ["#f28b67", "#6ea8fe", "#6fc48d", "#b490ff", "#f0b95c", "#ff
 const CUSTOM_TAG_COLORS = ["#9b8cff", "#2bb3c0", "#f27b8a", "#63b56b", "#f0a64f", "#5f9cff", "#c86dd7", "#b6a54a"];
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
+const EDITOR_DEBUG_CLOUD_TABLE = "shiftpad_editor_debug_logs";
 const CLOUD_SAVE_DEBOUNCE_MS = 300;
 const CLOUD_SYNC_POLL_MS = 1500;
 const CLOUD_REMOTE_APPLY_IDLE_MS = 1200;
 const CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS = 2500;
 const CLOUD_LOCAL_EDIT_PROTECTION_MS = 8000;
 const LOCAL_SAVE_DEBOUNCE_MS = 180;
+const EDITOR_DEBUG_CLOUD_UPLOAD_DEBOUNCE_MS = 700;
+const EDITOR_DEBUG_CLOUD_BATCH_LIMIT = 20;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
@@ -60,6 +63,7 @@ const authState = {
   saveTimer: null,
   localSaveTimer: null,
   livePollTimer: null,
+  debugLogUploadTimer: null,
   realtimeChannel: null,
   pendingRemoteRecord: null,
   remoteApplyTimer: null,
@@ -1048,8 +1052,15 @@ function renderEditorDebugSettings() {
   const enabled = isEditorDebugLoggingEnabled();
   const logs = getEditorDebugLogs();
   const latest = logs[logs.length - 1];
+  const cloudSavedCount = logs.filter((log) => log.cloudSavedAt).length;
+  const cloudPendingCount = logs.filter((log) => log.clientLogId && !log.cloudSavedAt).length;
   const latestText = latest ? `Latest ${formatClock(Date.parse(latest.timestamp) || Date.now())}` : "No logs yet";
-  const status = uiState.debugLogStatus || `${logs.length} local log${logs.length === 1 ? "" : "s"}. ${latestText}.`;
+  const cloudText = authState.user
+    ? `${cloudSavedCount} saved to web${cloudPendingCount ? `, ${cloudPendingCount} waiting` : ""}`
+    : "sign in to save to web";
+  const status =
+    uiState.debugLogStatus ||
+    `${logs.length} local log${logs.length === 1 ? "" : "s"}. ${cloudText}. ${latestText}.`;
 
   return `
     <div class="debug-card">
@@ -1066,7 +1077,7 @@ function renderEditorDebugSettings() {
           <span class="switch-track"></span>
         </span>
       </label>
-      <p class="drawer-help">Local only. Includes note text, editor HTML, line details, cursor position, key type, and handler names.</p>
+      <p class="drawer-help">Includes note text, editor HTML, line details, cursor position, key type, and handler names. Saves to web automatically while signed in.</p>
       <div class="debug-actions">
         <button class="accent-btn" type="button" data-drawer-action="copy-debug-logs" ${logs.length ? "" : "disabled"}>Copy latest logs</button>
         <button class="ghost-btn" type="button" data-drawer-action="clear-debug-logs" ${logs.length ? "" : "disabled"}>Clear logs</button>
@@ -1407,6 +1418,7 @@ async function applySession(session) {
 
   await hydrateStateFromCloud();
   startCloudLiveSync();
+  queueEditorDebugCloudUpload();
 }
 
 async function signInWithPassword() {
@@ -1568,6 +1580,10 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
   if (authState.remoteApplyTimer) {
     window.clearTimeout(authState.remoteApplyTimer);
     authState.remoteApplyTimer = null;
+  }
+  if (authState.debugLogUploadTimer) {
+    window.clearTimeout(authState.debugLogUploadTimer);
+    authState.debugLogUploadTimer = null;
   }
   if (authState.realtimeChannel && authState.client?.removeChannel) {
     authState.client.removeChannel(authState.realtimeChannel);
@@ -2824,7 +2840,7 @@ async function handleDrawerAction(action) {
   }
 
   if (action === "clear-debug-logs") {
-    clearEditorDebugLogs();
+    await clearEditorDebugLogs();
     return;
   }
 
@@ -3877,6 +3893,7 @@ function setEditorDebugLoggingEnabled(enabled) {
       before: null,
       after: captureEditorDebugSnapshot(refs.editorRoot?.querySelector("#notepad-editor"))
     });
+    queueEditorDebugCloudUpload();
   }
 }
 
@@ -3915,7 +3932,8 @@ function appendEditorDebugLog(entry) {
   const ward = getCurrentWard();
   const note = getCurrentNote();
   const logs = getEditorDebugLogs();
-  logs.push({
+  const logEntry = {
+    clientLogId: entry.clientLogId || createId("debug-log"),
     timestamp: new Date().toISOString(),
     browser: getEditorDebugBrowserLabel(),
     path: window.location.pathname,
@@ -3931,17 +3949,30 @@ function appendEditorDebugLog(entry) {
     noteUpdatedAt: note?.updatedAt || 0,
     preferences: getPreferences(),
     ...entry
-  });
+  };
+  logs.push(logEntry);
   setEditorDebugLogs(logs);
+  queueEditorDebugCloudUpload();
 }
 
-function clearEditorDebugLogs() {
+async function clearEditorDebugLogs() {
   try {
     localStorage.removeItem(getEditorDebugLogKey());
   } catch {
     // Ignore localStorage failures.
   }
-  uiState.debugLogStatus = "Debug logs cleared.";
+
+  if (authState.client && authState.user) {
+    const { error } = await authState.client
+      .from(EDITOR_DEBUG_CLOUD_TABLE)
+      .delete()
+      .eq("user_id", authState.user.id);
+    uiState.debugLogStatus = error
+      ? `Local logs cleared. Web clear failed: ${error.message || "Unknown error"}.`
+      : "Debug logs cleared locally and on web.";
+  } else {
+    uiState.debugLogStatus = "Debug logs cleared locally.";
+  }
   renderDrawer();
 }
 
@@ -3968,6 +3999,109 @@ async function copyEditorDebugLogs() {
     uiState.debugLogStatus = "Could not copy logs. Try again from Safari/Chrome after tapping the page.";
   }
   renderDrawer();
+}
+
+function queueEditorDebugCloudUpload() {
+  if (!isEditorDebugLoggingEnabled()) return;
+  if (!authState.client || !authState.user) return;
+  window.clearTimeout(authState.debugLogUploadTimer);
+  authState.debugLogUploadTimer = window.setTimeout(() => {
+    authState.debugLogUploadTimer = null;
+    uploadPendingEditorDebugLogs().catch((error) => {
+      console.error("Debug log web save failed:", error);
+      uiState.debugLogStatus = `Debug web save failed: ${error?.message || "Unknown error"}.`;
+      renderDrawer();
+    });
+  }, EDITOR_DEBUG_CLOUD_UPLOAD_DEBOUNCE_MS);
+}
+
+async function uploadPendingEditorDebugLogs() {
+  if (!isEditorDebugLoggingEnabled() || !authState.client || !authState.user) return;
+
+  let logs = getEditorDebugLogs();
+  let addedClientIds = false;
+  logs = logs.map((log) => {
+    if (log.clientLogId) return log;
+    addedClientIds = true;
+    return {
+      ...log,
+      clientLogId: createId("debug-log")
+    };
+  });
+  if (addedClientIds) {
+    setEditorDebugLogs(logs);
+  }
+
+  const pendingLogs = logs.filter((log) => log.clientLogId && !log.cloudSavedAt).slice(0, EDITOR_DEBUG_CLOUD_BATCH_LIMIT);
+  if (!pendingLogs.length) return;
+
+  const rows = pendingLogs.map((log) => buildEditorDebugCloudRow(log));
+  const { error } = await authState.client
+    .from(EDITOR_DEBUG_CLOUD_TABLE)
+    .upsert(rows, { onConflict: "user_id,client_log_id" });
+
+  if (error) {
+    const failedAt = new Date().toISOString();
+    const failedIds = new Set(pendingLogs.map((log) => log.clientLogId));
+    setEditorDebugLogs(
+      getEditorDebugLogs().map((log) =>
+        failedIds.has(log.clientLogId)
+          ? {
+              ...log,
+              cloudStatus: "error",
+              cloudError: error.message || "Upload failed",
+              cloudErrorAt: failedAt
+            }
+          : log
+      )
+    );
+    throw error;
+  }
+
+  const savedAt = new Date().toISOString();
+  const savedIds = new Set(pendingLogs.map((log) => log.clientLogId));
+  setEditorDebugLogs(
+    getEditorDebugLogs().map((log) =>
+      savedIds.has(log.clientLogId)
+        ? {
+            ...log,
+            cloudStatus: "saved",
+            cloudSavedAt: savedAt,
+            cloudError: ""
+          }
+        : log
+    )
+  );
+
+  uiState.debugLogStatus = `Saved ${pendingLogs.length} debug log${pendingLogs.length === 1 ? "" : "s"} to web.`;
+  renderDrawer();
+
+  if (getEditorDebugLogs().some((log) => log.clientLogId && !log.cloudSavedAt)) {
+    queueEditorDebugCloudUpload();
+  }
+}
+
+function buildEditorDebugCloudRow(log) {
+  return {
+    user_id: authState.user.id,
+    client_log_id: log.clientLogId,
+    logged_at: normalizeDebugLogTimestamp(log.timestamp),
+    browser: log.browser || "",
+    path: log.path || "",
+    ward_id: log.wardId || "",
+    ward_name: log.wardName || "",
+    note_id: log.noteId || "",
+    note_title: log.noteTitle || "",
+    action: log.action || "",
+    handled_by: log.handledBy || "",
+    success: typeof log.success === "boolean" ? log.success : null,
+    payload: log
+  };
+}
+
+function normalizeDebugLogTimestamp(value) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date().toISOString();
 }
 
 async function copyTextToClipboard(text) {
