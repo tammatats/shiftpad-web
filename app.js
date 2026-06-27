@@ -5225,14 +5225,16 @@ function insertTagIntoEditor(editor, tag) {
 
   if (tag === "bed") {
     const tokenId = createId("tag");
-    const line = insertEditorLine(
+    const insertion = insertBedEditorLine(
       editor,
       `<span class="tag-token tag-bed tag-editing" contenteditable="false" data-tag="bed" data-token-id="${escapeAttribute(
         tokenId
       )}" data-editing="true">Bed</span>&nbsp;`
     );
-    rememberPendingTagInsertion(tokenId, editor, insertionPoint);
-    placeCaretAtEndOfLine(line);
+    rememberPendingTagInsertion(tokenId, editor, insertionPoint, {
+      placedBeforeExistingLine: insertion.placedBeforeExistingLine
+    });
+    placeCaretAtEndOfLine(insertion.line);
     rememberEditorSelection(editor);
     return;
   }
@@ -5695,6 +5697,25 @@ function insertEditorLine(editor, html) {
   return line;
 }
 
+function insertBedEditorLine(editor, html) {
+  const line = document.createElement("div");
+  line.innerHTML = html || "<br>";
+
+  const currentLine = getCurrentEditorLine();
+  if (currentLine && currentLine.parentNode === editor) {
+    if (isEditorLineEmpty(currentLine)) {
+      currentLine.replaceWith(line);
+      return { line, placedBeforeExistingLine: false };
+    }
+
+    editor.insertBefore(line, currentLine);
+    return { line, placedBeforeExistingLine: true };
+  }
+
+  editor.appendChild(line);
+  return { line, placedBeforeExistingLine: false };
+}
+
 function getEditorSelectionPoint(editor) {
   const selection = window.getSelection();
   if (!editor || !selection || !selection.rangeCount) return null;
@@ -5722,7 +5743,8 @@ function rememberPendingTagInsertion(tokenId, editor, point, options = {}) {
     line: point.line,
     lineHtml: point.lineHtml,
     textOffset: point.textOffset,
-    finalized: Boolean(options.finalized)
+    finalized: Boolean(options.finalized),
+    placedBeforeExistingLine: Boolean(options.placedBeforeExistingLine)
   });
 }
 
@@ -6703,14 +6725,23 @@ function finalizeEditingBedLine(line) {
   }
 
   clearBedFinalizeTimer();
+  const pendingInsertion = consumePendingTagInsertion(token);
   token.textContent = `Bed ${bedValue}`;
   token.setAttribute("contenteditable", "false");
   token.dataset.editing = "false";
   token.classList.remove("tag-editing");
-  discardPendingTagInsertion(token);
   line.replaceChildren(token);
   refreshLineTagClasses(line);
-  placeCaretOnNewLine(line);
+  const shouldResumeOriginalLine =
+    pendingInsertion?.placedBeforeExistingLine &&
+    pendingInsertion.line &&
+    document.contains(pendingInsertion.line) &&
+    getNextEditorLine(line) === pendingInsertion.line;
+  if (shouldResumeOriginalLine) {
+    placeCaretAtTextOffset(pendingInsertion.line, pendingInsertion.textOffset);
+  } else {
+    placeCaretOnNewLine(line);
+  }
   syncEditorDocument();
 }
 
