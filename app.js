@@ -1023,6 +1023,9 @@ function renderDrawerWardButton(ward) {
   const openReminderCount = countOpenRemindersForWard(ward);
   const caseLabel = `${caseCount} ${caseCount === 1 ? "case" : "cases"}`;
   const reminderLabel = `${openReminderCount} open reminder${openReminderCount === 1 ? "" : "s"}`;
+  const dragLabel = openReminderCount
+    ? `${reminderLabel}. Move ${ward.name}`
+    : `Move ${ward.name}`;
   return `
     <div
       class="ward-tab ${active ? "is-active" : ""}"
@@ -1033,10 +1036,15 @@ function renderDrawerWardButton(ward) {
         class="ward-drag-handle"
         type="button"
         data-ward-drag-handle="${escapeHtml(ward.id)}"
-        aria-label="Move ${escapeAttribute(ward.name)}"
+        aria-label="${escapeAttribute(dragLabel)}"
+        title="${escapeAttribute(openReminderCount ? reminderLabel : `Move ${ward.name}`)}"
         ${state.wards.length <= 1 ? "disabled" : ""}
       >
-        <span class="ward-dot"></span>
+        ${
+          openReminderCount
+            ? `<span class="ward-reminder-marker" aria-hidden="true">${escapeHtml(String(openReminderCount))}</span>`
+            : `<span class="ward-dot"></span>`
+        }
       </button>
       ${
         editing
@@ -1053,11 +1061,6 @@ function renderDrawerWardButton(ward) {
       }
       <span class="ward-counts">
         <span class="ward-case-count" aria-label="${escapeAttribute(caseLabel)}" title="${escapeAttribute(caseLabel)}">${escapeHtml(String(caseCount))}</span>
-        ${
-          openReminderCount
-            ? `<span class="ward-reminder-count" aria-label="${escapeAttribute(reminderLabel)}" title="${escapeAttribute(reminderLabel)}">${escapeHtml(`${openReminderCount} open`)}</span>`
-            : ""
-        }
       </span>
       <button class="ward-edit-btn ${editing ? "is-editing" : ""}" type="button" data-edit-ward="${escapeHtml(ward.id)}" aria-label="${editing ? "Done editing" : `Edit ${escapeAttribute(ward.name)}`}">
         <svg class="ward-edit-icon" viewBox="0 0 24 24" aria-hidden="true">

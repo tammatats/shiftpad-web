@@ -1022,8 +1022,7 @@ button:disabled {
   gap: 5px;
 }
 
-.ward-case-count,
-.ward-reminder-count {
+.ward-case-count {
   min-width: 30px;
   height: 28px;
   display: inline-grid;
@@ -1038,11 +1037,20 @@ button:disabled {
   line-height: 1;
 }
 
-.ward-reminder-count {
-  min-width: 58px;
+.ward-reminder-marker {
+  min-width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
   background: rgba(230, 125, 89, 0.16);
-  border-color: rgba(230, 125, 89, 0.18);
+  border: 1px solid rgba(230, 125, 89, 0.2);
   color: var(--accent-deep);
+  font-size: 0.82rem;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.62);
 }
 
 .ward-tab.is-active .ward-case-count {
@@ -1051,9 +1059,9 @@ button:disabled {
   color: var(--muted);
 }
 
-.ward-tab.is-active .ward-reminder-count {
-  background: rgba(230, 125, 89, 0.2);
-  border-color: rgba(230, 125, 89, 0.24);
+.ward-tab.is-active .ward-reminder-marker {
+  background: rgba(230, 125, 89, 0.22);
+  border-color: rgba(230, 125, 89, 0.28);
 }
 
 .ward-name-input {
