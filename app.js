@@ -176,6 +176,10 @@ function bindEvents() {
 
   refs.menuBtn?.addEventListener("click", () => {
     clearDrawerCloseTimer();
+    if (uiState.drawerOpen) {
+      closeDrawersWithAnimation();
+      return;
+    }
     uiState.drawerOpen = true;
     uiState.wardOptionsOpen = false;
     renderDrawer({ animateSide: "left" });
@@ -183,6 +187,10 @@ function bindEvents() {
 
   refs.wardOptionsBtn?.addEventListener("click", () => {
     clearDrawerCloseTimer();
+    if (uiState.wardOptionsOpen) {
+      closeDrawersWithAnimation();
+      return;
+    }
     uiState.wardOptionsOpen = true;
     uiState.drawerOpen = false;
     renderDrawer({ animateSide: "right" });
@@ -722,17 +730,21 @@ function renderDrawer({ animateSide = "" } = {}) {
   const open = Boolean(uiState.drawerOpen);
   const wardOptionsOpen = Boolean(uiState.wardOptionsOpen);
   refs.menuBtn?.setAttribute("aria-expanded", String(open));
+  refs.menuBtn?.setAttribute("aria-label", open ? "Close settings" : "Open settings");
+  refs.menuBtn?.classList.toggle("is-drawer-active", open);
   refs.wardOptionsBtn?.setAttribute("aria-expanded", String(wardOptionsOpen));
+  refs.wardOptionsBtn?.setAttribute("aria-label", wardOptionsOpen ? "Close ward list" : "Open ward list");
+  refs.wardOptionsBtn?.classList.toggle("is-drawer-active", wardOptionsOpen);
   refs.drawerRoot.innerHTML = `
     <div class="drawer-layer ${open && animateSide !== "left" ? "is-open" : ""}" data-drawer-side="left" aria-hidden="${open ? "false" : "true"}">
       <button class="drawer-scrim" type="button" data-drawer-close="true" aria-label="Close menu"></button>
+      <button class="drawer-corner-close drawer-corner-close-left menu-btn" type="button" data-drawer-close="true" aria-label="Close settings">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
       <aside class="side-drawer" aria-label="App menu">
         <div class="drawer-head">
-          <button class="drawer-close menu-btn" type="button" data-drawer-close="true" aria-label="Close menu">
-            <span></span>
-            <span></span>
-            <span></span>
-          </button>
           <div>
             <p class="section-kicker">Menu</p>
             <h2>ShiftPad</h2>
@@ -744,17 +756,17 @@ function renderDrawer({ animateSide = "" } = {}) {
     </div>
     <div class="drawer-layer drawer-layer-right ${wardOptionsOpen && animateSide !== "right" ? "is-open" : ""}" data-drawer-side="right" aria-hidden="${wardOptionsOpen ? "false" : "true"}">
       <button class="drawer-scrim" type="button" data-drawer-close="true" aria-label="Close ward options"></button>
+      <button class="drawer-corner-close drawer-corner-close-right menu-btn" type="button" data-drawer-close="true" aria-label="Close ward list">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
       <aside class="side-drawer side-drawer-right" aria-label="Ward options">
         <div class="drawer-head drawer-head-right">
           <div>
             <p class="section-kicker">Wards</p>
             <h2>Ward options</h2>
           </div>
-          <button class="drawer-close menu-btn" type="button" data-drawer-close="true" aria-label="Close ward options">
-            <span></span>
-            <span></span>
-            <span></span>
-          </button>
         </div>
         ${renderWardOptionsMenu()}
       </aside>
@@ -786,7 +798,11 @@ function closeDrawersWithAnimation() {
   uiState.drawerOpen = false;
   uiState.wardOptionsOpen = false;
   refs.menuBtn?.setAttribute("aria-expanded", "false");
+  refs.menuBtn?.setAttribute("aria-label", "Open settings");
+  refs.menuBtn?.classList.remove("is-drawer-active");
   refs.wardOptionsBtn?.setAttribute("aria-expanded", "false");
+  refs.wardOptionsBtn?.setAttribute("aria-label", "Open ward list");
+  refs.wardOptionsBtn?.classList.remove("is-drawer-active");
 
   if (!openLayers.length) {
     renderDrawer();
