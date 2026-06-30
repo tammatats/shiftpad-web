@@ -810,7 +810,7 @@ function renderDrawer({ animateSide = "" } = {}) {
   if (uiState.animateWardAdd) {
     window.setTimeout(() => {
       uiState.animateWardAdd = false;
-      refs.drawerRoot?.querySelector(".ward-add-reveal")?.classList.remove("should-animate");
+      refs.drawerRoot?.querySelector(".ward-add-bottom-section")?.classList.remove("should-animate");
     }, 260);
   }
   focusEditingWardInput();
@@ -942,11 +942,16 @@ function renderWardOptionsMenu() {
   const preferences = getPreferences();
   const multipleWardsEnabled = !preferences.singleWardMode;
   const allSelected = state.timelineScope !== "active";
-  const revealClass = [
-    "ward-add-reveal",
-    multipleWardsEnabled ? "is-open" : "",
+  const wardAddClass = [
+    "drawer-section",
+    "ward-add-bottom-section",
     uiState.animateWardAdd ? "should-animate" : ""
   ].filter(Boolean).join(" ");
+  const wardAddMarkup = multipleWardsEnabled ? `
+    <section class="${wardAddClass}">
+      <button class="accent-btn ward-add-btn" type="button" data-drawer-action="add-ward">Add ward</button>
+    </section>
+  ` : "";
   const wardListMarkup = multipleWardsEnabled ? `
     <section class="drawer-section drawer-ward-list-section">
       <div class="drawer-section-title">
@@ -982,11 +987,9 @@ function renderWardOptionsMenu() {
           <span class="switch-track"></span>
         </span>
       </label>
-      <div class="${revealClass}">
-        <button class="accent-btn ward-add-btn" type="button" data-drawer-action="add-ward" ${multipleWardsEnabled ? "" : "disabled"}>Add ward</button>
-      </div>
     </section>
     ${wardListMarkup}
+    ${wardAddMarkup}
   `;
 }
 
@@ -994,7 +997,9 @@ function renderDrawerWardButton(ward) {
   const active = state.timelineScope === "active" && ward.id === state.selectedWardId;
   const editing = uiState.editingWardId === ward.id;
   const caseCount = countBedsForWard(ward);
+  const openReminderCount = countOpenRemindersForWard(ward);
   const caseLabel = `${caseCount} ${caseCount === 1 ? "case" : "cases"}`;
+  const reminderLabel = `${openReminderCount} open reminder${openReminderCount === 1 ? "" : "s"}`;
   return `
     <div
       class="ward-tab ${active ? "is-active" : ""}"
@@ -1023,7 +1028,14 @@ function renderDrawerWardButton(ward) {
               ${escapeHtml(ward.name)}
             </button>`
       }
-      <span class="ward-case-count" aria-label="${escapeAttribute(caseLabel)}" title="${escapeAttribute(caseLabel)}">${escapeHtml(String(caseCount))}</span>
+      <span class="ward-counts">
+        <span class="ward-case-count" aria-label="${escapeAttribute(caseLabel)}" title="${escapeAttribute(caseLabel)}">${escapeHtml(String(caseCount))}</span>
+        ${
+          openReminderCount
+            ? `<span class="ward-reminder-count" aria-label="${escapeAttribute(reminderLabel)}" title="${escapeAttribute(reminderLabel)}">${escapeHtml(String(openReminderCount))}</span>`
+            : ""
+        }
+      </span>
       <button class="ward-edit-btn ${editing ? "is-editing" : ""}" type="button" data-edit-ward="${escapeHtml(ward.id)}" aria-label="${editing ? "Done editing" : `Edit ${escapeAttribute(ward.name)}`}">
         <svg class="ward-edit-icon" viewBox="0 0 24 24" aria-hidden="true">
           ${
@@ -3655,6 +3667,17 @@ function countBedsForWard(ward) {
     });
   });
   return beds.size;
+}
+
+function countOpenRemindersForWard(ward) {
+  let count = 0;
+  ward.notes.forEach((note) => {
+    const parsed = extractTaggedLines(note);
+    parsed.lines.forEach((line) => {
+      count += getReminderItemsForLine(line).filter((reminder) => !reminder.done).length;
+    });
+  });
+  return count;
 }
 
 function getBedIndexForNote(note) {

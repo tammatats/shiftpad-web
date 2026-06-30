@@ -752,41 +752,26 @@ button:disabled {
   padding-bottom: 12px;
 }
 
-.ward-add-reveal {
-  display: grid;
-  max-height: 0;
-  overflow: hidden;
-  opacity: 0;
-  transform: translateY(-8px);
-  transition:
-    max-height 220ms ease,
-    opacity 180ms ease,
-    transform 220ms ease;
-}
-
-.ward-add-reveal.is-open {
-  max-height: 72px;
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.ward-add-reveal.should-animate {
-  animation: ward-add-reveal 220ms ease;
-}
-
 .ward-add-btn {
   width: 100%;
-  margin-top: 8px;
 }
 
-@keyframes ward-add-reveal {
+.ward-add-bottom-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.ward-add-bottom-section.should-animate {
+  animation: ward-add-bottom-reveal 220ms ease;
+}
+
+@keyframes ward-add-bottom-reveal {
   from {
-    max-height: 0;
     opacity: 0;
-    transform: translateY(-8px);
+    transform: translateY(8px);
   }
   to {
-    max-height: 72px;
     opacity: 1;
     transform: translateY(0);
   }
@@ -1030,8 +1015,15 @@ button:disabled {
   box-shadow: none;
 }
 
-.ward-case-count {
+.ward-counts {
   justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ward-case-count,
+.ward-reminder-count {
   min-width: 30px;
   height: 28px;
   display: inline-grid;
@@ -1046,10 +1038,21 @@ button:disabled {
   line-height: 1;
 }
 
+.ward-reminder-count {
+  background: rgba(230, 125, 89, 0.16);
+  border-color: rgba(230, 125, 89, 0.18);
+  color: var(--accent-deep);
+}
+
 .ward-tab.is-active .ward-case-count {
   background: rgba(255, 252, 248, 0.9);
   border-color: rgba(230, 125, 89, 0.16);
   color: var(--accent-deep);
+}
+
+.ward-tab.is-active .ward-reminder-count {
+  background: rgba(230, 125, 89, 0.2);
+  border-color: rgba(230, 125, 89, 0.24);
 }
 
 .ward-name-input {
