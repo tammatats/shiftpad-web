@@ -90,6 +90,10 @@ const uiState = {
   drawerOpen: false,
   wardOptionsOpen: false,
   drawerCloseTimer: null,
+  drawerScrollTop: {
+    left: 0,
+    right: 0
+  },
   drawerSections: new Set(),
   animateWardAdd: false,
   editingWardId: "",
@@ -757,6 +761,9 @@ function renderDrawer({ animateSide = "" } = {}) {
   if (!refs.drawerRoot) return;
   clearDrawerCloseTimer();
   syncDrawerControlPositions();
+  captureDrawerScrollPositions();
+  if (animateSide === "left") uiState.drawerScrollTop.left = 0;
+  if (animateSide === "right") uiState.drawerScrollTop.right = 0;
   const open = Boolean(uiState.drawerOpen);
   const wardOptionsOpen = Boolean(uiState.wardOptionsOpen);
   refs.menuBtn?.setAttribute("aria-expanded", String(open));
@@ -813,7 +820,22 @@ function renderDrawer({ animateSide = "" } = {}) {
       refs.drawerRoot?.querySelector(".ward-add-bottom-section")?.classList.remove("should-animate");
     }, 260);
   }
+  restoreDrawerScrollPositions();
   focusEditingWardInput();
+}
+
+function captureDrawerScrollPositions() {
+  const leftDrawer = refs.drawerRoot?.querySelector('[data-drawer-side="left"] .side-drawer');
+  const rightDrawer = refs.drawerRoot?.querySelector('[data-drawer-side="right"] .side-drawer');
+  if (leftDrawer) uiState.drawerScrollTop.left = leftDrawer.scrollTop;
+  if (rightDrawer) uiState.drawerScrollTop.right = rightDrawer.scrollTop;
+}
+
+function restoreDrawerScrollPositions() {
+  const leftDrawer = refs.drawerRoot?.querySelector('[data-drawer-side="left"] .side-drawer');
+  const rightDrawer = refs.drawerRoot?.querySelector('[data-drawer-side="right"] .side-drawer');
+  if (leftDrawer) leftDrawer.scrollTop = uiState.drawerScrollTop.left || 0;
+  if (rightDrawer) rightDrawer.scrollTop = uiState.drawerScrollTop.right || 0;
 }
 
 function clearDrawerCloseTimer() {
