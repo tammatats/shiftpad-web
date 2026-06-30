@@ -158,6 +158,32 @@ function updateDesktopTagBarOffset() {
   const headerRect = refs.appHeader?.getBoundingClientRect?.();
   const headerBottom = Math.max(0, Math.round(headerRect?.bottom || 0));
   document.documentElement.style.setProperty("--desktop-tags-top", `${headerBottom + 8}px`);
+  syncDrawerControlPositions();
+}
+
+function syncDrawerControlPositions() {
+  const root = document.documentElement;
+  const viewportWidth = window.innerWidth || root.clientWidth || 0;
+  const leftRect = refs.menuBtn?.getBoundingClientRect?.();
+  const rightRect = refs.wardOptionsBtn?.getBoundingClientRect?.();
+  let drawerContentTop = 0;
+
+  if (leftRect?.width && leftRect?.height) {
+    root.style.setProperty("--drawer-left-control-top", `${Math.max(0, Math.round(leftRect.top))}px`);
+    root.style.setProperty("--drawer-left-control-left", `${Math.max(0, Math.round(leftRect.left))}px`);
+    root.style.setProperty("--drawer-control-size", `${Math.round(leftRect.width)}px`);
+    drawerContentTop = Math.max(drawerContentTop, leftRect.bottom);
+  }
+
+  if (rightRect?.width && rightRect?.height) {
+    root.style.setProperty("--drawer-right-control-top", `${Math.max(0, Math.round(rightRect.top))}px`);
+    root.style.setProperty("--drawer-right-control-right", `${Math.max(0, Math.round(viewportWidth - rightRect.right))}px`);
+    drawerContentTop = Math.max(drawerContentTop, rightRect.bottom);
+  }
+
+  if (drawerContentTop) {
+    root.style.setProperty("--drawer-content-top", `${Math.round(drawerContentTop + 14)}px`);
+  }
 }
 
 function bindEvents() {
@@ -176,6 +202,7 @@ function bindEvents() {
 
   refs.menuBtn?.addEventListener("click", () => {
     clearDrawerCloseTimer();
+    syncDrawerControlPositions();
     if (uiState.drawerOpen) {
       closeDrawersWithAnimation();
       return;
@@ -187,6 +214,7 @@ function bindEvents() {
 
   refs.wardOptionsBtn?.addEventListener("click", () => {
     clearDrawerCloseTimer();
+    syncDrawerControlPositions();
     if (uiState.wardOptionsOpen) {
       closeDrawersWithAnimation();
       return;
@@ -704,6 +732,7 @@ function bindEvents() {
     });
   });
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
+  window.addEventListener("resize", syncDrawerControlPositions, { passive: true });
   window.addEventListener("scroll", showBedIndexDuringScroll, { passive: true });
 }
 
@@ -727,6 +756,7 @@ function render() {
 function renderDrawer({ animateSide = "" } = {}) {
   if (!refs.drawerRoot) return;
   clearDrawerCloseTimer();
+  syncDrawerControlPositions();
   const open = Boolean(uiState.drawerOpen);
   const wardOptionsOpen = Boolean(uiState.wardOptionsOpen);
   refs.menuBtn?.setAttribute("aria-expanded", String(open));
