@@ -935,7 +935,7 @@ button:disabled {
 
 .drawer-ward-list .ward-tab {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 38px 38px;
+  grid-template-columns: 34px minmax(0, 1fr) minmax(30px, auto) 38px 38px;
   align-items: center;
   gap: 7px;
   padding: 7px;
@@ -1021,6 +1021,28 @@ button:disabled {
 .ward-name-select-btn:focus-visible {
   background: transparent;
   box-shadow: none;
+}
+
+.ward-case-count {
+  justify-self: end;
+  min-width: 30px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(96, 76, 55, 0.1);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.ward-tab.is-active .ward-case-count {
+  background: rgba(255, 252, 248, 0.9);
+  border-color: rgba(230, 125, 89, 0.16);
+  color: var(--accent-deep);
 }
 
 .ward-name-input {

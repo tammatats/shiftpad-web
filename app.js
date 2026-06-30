@@ -963,6 +963,8 @@ function renderWardOptionsMenu() {
 function renderDrawerWardButton(ward) {
   const active = state.timelineScope === "active" && ward.id === state.selectedWardId;
   const editing = uiState.editingWardId === ward.id;
+  const caseCount = countBedsForWard(ward);
+  const caseLabel = `${caseCount} ${caseCount === 1 ? "case" : "cases"}`;
   return `
     <div
       class="ward-tab ${active ? "is-active" : ""}"
@@ -991,6 +993,7 @@ function renderDrawerWardButton(ward) {
               ${escapeHtml(ward.name)}
             </button>`
       }
+      <span class="ward-case-count" aria-label="${escapeAttribute(caseLabel)}" title="${escapeAttribute(caseLabel)}">${escapeHtml(String(caseCount))}</span>
       <button class="ward-edit-btn ${editing ? "is-editing" : ""}" type="button" data-edit-ward="${escapeHtml(ward.id)}" aria-label="${editing ? "Done editing" : `Edit ${escapeAttribute(ward.name)}`}">
         <svg class="ward-edit-icon" viewBox="0 0 24 24" aria-hidden="true">
           ${
