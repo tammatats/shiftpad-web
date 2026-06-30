@@ -1039,6 +1039,7 @@ button:disabled {
 }
 
 .ward-reminder-count {
+  min-width: 58px;
   background: rgba(230, 125, 89, 0.16);
   border-color: rgba(230, 125, 89, 0.18);
   color: var(--accent-deep);
@@ -1046,8 +1047,8 @@ button:disabled {
 
 .ward-tab.is-active .ward-case-count {
   background: rgba(255, 252, 248, 0.9);
-  border-color: rgba(230, 125, 89, 0.16);
-  color: var(--accent-deep);
+  border-color: rgba(96, 76, 55, 0.1);
+  color: var(--muted);
 }
 
 .ward-tab.is-active .ward-reminder-count {

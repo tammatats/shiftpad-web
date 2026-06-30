@@ -518,6 +518,7 @@ function bindEvents() {
     note.updatedAt = Date.now();
     rememberEditorSelection(editor);
     saveState();
+    refreshWardDrawerMetricsIfOpen();
     hideBedIndex();
     requestAnimationFrame(() => keepEditorCaretVisible(editor));
     return;
@@ -1054,7 +1055,7 @@ function renderDrawerWardButton(ward) {
         <span class="ward-case-count" aria-label="${escapeAttribute(caseLabel)}" title="${escapeAttribute(caseLabel)}">${escapeHtml(String(caseCount))}</span>
         ${
           openReminderCount
-            ? `<span class="ward-reminder-count" aria-label="${escapeAttribute(reminderLabel)}" title="${escapeAttribute(reminderLabel)}">${escapeHtml(String(openReminderCount))}</span>`
+            ? `<span class="ward-reminder-count" aria-label="${escapeAttribute(reminderLabel)}" title="${escapeAttribute(reminderLabel)}">${escapeHtml(`${openReminderCount} open`)}</span>`
             : ""
         }
       </span>
@@ -7282,7 +7283,13 @@ function syncEditorDocument() {
     note.documentHtml = nextHtml;
     note.updatedAt = Date.now();
     saveState();
+    refreshWardDrawerMetricsIfOpen();
   }
+}
+
+function refreshWardDrawerMetricsIfOpen() {
+  if (!uiState.wardOptionsOpen) return;
+  renderDrawer();
 }
 
 function insertSelectionMarker(editor) {
