@@ -103,6 +103,7 @@ const uiState = {
   pointerTracking: null,
   wardDrag: null,
   suppressWardHandleClick: false,
+  lastViewportDebugAt: 0,
   debugLogStatus: ""
 };
 applyUrlOverrides();
@@ -119,6 +120,9 @@ async function init() {
 
 function initMobileViewportDock() {
   let rafId = 0;
+  let lastViewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+  let lastKeyboardOffset = 0;
+  let settleTimers = [];
 
   const updateViewportOffset = () => {
     const viewport = window.visualViewport;
@@ -130,11 +134,21 @@ function initMobileViewportDock() {
       return;
     }
 
-    const keyboardOffset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+    const rawKeyboardOffset = getVisualKeyboardOffset();
+    const keyboardOffset = rawKeyboardOffset < 24 ? 0 : rawKeyboardOffset;
+    const viewportTop = keyboardOffset ? Math.max(0, viewport.offsetTop) : 0;
+    const viewportLeft = keyboardOffset ? Math.max(0, viewport.offsetLeft) : 0;
     document.documentElement.style.setProperty("--keyboard-offset", `${keyboardOffset}px`);
-    document.documentElement.style.setProperty("--viewport-offset-top", `${Math.max(0, viewport.offsetTop)}px`);
-    document.documentElement.style.setProperty("--viewport-offset-left", `${Math.max(0, viewport.offsetLeft)}px`);
+    document.documentElement.style.setProperty("--viewport-offset-top", `${viewportTop}px`);
+    document.documentElement.style.setProperty("--viewport-offset-left", `${viewportLeft}px`);
     updateDesktopTagBarOffset();
+
+    const nextViewportHeight = viewport.height || window.innerHeight || 0;
+    if ((lastKeyboardOffset > 48 && keyboardOffset === 0) || nextViewportHeight > lastViewportHeight + 36) {
+      scheduleKeyboardHiddenViewportSettle();
+    }
+    lastViewportHeight = nextViewportHeight;
+    lastKeyboardOffset = keyboardOffset;
   };
 
   const requestViewportOffsetUpdate = () => {
@@ -145,17 +159,60 @@ function initMobileViewportDock() {
     });
   };
 
+  const clearSettleTimers = () => {
+    settleTimers.forEach((timer) => window.clearTimeout(timer));
+    settleTimers = [];
+  };
+
+  const settleHiddenKeyboardViewport = (shouldLog = false) => {
+    if (getVisualKeyboardOffset() >= 24) {
+      requestViewportOffsetUpdate();
+      return;
+    }
+
+    document.documentElement.style.setProperty("--keyboard-offset", "0px");
+    document.documentElement.style.setProperty("--viewport-offset-top", "0px");
+    document.documentElement.style.setProperty("--viewport-offset-left", "0px");
+    if (!document.activeElement?.closest?.("#notepad-editor")) {
+      uiState.editorFocused = false;
+      uiState.mobileTagsOpen = false;
+      uiState.editorTapScroll = null;
+      syncMobileTagDock();
+    }
+    positionMobileTagDock();
+    updateDesktopTagBarOffset();
+    if (shouldLog) {
+      appendViewportDebugLog("keyboard-hidden-settle", "settleHiddenKeyboardViewport");
+    }
+  };
+
+  const scheduleKeyboardHiddenViewportSettle = () => {
+    clearSettleTimers();
+    settleTimers = [80, 180, 360, 720].map((delay, index, delays) =>
+      window.setTimeout(() => {
+        settleHiddenKeyboardViewport(index === delays.length - 1);
+      }, delay)
+    );
+  };
+
   requestViewportOffsetUpdate();
   window.visualViewport?.addEventListener("resize", requestViewportOffsetUpdate);
   window.visualViewport?.addEventListener("scroll", requestViewportOffsetUpdate);
   window.addEventListener("scroll", requestViewportOffsetUpdate, { passive: true });
   window.addEventListener("focusin", requestViewportOffsetUpdate);
   window.addEventListener("focusout", () => {
-    window.setTimeout(requestViewportOffsetUpdate, 80);
+    scheduleKeyboardHiddenViewportSettle();
   });
   window.addEventListener("orientationchange", () => {
     window.setTimeout(requestViewportOffsetUpdate, 120);
+    window.setTimeout(scheduleKeyboardHiddenViewportSettle, 520);
   });
+}
+
+function getVisualKeyboardOffset() {
+  const viewport = window.visualViewport;
+  if (!viewport) return 0;
+  return Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
 }
 
 function updateDesktopTagBarOffset() {
@@ -2396,10 +2453,12 @@ function positionMobileTagDock() {
   const compact = window.matchMedia("(max-width: 560px)").matches;
   const marginX = compact ? 10 : 12;
   const marginBottom = compact ? 6 : 8;
-  const visualLeft = Math.round(viewport?.offsetLeft || 0);
-  const visualTop = Math.round(viewport?.offsetTop || 0);
-  const visualWidth = Math.round(viewport?.width || window.innerWidth);
-  const visualHeight = Math.round(viewport?.height || window.innerHeight);
+  const keyboardOffset = getVisualKeyboardOffset();
+  const keyboardVisible = keyboardOffset >= 24;
+  const visualLeft = Math.round(keyboardVisible ? viewport?.offsetLeft || 0 : 0);
+  const visualTop = Math.round(keyboardVisible ? viewport?.offsetTop || 0 : 0);
+  const visualWidth = Math.round(keyboardVisible ? viewport?.width || window.innerWidth : window.innerWidth);
+  const visualHeight = Math.round(keyboardVisible ? viewport?.height || window.innerHeight : window.innerHeight);
   const dockHeight = Math.round(dock.offsetHeight || 44);
   const x = Math.max(0, visualLeft + marginX);
   const y = Math.max(0, visualTop + visualHeight - dockHeight - marginBottom);
@@ -4046,11 +4105,28 @@ function appendEditorDebugLog(entry) {
     noteCreatedAt: note?.createdAt || 0,
     noteUpdatedAt: note?.updatedAt || 0,
     preferences: getPreferences(),
+    layout: captureLayoutDebugSnapshot(),
     ...entry
   };
   logs.push(logEntry);
   setEditorDebugLogs(logs);
   queueEditorDebugCloudUpload();
+}
+
+function appendViewportDebugLog(action, handledBy) {
+  if (!isEditorDebugLoggingEnabled()) return;
+  const now = Date.now();
+  if (now - uiState.lastViewportDebugAt < 1200) return;
+  uiState.lastViewportDebugAt = now;
+  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  appendEditorDebugLog({
+    action,
+    source: "viewport",
+    success: true,
+    handledBy,
+    before: null,
+    after: captureEditorDebugSnapshot(editor)
+  });
 }
 
 async function clearEditorDebugLogs() {
@@ -4085,6 +4161,7 @@ async function copyEditorDebugLogs() {
     wardName: getCurrentWard()?.name || "",
     noteId: getCurrentNote()?.id || "",
     noteTitle: getCurrentNote()?.title || "",
+    layout: captureLayoutDebugSnapshot(),
     currentEditorSnapshot: captureEditorDebugSnapshot(editor),
     logCount: logs.length,
     logs
@@ -4320,11 +4397,82 @@ function captureEditorDebugSnapshot(editor) {
     currentLineHasTag: currentLine ? lineHasTag(currentLine) : null,
     previousLineHasTag: previousLine ? lineHasTag(previousLine) : null,
     nextLineHasTag: nextLine ? lineHasTag(nextLine) : null,
+    layout: captureLayoutDebugSnapshot(),
     currentLine: currentLine ? captureEditorDebugLine(currentLine, currentLineIndex, currentLine) : null,
     previousLine: previousLine ? captureEditorDebugLine(previousLine, lines.indexOf(previousLine), currentLine) : null,
     nextLine: nextLine ? captureEditorDebugLine(nextLine, lines.indexOf(nextLine), currentLine) : null,
     lines: lineDetails,
     selection: getEditorDebugSelection(editor, selection)
+  };
+}
+
+function captureLayoutDebugSnapshot() {
+  const viewport = window.visualViewport;
+  const rootStyle = getComputedStyle(document.documentElement);
+  const dock = refs.mobileTagRoot?.querySelector?.("[data-mobile-tag-dock]") || null;
+  const dockStyle = dock ? getComputedStyle(dock) : null;
+  const activeElement = document.activeElement;
+  return {
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    keyboardOffset: getVisualKeyboardOffset(),
+    visualViewport: viewport
+      ? {
+          width: viewport.width,
+          height: viewport.height,
+          offsetTop: viewport.offsetTop,
+          offsetLeft: viewport.offsetLeft,
+          pageTop: viewport.pageTop,
+          pageLeft: viewport.pageLeft,
+          scale: viewport.scale
+        }
+      : null,
+    cssVars: {
+      keyboardOffset: rootStyle.getPropertyValue("--keyboard-offset").trim(),
+      viewportOffsetTop: rootStyle.getPropertyValue("--viewport-offset-top").trim(),
+      viewportOffsetLeft: rootStyle.getPropertyValue("--viewport-offset-left").trim(),
+      mobileTagX: dock?.style.getPropertyValue("--mobile-tag-x") || "",
+      mobileTagY: dock?.style.getPropertyValue("--mobile-tag-y") || "",
+      mobileTagWidth: dock?.style.getPropertyValue("--mobile-tag-width") || ""
+    },
+    editorFocused: uiState.editorFocused,
+    mobileTagsOpen: uiState.mobileTagsOpen,
+    compactMobileLayout: isCompactMobileLayout(),
+    activeElement: getLayoutDebugElementLabel(activeElement),
+    dock: dock
+      ? {
+          className: dock.className || "",
+          ariaHidden: dock.getAttribute("aria-hidden") || "",
+          transform: dockStyle?.transform || "",
+          visibility: dockStyle?.visibility || "",
+          opacity: dockStyle?.opacity || "",
+          rect: getLayoutDebugRect(dock)
+        }
+      : null
+  };
+}
+
+function getLayoutDebugElementLabel(element) {
+  if (!element) return "none";
+  if (element.id) return `#${element.id}`;
+  if (element.dataset?.mobileTagDock) return "[data-mobile-tag-dock]";
+  if (element.classList?.contains("tag-token")) return `.tag-token[data-tag="${element.dataset.tag || ""}"]`;
+  if (element.closest?.("#notepad-editor")) return "#notepad-editor descendant";
+  return String(element.tagName || "element").toLowerCase();
+}
+
+function getLayoutDebugRect(element) {
+  if (!element?.getBoundingClientRect) return null;
+  const rect = element.getBoundingClientRect();
+  return {
+    top: rect.top,
+    left: rect.left,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height
   };
 }
 
