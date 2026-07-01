@@ -6034,6 +6034,10 @@ function blockTaggedLineMergeOnBackspace(editor) {
     return true;
   }
 
+  if (mergePlainLineIntoBedHeaderLine(editor, previousLine, currentLine)) {
+    return true;
+  }
+
   placeCaretAtEndOfLine(previousLine);
   rememberEditorSelection(editor);
   return true;
@@ -6056,9 +6060,37 @@ function blockTaggedLineMergeOnDeleteForward(editor) {
     return true;
   }
 
+  if (mergePlainLineIntoBedHeaderLine(editor, currentLine, nextLine)) {
+    return true;
+  }
+
   placeCaretAtEndOfLine(currentLine);
   rememberEditorSelection(editor);
   return true;
+}
+
+function mergePlainLineIntoBedHeaderLine(editor, bedLine, textLine) {
+  if (!editor || !isBedHeaderOnlyEditorLine(bedLine) || !textLine) return false;
+  if (lineHasTag(textLine) || isEditorLineEmpty(textLine)) return false;
+
+  const movableNodes = Array.from(textLine.childNodes || []).filter((node) => !isLineBreakNode(node));
+  if (!movableNodes.length) return false;
+
+  bedLine.appendChild(document.createTextNode(" "));
+  movableNodes.forEach((node) => bedLine.appendChild(node));
+  textLine.remove();
+  refreshLineTagClasses(bedLine);
+  ensureTagCaretBoundaries(bedLine);
+  placeCaretAtEndOfLine(bedLine);
+  syncEditorDocument();
+  rememberEditorSelection(editor);
+  return true;
+}
+
+function isBedHeaderOnlyEditorLine(line) {
+  if (!line) return false;
+  const tags = Array.from(line.querySelectorAll?.(".tag-token") || []);
+  return tags.length === 1 && tags[0].dataset.tag === "bed" && getEditableTextFromLine(line).trim() === "";
 }
 
 function removeEmptyEditorLineOnDelete(editor, inputType) {
