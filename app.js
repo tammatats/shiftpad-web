@@ -104,6 +104,9 @@ const uiState = {
   wardDrag: null,
   suppressWardHandleClick: false,
   lastViewportDebugAt: 0,
+  caretScrollRaf: 0,
+  lastCaretAutoScrollAt: 0,
+  lastCaretAutoScrollTop: 0,
   debugLogStatus: ""
 };
 applyUrlOverrides();
@@ -542,6 +545,7 @@ function bindEvents() {
     if (!editor) return;
     const note = getCurrentNote();
     if (!note) return;
+    clearEditorTapScrollForInput();
 
     if ((event.inputType || "").startsWith("deleteContent")) {
       repairCaretAtEditorLineBoundary(editor);
@@ -556,7 +560,7 @@ function bindEvents() {
       });
       syncEditorDocument();
       hideBedIndex();
-      requestAnimationFrame(() => keepEditorCaretVisible(editor));
+      queueEditorCaretVisibilityCheck(editor, "delete");
       return;
     }
     discardFreshFinalizedTagInsertions();
@@ -568,7 +572,7 @@ function bindEvents() {
     if (nextHtml === note.documentHtml) {
       rememberEditorSelection(editor);
       hideBedIndex();
-      requestAnimationFrame(() => keepEditorCaretVisible(editor));
+      queueEditorCaretVisibilityCheck(editor, "unchanged-input");
       return;
     }
     note.documentHtml = nextHtml;
@@ -577,7 +581,7 @@ function bindEvents() {
     saveState();
     refreshWardDrawerMetricsIfOpen();
     hideBedIndex();
-    requestAnimationFrame(() => keepEditorCaretVisible(editor));
+    queueEditorCaretVisibilityCheck(editor, event.inputType || "input");
     return;
   });
 
@@ -2533,6 +2537,11 @@ function markEditorPointerMoved(event) {
   }
 }
 
+function clearEditorTapScrollForInput() {
+  uiState.editorTapScroll = null;
+  uiState.pointerTracking = null;
+}
+
 function stabilizeEditorTapScroll(editor, attempt = 0) {
   const snapshot = uiState.editorTapScroll;
   if (!editor || !snapshot || !isCompactMobileLayout()) return;
@@ -2636,30 +2645,55 @@ function restoreSavedEditorSelection(editor) {
   return restoreEditorSelection(editor);
 }
 
-function keepEditorCaretVisible(editor) {
+function queueEditorCaretVisibilityCheck(editor, reason = "input") {
+  if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
+  window.cancelAnimationFrame(uiState.caretScrollRaf);
+  uiState.caretScrollRaf = window.requestAnimationFrame(() => {
+    uiState.caretScrollRaf = 0;
+    keepEditorCaretVisible(editor, { reason });
+  });
+}
+
+function keepEditorCaretVisible(editor, { reason = "input", force = false } = {}) {
   if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
 
   const viewport = window.visualViewport;
+  const keyboardVisible = getVisualKeyboardOffset() >= 24;
   const rect = getCaretRect() || getCurrentEditorLine()?.getBoundingClientRect() || editor.getBoundingClientRect();
-  const viewportTop = viewport?.offsetTop || 0;
-  const viewportHeight = viewport?.height || window.innerHeight;
+  const viewportTop = keyboardVisible ? viewport?.offsetTop || 0 : 0;
+  const viewportHeight = keyboardVisible ? viewport?.height || window.innerHeight : window.innerHeight;
   const visibleTop = viewportTop + 72;
   const visibleBottom = viewportTop + viewportHeight - 132;
+  const deadZone = force ? 8 : 32;
+  const padding = force ? 8 : 18;
+  const topOverflow = visibleTop - rect.top;
+  const bottomOverflow = rect.bottom - visibleBottom;
+  let nextScrollTop = null;
 
-  if (rect.bottom > visibleBottom) {
-    window.scrollTo({
-      top: Math.max(0, window.scrollY + rect.bottom - visibleBottom),
-      left: window.scrollX
-    });
+  if (bottomOverflow > deadZone) {
+    nextScrollTop = Math.max(0, window.scrollY + bottomOverflow + padding);
+  } else if (topOverflow > deadZone) {
+    nextScrollTop = Math.max(0, window.scrollY - topOverflow - padding);
+  }
+
+  if (nextScrollTop === null) return;
+  nextScrollTop = Math.round(nextScrollTop);
+  const currentScrollTop = Math.round(window.scrollY);
+  if (Math.abs(nextScrollTop - currentScrollTop) < 16) return;
+
+  const now = performance.now();
+  if (now - uiState.lastCaretAutoScrollAt < 220 && Math.abs(nextScrollTop - uiState.lastCaretAutoScrollTop) < 48) {
     return;
   }
 
-  if (rect.top < visibleTop) {
-    window.scrollTo({
-      top: Math.max(0, window.scrollY + rect.top - visibleTop),
-      left: window.scrollX
-    });
-  }
+  uiState.lastCaretAutoScrollAt = now;
+  uiState.lastCaretAutoScrollTop = nextScrollTop;
+  window.scrollTo({
+    top: nextScrollTop,
+    left: window.scrollX,
+    behavior: "auto"
+  });
+  appendViewportDebugLog(`caret-auto-scroll:${reason}`, "keepEditorCaretVisible");
 }
 
 function getCaretRect() {
@@ -4946,6 +4980,10 @@ function handleNotepadBeforeInput(event) {
       })
     : null;
 
+  if (inputType === "insertParagraph" || inputType.startsWith("insert") || isDeleteInput) {
+    clearEditorTapScrollForInput();
+  }
+
   if (inputType === "insertParagraph") {
     if (consumeSuppressedParagraphInput()) {
       return finishEditorDebugHandled(debugEntry, "suppressed-paragraph-beforeinput", editor);
@@ -5719,7 +5757,7 @@ function handleNotepadPaste(event) {
   syncEditorDocument();
   rememberEditorSelection(editor);
   hideBedIndex();
-  requestAnimationFrame(() => keepEditorCaretVisible(editor));
+  queueEditorCaretVisibilityCheck(editor, "paste");
   finishEditorDebugHandled(debugEntry, "handleNotepadPaste", editor, {
     htmlLength: pastedHtml.length,
     textLength: pastedText.length,
@@ -7952,7 +7990,7 @@ function maybeFinalizeEditingBedToken(editor) {
     finalizeTagToken(liveToken, { moveToNewLine: true });
     if (liveEditor) {
       rememberEditorSelection(liveEditor);
-      keepEditorCaretVisible(liveEditor);
+      queueEditorCaretVisibilityCheck(liveEditor, "bed-finalize");
     }
   }, 280);
 
