@@ -734,7 +734,12 @@ function bindEvents() {
 
     const summaryEditor = event.target.closest("[data-summary-editor]");
     if (summaryEditor) {
-      updateSummaryLineText(summaryEditor.dataset.noteId, Number(summaryEditor.dataset.lineIndex), summaryEditor.value);
+      updateSummaryLineText(
+        summaryEditor.dataset.noteId,
+        Number(summaryEditor.dataset.lineIndex),
+        summaryEditor.value,
+        parseOptionalIndex(summaryEditor.dataset.sourceIndex)
+      );
       return;
     }
 
@@ -756,7 +761,12 @@ function bindEvents() {
     if (!summaryEditor) return;
 
     autoSizeTextarea(summaryEditor);
-    updateSummaryLineText(summaryEditor.dataset.noteId, Number(summaryEditor.dataset.lineIndex), summaryEditor.value);
+    updateSummaryLineText(
+      summaryEditor.dataset.noteId,
+      Number(summaryEditor.dataset.lineIndex),
+      summaryEditor.value,
+      parseOptionalIndex(summaryEditor.dataset.sourceIndex)
+    );
   });
 
   refs.timelineRoot.addEventListener("click", (event) => {
@@ -2043,6 +2053,7 @@ function renderTimelineItem(item) {
             data-summary-editor="true"
             data-note-id="${escapeHtml(note.id)}"
             data-line-index="${item.lineIndex}"
+            data-source-index="${Number.isInteger(item.sourceLineIndex) ? item.sourceLineIndex : ""}"
             rows="1"
             aria-label="Reminder text"
           >${escapeHtml(reminderText)}</textarea>
@@ -2854,18 +2865,26 @@ function findNoteById(noteId) {
   return null;
 }
 
-function updateSummaryLineText(noteId, lineIndex, nextText) {
+function updateSummaryLineText(noteId, lineIndex, nextText, sourceLineIndex = NaN) {
   const note = findNoteById(noteId);
   if (!note || !Number.isInteger(lineIndex) || lineIndex < 0) return;
 
   const { root, targets } = getEditableLineTargets(note);
-  const target = targets[lineIndex];
+  const target = Number.isInteger(sourceLineIndex)
+    ? targets.find((item) => item.sourceLineIndex === sourceLineIndex)
+    : targets[lineIndex];
   if (!target) return;
 
   writeLineText(target.element, nextText);
   note.documentHtml = sanitizeEditorHtml(root.innerHTML);
   note.updatedAt = Date.now();
   saveState();
+}
+
+function parseOptionalIndex(value) {
+  if (value === undefined || value === null || value === "") return NaN;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : NaN;
 }
 
 function updateBedGroupText(bedKey, nextText) {
@@ -2904,7 +2923,7 @@ function getEditableLineTargets(note) {
   const root = parseHtmlRoot(getNoteDocumentHtml(note));
   const targets = [];
 
-  Array.from(root.childNodes).forEach((node) => {
+  Array.from(root.childNodes).forEach((node, sourceLineIndex) => {
     if (!(node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName))) {
       return;
     }
@@ -2919,7 +2938,7 @@ function getEditableLineTargets(note) {
     const visibleText = parsed.visibleText.trim();
     if (!cleanedText && !timeTag && !primaryTag && !visibleText) return;
 
-    targets.push({ element: node, parsed });
+    targets.push({ element: node, parsed, sourceLineIndex });
   });
 
   return { root, targets };
@@ -3691,6 +3710,7 @@ function buildSummaryGroups(scope) {
           ward,
           note,
           lineIndex: line.lineIndex,
+          sourceLineIndex: line.sourceLineIndex,
           tokenId: line.reminderTokenId || line.primaryTokenId || "",
           entry: {
             done: line.done,
@@ -7175,16 +7195,22 @@ function extractTaggedLines(note) {
   normalizeEditorBlocks(root);
   const rawLines = [];
 
-  Array.from(root.childNodes).forEach((node) => {
+  Array.from(root.childNodes).forEach((node, sourceLineIndex) => {
     if (node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName)) {
-      rawLines.push(parseLineNode(node));
+      rawLines.push({
+        ...parseLineNode(node),
+        sourceLineIndex
+      });
       return;
     }
 
     if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
       const wrapper = root.ownerDocument.createElement("div");
       wrapper.textContent = node.textContent;
-      rawLines.push(parseLineNode(wrapper));
+      rawLines.push({
+        ...parseLineNode(wrapper),
+        sourceLineIndex
+      });
     }
   });
 
@@ -7207,6 +7233,7 @@ function extractTaggedLines(note) {
     if (!hasNonBedContent && bedTag && currentBed) {
       lines.push(createParsedLine({
         lineIndex: lines.length,
+        sourceLineIndex: line.sourceLineIndex,
         text: "",
         visibleText: "",
         bedLabel: currentBed,
@@ -7223,6 +7250,7 @@ function extractTaggedLines(note) {
       if (bedTag && currentBed) {
         lines.push(createParsedLine({
           lineIndex: lines.length,
+          sourceLineIndex: line.sourceLineIndex,
           text: "",
           visibleText: "",
           bedLabel: currentBed,
@@ -7235,6 +7263,7 @@ function extractTaggedLines(note) {
 
     lines.push(createParsedLine({
       lineIndex: lines.length,
+      sourceLineIndex: line.sourceLineIndex,
       text: cleanedText,
       visibleText,
       bedLabel: currentBed,
@@ -7260,6 +7289,7 @@ function extractTaggedLines(note) {
 
 function createParsedLine({
   lineIndex,
+  sourceLineIndex = NaN,
   text,
   visibleText,
   bedLabel,
@@ -7281,6 +7311,7 @@ function createParsedLine({
 }) {
   return {
     lineIndex,
+    sourceLineIndex,
     text,
     visibleText,
     bedLabel,
