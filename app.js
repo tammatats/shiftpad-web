@@ -30,6 +30,8 @@ const refs = {
   menuBtn: document.getElementById("menu-btn"),
   wardOptionsBtn: document.getElementById("ward-options-btn"),
   appHeader: document.querySelector(".app-header"),
+  topControlStack: document.querySelector(".top-control-stack"),
+  stickyWardRoot: document.getElementById("sticky-ward-root"),
   authGate: document.getElementById("auth-gate"),
   authForm: document.getElementById("auth-form"),
   authEmail: document.getElementById("auth-email"),
@@ -219,9 +221,12 @@ function getVisualKeyboardOffset() {
 }
 
 function updateDesktopTagBarOffset() {
-  const headerRect = refs.appHeader?.getBoundingClientRect?.();
-  const headerBottom = Math.max(0, Math.round(headerRect?.bottom || 0));
-  document.documentElement.style.setProperty("--desktop-tags-top", `${headerBottom + 8}px`);
+  const controlsRect = refs.topControlStack?.getBoundingClientRect?.();
+  const controlsBottom = Math.max(0, Math.round(controlsRect?.bottom || 0));
+  if (controlsRect?.height) {
+    document.documentElement.style.setProperty("--top-controls-height", `${Math.round(controlsRect.height)}px`);
+  }
+  document.documentElement.style.setProperty("--desktop-tags-top", `${controlsBottom + 8}px`);
   syncDrawerControlPositions();
 }
 
@@ -465,6 +470,19 @@ function bindEvents() {
     uiState.editorFocused = false;
     uiState.mobileTagsOpen = false;
     render();
+  });
+
+  refs.stickyWardRoot?.addEventListener("click", (event) => {
+    const wardSwitch = event.target.closest?.("[data-ward-switch]");
+    if (wardSwitch) {
+      switchWardFromEditor(wardSwitch.dataset.wardSwitch);
+      return;
+    }
+
+    const resetNote = event.target.closest?.("[data-reset-note]");
+    if (resetNote) {
+      resetCurrentWardNote();
+    }
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
@@ -798,7 +816,7 @@ function bindEvents() {
     });
   });
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
-  window.addEventListener("resize", syncDrawerControlPositions, { passive: true });
+  window.addEventListener("resize", updateDesktopTagBarOffset, { passive: true });
   window.addEventListener("scroll", showBedIndexDuringScroll, { passive: true });
 }
 
@@ -813,10 +831,12 @@ function render() {
   refs.notesView.classList.toggle("hidden", state.activeView !== "notes");
   refs.timelineView.classList.toggle("hidden", state.activeView !== "timeline");
 
+  renderStickyWardBar();
   renderEditor();
   renderTimeline();
   renderDrawer();
   refreshMobileTagDock();
+  requestAnimationFrame(updateDesktopTagBarOffset);
 }
 
 function renderDrawer({ animateSide = "" } = {}) {
@@ -1317,22 +1337,10 @@ function renderEditor() {
     return;
   }
   const documentHtml = getNoteDocumentHtml(note);
-  const showWardSwitcher = shouldShowWardSwitcher();
 
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
       <section class="note-pad-card">
-        <div class="stack-head ${showWardSwitcher ? "notepad-switch-head" : ""}">
-          <div class="notepad-title-block">
-            <p class="section-kicker">Main notepad</p>
-            ${renderNotepadWardTitle(ward, showWardSwitcher)}
-          </div>
-          <div class="note-meta-actions">
-            <small>Updated ${escapeHtml(formatClock(note.updatedAt || note.createdAt))}</small>
-            <button class="ghost-btn tiny-btn" type="button" data-reset-note="true">Reset note</button>
-          </div>
-        </div>
-
         <div class="quick-tags">
           ${getAvailableQuickTags().map((tag) => renderQuickChip(tag.key, tag.label, tag.className, tag.color)).join("")}
         </div>
@@ -1358,10 +1366,34 @@ function renderEditor() {
   requestAnimationFrame(() => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
     if (!isCompactMobileLayout()) {
-      editor?.focus();
+      editor?.focus({ preventScroll: true });
     }
     syncMobileTagDock();
   });
+}
+
+function renderStickyWardBar() {
+  if (!refs.stickyWardRoot) return;
+  const ward = getCurrentWard();
+  const note = getCurrentNote();
+
+  if (!ward || !note) {
+    refs.stickyWardRoot.innerHTML = "";
+    refs.stickyWardRoot.classList.add("is-empty");
+    return;
+  }
+
+  refs.stickyWardRoot.classList.remove("is-empty");
+  refs.stickyWardRoot.innerHTML = `
+    <div class="sticky-ward-bar">
+      <p class="section-kicker">Main notepad</p>
+      ${renderNotepadWardTitle(ward)}
+      <div class="sticky-ward-actions">
+        <small>Updated ${escapeHtml(formatClock(note.updatedAt || note.createdAt))}</small>
+        <button class="ghost-btn tiny-btn" type="button" data-reset-note="true">Reset note</button>
+      </div>
+    </div>
+  `;
 }
 
 function shouldShowWardSwitcher() {
@@ -3312,6 +3344,9 @@ function switchWardFromEditor(direction) {
   uiState.editingWardId = "";
   saveState();
   render();
+  window.requestAnimationFrame(() => {
+    window.scrollTo({ top: 0, left: window.scrollX, behavior: "auto" });
+  });
 }
 
 function editWardNameFromDrawer(wardId) {
