@@ -14,6 +14,7 @@ const CLOUD_LOCAL_EDIT_PROTECTION_MS = 8000;
 const LOCAL_SAVE_DEBOUNCE_MS = 180;
 const EDITOR_DEBUG_CLOUD_UPLOAD_DEBOUNCE_MS = 700;
 const EDITOR_DEBUG_CLOUD_BATCH_LIMIT = 20;
+const EDITOR_DEBUG_CLOUD_LIFECYCLE_BATCH_LIMIT = 3;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
@@ -823,15 +824,24 @@ function bindEvents() {
     stabilizeEditorTapScroll(editor);
   });
 
-  window.addEventListener("beforeunload", flushLocalStateSave);
+  window.addEventListener("pagehide", () => {
+    flushLocalStateSave();
+    flushPendingEditorDebugLogsForLifecycle("pagehide");
+  });
+  window.addEventListener("beforeunload", () => {
+    flushLocalStateSave();
+    flushPendingEditorDebugLogsForLifecycle("beforeunload");
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       flushLocalStateSave();
+      flushPendingEditorDebugLogsForLifecycle("hidden");
     } else {
       fetchLatestCloudState({ reason: "visible" }).catch((error) => {
         console.error("Cloud sync refresh failed:", error);
       });
       applyPendingRemoteStateIfReady();
+      queueEditorDebugCloudUpload();
     }
   });
   window.addEventListener("focus", () => {
@@ -839,11 +849,13 @@ function bindEvents() {
       console.error("Cloud sync focus refresh failed:", error);
     });
     applyPendingRemoteStateIfReady();
+    queueEditorDebugCloudUpload();
   });
   window.addEventListener("online", () => {
     fetchLatestCloudState({ reason: "online" }).catch((error) => {
       console.error("Cloud sync online refresh failed:", error);
     });
+    queueEditorDebugCloudUpload();
   });
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
   window.addEventListener("resize", updateDesktopTagBarOffset, { passive: true });
@@ -1275,7 +1287,7 @@ function renderEditorDebugSettings() {
           <span class="switch-track"></span>
         </span>
       </label>
-      <p class="drawer-help">Includes note text, editor HTML, line details, cursor position, key type, and handler names. Saves to web automatically while signed in.</p>
+      <p class="drawer-help">On by default for future bug reports. Includes note text, editor HTML, line details, cursor position, key type, and handler names. Saves to web automatically while signed in.</p>
       <div class="debug-actions">
         <button class="accent-btn" type="button" data-drawer-action="upload-debug-logs" ${logs.length && authState.user ? "" : "disabled"}>Save to web now</button>
         <button class="accent-btn" type="button" data-drawer-action="copy-debug-logs" ${logs.length ? "" : "disabled"}>Copy latest logs</button>
@@ -4217,7 +4229,7 @@ function getEditorDebugLogKeyForUser(userId) {
 
 function isEditorDebugLoggingEnabled() {
   try {
-    return localStorage.getItem(EDITOR_DEBUG_ENABLED_KEY) === "true";
+    return localStorage.getItem(EDITOR_DEBUG_ENABLED_KEY) !== "false";
   } catch {
     return false;
   }
@@ -4418,6 +4430,22 @@ function queueEditorDebugCloudUpload() {
   }, EDITOR_DEBUG_CLOUD_UPLOAD_DEBOUNCE_MS);
 }
 
+function flushPendingEditorDebugLogsForLifecycle(reason) {
+  if (!isEditorDebugLoggingEnabled()) return;
+  if (!authState.client || !authState.user) return;
+  if (!getEditorDebugLogs().some((log) => log.clientLogId && !log.cloudSavedAt)) return;
+
+  window.clearTimeout(authState.debugLogUploadTimer);
+  authState.debugLogUploadTimer = null;
+  uploadPendingEditorDebugLogs({
+    batchLimit: EDITOR_DEBUG_CLOUD_LIFECYCLE_BATCH_LIMIT,
+    keepalive: true,
+    renderStatus: false
+  }).catch((error) => {
+    console.error(`Debug log ${reason} web save failed:`, error);
+  });
+}
+
 async function uploadPendingEditorDebugLogsNow() {
   if (!isEditorDebugLoggingEnabled()) {
     uiState.debugLogStatus = "Turn on debug logs first.";
@@ -4441,7 +4469,7 @@ async function uploadPendingEditorDebugLogsNow() {
   renderDrawer();
 }
 
-async function uploadPendingEditorDebugLogs() {
+async function uploadPendingEditorDebugLogs({ batchLimit = EDITOR_DEBUG_CLOUD_BATCH_LIMIT, keepalive = false, renderStatus = true } = {}) {
   if (!isEditorDebugLoggingEnabled() || !authState.client || !authState.user) return;
 
   let logs = getEditorDebugLogs();
@@ -4458,13 +4486,11 @@ async function uploadPendingEditorDebugLogs() {
     setEditorDebugLogs(logs);
   }
 
-  const pendingLogs = logs.filter((log) => log.clientLogId && !log.cloudSavedAt).slice(0, EDITOR_DEBUG_CLOUD_BATCH_LIMIT);
+  const pendingLogs = logs.filter((log) => log.clientLogId && !log.cloudSavedAt).slice(0, batchLimit);
   if (!pendingLogs.length) return;
 
   const rows = pendingLogs.map((log) => buildEditorDebugCloudRow(log));
-  const { error } = await authState.client
-    .from(EDITOR_DEBUG_CLOUD_TABLE)
-    .upsert(rows, { onConflict: "user_id,client_log_id" });
+  const error = await upsertEditorDebugCloudRows(rows, { keepalive });
 
   if (error) {
     const failedAt = new Date().toISOString();
@@ -4500,11 +4526,48 @@ async function uploadPendingEditorDebugLogs() {
   );
 
   uiState.debugLogStatus = `Saved ${pendingLogs.length} debug log${pendingLogs.length === 1 ? "" : "s"} to web.`;
-  renderDrawer();
+  if (renderStatus) {
+    renderDrawer();
+  }
 
   if (getEditorDebugLogs().some((log) => log.clientLogId && !log.cloudSavedAt)) {
     queueEditorDebugCloudUpload();
   }
+}
+
+async function upsertEditorDebugCloudRows(rows, { keepalive = false } = {}) {
+  if (!keepalive) {
+    const { error } = await authState.client
+      .from(EDITOR_DEBUG_CLOUD_TABLE)
+      .upsert(rows, { onConflict: "user_id,client_log_id" });
+    return error || null;
+  }
+
+  const config = window.SHIFTPAD_PUBLIC_CONFIG || {};
+  const supabaseUrl = String(config.supabaseUrl || "").replace(/\/+$/, "");
+  const accessToken = authState.session?.access_token || "";
+  if (!supabaseUrl || !config.supabaseAnonKey || !accessToken) {
+    const { error } = await authState.client
+      .from(EDITOR_DEBUG_CLOUD_TABLE)
+      .upsert(rows, { onConflict: "user_id,client_log_id" });
+    return error || null;
+  }
+
+  const response = await fetch(`${supabaseUrl}/rest/v1/${EDITOR_DEBUG_CLOUD_TABLE}?on_conflict=user_id,client_log_id`, {
+    method: "POST",
+    keepalive: true,
+    headers: {
+      apikey: config.supabaseAnonKey,
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+      prefer: "resolution=merge-duplicates,return=minimal"
+    },
+    body: JSON.stringify(rows)
+  });
+  if (response.ok) return null;
+
+  const message = await response.text().catch(() => "");
+  return new Error(message || `Debug log upload failed with HTTP ${response.status}.`);
 }
 
 function buildEditorDebugCloudRow(log) {
