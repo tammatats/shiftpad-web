@@ -109,6 +109,7 @@ const uiState = {
   caretScrollRaf: 0,
   lastCaretAutoScrollAt: 0,
   lastCaretAutoScrollTop: 0,
+  pendingEditorInputDebug: null,
   debugLogStatus: ""
 };
 applyUrlOverrides();
@@ -567,15 +568,17 @@ function bindEvents() {
 
     if ((event.inputType || "").startsWith("deleteContent")) {
       repairCaretAtEditorLineBoundary(editor);
-      appendEditorDebugLog({
-        action: event.inputType === "deleteContentForward" ? "delete-forward" : "backspace",
-        source: "input",
-        inputType: event.inputType || "",
-        success: true,
-        handledBy: "browser-input",
-        before: null,
-        after: captureEditorDebugSnapshot(editor)
-      });
+      if (!finishDeferredEditorInputDebug(editor, event, { handledBy: "browser-input-delete" })) {
+        appendEditorDebugLog({
+          action: event.inputType === "deleteContentForward" ? "delete-forward" : "backspace",
+          source: "input",
+          inputType: event.inputType || "",
+          success: true,
+          handledBy: "browser-input",
+          before: null,
+          after: captureEditorDebugSnapshot(editor)
+        });
+      }
       syncEditorDocument();
       hideBedIndex();
       queueEditorCaretVisibilityCheck(editor, "delete");
@@ -591,6 +594,7 @@ function bindEvents() {
       rememberEditorSelection(editor);
       hideBedIndex();
       queueEditorCaretVisibilityCheck(editor, "unchanged-input");
+      finishDeferredEditorInputDebug(editor, event, { handledBy: "browser-input-unchanged", changed: false });
       return;
     }
     note.documentHtml = nextHtml;
@@ -600,6 +604,7 @@ function bindEvents() {
     refreshWardDrawerMetricsIfOpen();
     hideBedIndex();
     queueEditorCaretVisibilityCheck(editor, event.inputType || "input");
+    finishDeferredEditorInputDebug(editor, event, { handledBy: "browser-input", changed: true });
     return;
   });
 
@@ -734,19 +739,33 @@ function bindEvents() {
 
     const summaryEditor = event.target.closest("[data-summary-editor]");
     if (summaryEditor) {
-      updateSummaryLineText(
+      const debugResult = updateSummaryLineText(
         summaryEditor.dataset.noteId,
         Number(summaryEditor.dataset.lineIndex),
         summaryEditor.value,
         parseOptionalIndex(summaryEditor.dataset.sourceIndex)
       );
+      appendSummaryEditorDebugLog(summaryEditor, "change", debugResult);
       return;
     }
 
     const checkbox = event.target.closest("[data-token-id]");
     if (!checkbox) return;
 
+    const beforeNote = captureNoteDebugSnapshot(findNoteById(checkbox.dataset.noteId));
     toggleTaggedLineDone(checkbox.dataset.noteId, checkbox.dataset.tokenId, checkbox.checked, checkbox.dataset.reminderKey);
+    appendEditorDebugLog({
+      action: "summary-toggle-done",
+      source: "timeline-change",
+      success: true,
+      handledBy: "toggleTaggedLineDone",
+      noteId: checkbox.dataset.noteId || "",
+      tokenId: checkbox.dataset.tokenId || "",
+      reminderKey: checkbox.dataset.reminderKey || "",
+      checked: Boolean(checkbox.checked),
+      before: beforeNote,
+      after: captureNoteDebugSnapshot(findNoteById(checkbox.dataset.noteId))
+    });
   });
 
   refs.timelineRoot.addEventListener("input", (event) => {
@@ -761,12 +780,13 @@ function bindEvents() {
     if (!summaryEditor) return;
 
     autoSizeTextarea(summaryEditor);
-    updateSummaryLineText(
+    const debugResult = updateSummaryLineText(
       summaryEditor.dataset.noteId,
       Number(summaryEditor.dataset.lineIndex),
       summaryEditor.value,
       parseOptionalIndex(summaryEditor.dataset.sourceIndex)
     );
+    appendSummaryEditorDebugLog(summaryEditor, "input", debugResult);
   });
 
   refs.timelineRoot.addEventListener("click", (event) => {
@@ -1257,6 +1277,7 @@ function renderEditorDebugSettings() {
       </label>
       <p class="drawer-help">Includes note text, editor HTML, line details, cursor position, key type, and handler names. Saves to web automatically while signed in.</p>
       <div class="debug-actions">
+        <button class="accent-btn" type="button" data-drawer-action="upload-debug-logs" ${logs.length && authState.user ? "" : "disabled"}>Save to web now</button>
         <button class="accent-btn" type="button" data-drawer-action="copy-debug-logs" ${logs.length ? "" : "disabled"}>Copy latest logs</button>
         <button class="ghost-btn" type="button" data-drawer-action="clear-debug-logs" ${logs.length ? "" : "disabled"}>Clear logs</button>
       </div>
@@ -1606,6 +1627,7 @@ async function applySession(session) {
     return;
   }
 
+  migrateAnonymousEditorDebugLogsToUser();
   await hydrateStateFromCloud();
   startCloudLiveSync();
   queueEditorDebugCloudUpload();
@@ -2867,24 +2889,93 @@ function findNoteById(noteId) {
 
 function updateSummaryLineText(noteId, lineIndex, nextText, sourceLineIndex = NaN) {
   const note = findNoteById(noteId);
-  if (!note || !Number.isInteger(lineIndex) || lineIndex < 0) return;
+  if (!note || !Number.isInteger(lineIndex) || lineIndex < 0) {
+    return {
+      success: false,
+      reason: "invalid-summary-target",
+      noteId,
+      lineIndex,
+      sourceLineIndex,
+      nextText: String(nextText || "")
+    };
+  }
 
   const { root, targets } = getEditableLineTargets(note);
   const target = Number.isInteger(sourceLineIndex)
     ? targets.find((item) => item.sourceLineIndex === sourceLineIndex)
     : targets[lineIndex];
-  if (!target) return;
+  if (!target) {
+    return {
+      success: false,
+      reason: "summary-target-not-found",
+      noteId,
+      lineIndex,
+      sourceLineIndex,
+      nextText: String(nextText || ""),
+      before: captureNoteDebugSnapshot(note)
+    };
+  }
 
+  const beforeLine = captureSummaryTargetDebug(target);
+  const before = captureNoteDebugSnapshot(note);
   writeLineText(target.element, nextText);
   note.documentHtml = sanitizeEditorHtml(root.innerHTML);
   note.updatedAt = Date.now();
   saveState();
+  return {
+    success: true,
+    noteId,
+    lineIndex,
+    sourceLineIndex,
+    targetSourceLineIndex: target.sourceLineIndex,
+    nextText: String(nextText || ""),
+    before,
+    beforeLine,
+    afterLine: captureSummaryTargetDebug({
+      ...target,
+      parsed: parseLineNode(target.element)
+    }),
+    after: captureNoteDebugSnapshot(note)
+  };
 }
 
 function parseOptionalIndex(value) {
   if (value === undefined || value === null || value === "") return NaN;
   const number = Number(value);
   return Number.isInteger(number) && number >= 0 ? number : NaN;
+}
+
+function captureSummaryTargetDebug(target) {
+  if (!target?.element) return null;
+  const parsed = target.parsed || parseLineNode(target.element);
+  return {
+    sourceLineIndex: Number.isInteger(target.sourceLineIndex) ? target.sourceLineIndex : NaN,
+    text: parsed.text || "",
+    visibleText: parsed.visibleText || "",
+    html: target.element.innerHTML || "",
+    tags: (parsed.tags || []).map((tag) => ({
+      type: tag.type || "",
+      text: tag.text || "",
+      id: tag.id || "",
+      done: Boolean(tag.done),
+      createdAt: Number(tag.createdAt || 0)
+    }))
+  };
+}
+
+function appendSummaryEditorDebugLog(summaryEditor, phase, result) {
+  if (!isEditorDebugLoggingEnabled()) return;
+  appendEditorDebugLog({
+    action: `summary-editor-${phase}`,
+    source: "timeline-summary-editor",
+    success: Boolean(result?.success),
+    handledBy: "updateSummaryLineText",
+    noteId: summaryEditor?.dataset?.noteId || result?.noteId || "",
+    lineIndex: parseOptionalIndex(summaryEditor?.dataset?.lineIndex),
+    sourceLineIndex: parseOptionalIndex(summaryEditor?.dataset?.sourceIndex),
+    valueLength: String(summaryEditor?.value || "").length,
+    result
+  });
 }
 
 function updateBedGroupText(bedKey, nextText) {
@@ -3067,6 +3158,11 @@ async function handleDrawerAction(action) {
 
   if (action === "copy-debug-logs") {
     await copyEditorDebugLogs();
+    return;
+  }
+
+  if (action === "upload-debug-logs") {
+    await uploadPendingEditorDebugLogsNow();
     return;
   }
 
@@ -4115,6 +4211,10 @@ function getEditorDebugLogKey() {
   return `${EDITOR_DEBUG_NAMESPACE}:logs:${authState.user?.id || "anon"}`;
 }
 
+function getEditorDebugLogKeyForUser(userId) {
+  return `${EDITOR_DEBUG_NAMESPACE}:logs:${userId || "anon"}`;
+}
+
 function isEditorDebugLoggingEnabled() {
   try {
     return localStorage.getItem(EDITOR_DEBUG_ENABLED_KEY) === "true";
@@ -4153,6 +4253,16 @@ function getEditorDebugLogs() {
   }
 }
 
+function getEditorDebugLogsFromKey(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function setEditorDebugLogs(logs) {
   let nextLogs = logs.slice(-EDITOR_DEBUG_LIMIT);
   try {
@@ -4170,6 +4280,35 @@ function setEditorDebugLogs(logs) {
     } catch {
       // Try a smaller set below.
     }
+  }
+}
+
+function migrateAnonymousEditorDebugLogsToUser() {
+  if (!authState.user) return;
+  const anonKey = getEditorDebugLogKeyForUser("");
+  const userKey = getEditorDebugLogKey();
+  if (anonKey === userKey) return;
+
+  const anonLogs = getEditorDebugLogsFromKey(anonKey);
+  if (!anonLogs.length) return;
+
+  const userLogs = getEditorDebugLogs();
+  const seen = new Set(userLogs.map((log) => log.clientLogId || `${log.timestamp || ""}:${log.action || ""}:${log.handledBy || ""}`));
+  const mergedLogs = [
+    ...userLogs,
+    ...anonLogs.filter((log) => {
+      const key = log.clientLogId || `${log.timestamp || ""}:${log.action || ""}:${log.handledBy || ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+  ];
+
+  setEditorDebugLogs(mergedLogs);
+  try {
+    localStorage.removeItem(anonKey);
+  } catch {
+    // Ignore localStorage failures.
   }
 }
 
@@ -4277,6 +4416,29 @@ function queueEditorDebugCloudUpload() {
       renderDrawer();
     });
   }, EDITOR_DEBUG_CLOUD_UPLOAD_DEBOUNCE_MS);
+}
+
+async function uploadPendingEditorDebugLogsNow() {
+  if (!isEditorDebugLoggingEnabled()) {
+    uiState.debugLogStatus = "Turn on debug logs first.";
+    renderDrawer();
+    return;
+  }
+  if (!authState.client || !authState.user) {
+    uiState.debugLogStatus = "Sign in before saving debug logs to web.";
+    renderDrawer();
+    return;
+  }
+
+  try {
+    await uploadPendingEditorDebugLogs();
+    uiState.debugLogStatus = getEditorDebugLogs().some((log) => log.clientLogId && !log.cloudSavedAt)
+      ? "Saved a batch of debug logs to web. More logs are queued."
+      : "Debug logs are saved to web.";
+  } catch (error) {
+    uiState.debugLogStatus = `Debug web save failed: ${error?.message || "Unknown error"}.`;
+  }
+  renderDrawer();
 }
 
 async function uploadPendingEditorDebugLogs() {
@@ -4419,8 +4581,9 @@ function getEditorDebugActionFromBeforeInput(event) {
     const activeToken = getActiveTagToken();
     if (activeToken) return "tag-edit-text";
     const editor = getEditorFromEventTarget(event.target);
-    return shouldManuallyInsertTextIntoEmptyLine(editor) ? "insert-empty-line-text" : "";
+    return shouldManuallyInsertTextIntoEmptyLine(editor) ? "insert-empty-line-text" : "insert-text";
   }
+  if (inputType.startsWith("insert")) return inputType;
   return "";
 }
 
@@ -4463,6 +4626,39 @@ function finishEditorDebugUnhandled(debugEntry, handledBy, editor, extra = {}) {
   return false;
 }
 
+function deferEditorInputDebug(debugEntry, handledBy, extra = {}) {
+  if (debugEntry) {
+    uiState.pendingEditorInputDebug = {
+      ...debugEntry,
+      deferredHandledBy: handledBy,
+      deferredAt: Date.now(),
+      deferredExtra: extra
+    };
+  }
+  return false;
+}
+
+function finishDeferredEditorInputDebug(editor, event, extra = {}) {
+  const pending = uiState.pendingEditorInputDebug;
+  if (!pending) return false;
+  uiState.pendingEditorInputDebug = null;
+
+  const { deferredHandledBy, deferredAt, deferredExtra, ...debugEntry } = pending;
+  finishEditorDebugAction(debugEntry, {
+    success: true,
+    handledBy: extra.handledBy || deferredHandledBy || "browser-input",
+    editor,
+    extra: {
+      inputType: event?.inputType || "",
+      dataLength: event?.data ? String(event.data).length : debugEntry.dataLength || 0,
+      deferredMs: Number.isFinite(deferredAt) ? Date.now() - deferredAt : 0,
+      ...(deferredExtra || {}),
+      ...extra
+    }
+  });
+  return true;
+}
+
 function captureEditorDebugSnapshot(editor) {
   if (!editor) return null;
   const lines = getEditorDebugLines(editor);
@@ -4492,6 +4688,43 @@ function captureEditorDebugSnapshot(editor) {
     nextLine: nextLine ? captureEditorDebugLine(nextLine, lines.indexOf(nextLine), currentLine) : null,
     lines: lineDetails,
     selection: getEditorDebugSelection(editor, selection)
+  };
+}
+
+function captureNoteDebugSnapshot(note) {
+  if (!note) return null;
+  const root = parseHtmlRoot(getNoteDocumentHtml(note));
+  normalizeEditorBlocks(root);
+  const lines = [];
+  Array.from(root.childNodes).forEach((node, sourceLineIndex) => {
+    if (!(node.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(node.tagName))) return;
+    const parsed = parseLineNode(node);
+    lines.push({
+      sourceLineIndex,
+      text: parsed.text || "",
+      visibleText: parsed.visibleText || "",
+      html: node.innerHTML || "",
+      tags: (parsed.tags || []).map((tag) => ({
+        type: tag.type || "",
+        text: tag.text || "",
+        id: tag.id || "",
+        done: Boolean(tag.done),
+        createdAt: Number(tag.createdAt || 0),
+        done14: Boolean(tag.done14),
+        done22: Boolean(tag.done22)
+      }))
+    });
+  });
+
+  return {
+    noteId: note.id || "",
+    noteTitle: note.title || "",
+    noteCreatedAt: note.createdAt || 0,
+    noteUpdatedAt: note.updatedAt || 0,
+    documentText: root.textContent || "",
+    documentHtml: root.innerHTML || "",
+    lineCount: lines.length,
+    lines
   };
 }
 
@@ -5127,7 +5360,7 @@ function handleNotepadBeforeInput(event) {
     discardFreshFinalizedTagInsertions();
   }
 
-  return finishEditorDebugUnhandled(debugEntry, "browser-default-beforeinput", editor);
+  return deferEditorInputDebug(debugEntry, "browser-default-beforeinput");
 }
 
 function shouldManuallyInsertTextIntoEmptyLine(editor) {
