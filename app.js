@@ -12,6 +12,7 @@ const CLOUD_REMOTE_APPLY_IDLE_MS = 1200;
 const CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS = 2500;
 const CLOUD_LOCAL_EDIT_PROTECTION_MS = 8000;
 const LOCAL_SAVE_DEBOUNCE_MS = 180;
+const SCREEN_SWITCH_SELECTION_FREEZE_MS = 1800;
 const EDITOR_DEBUG_CLOUD_UPLOAD_DEBOUNCE_MS = 700;
 const EDITOR_DEBUG_CLOUD_BATCH_LIMIT = 20;
 const EDITOR_DEBUG_CLOUD_LIFECYCLE_BATCH_LIMIT = 3;
@@ -111,7 +112,10 @@ const uiState = {
   lastCaretAutoScrollAt: 0,
   lastCaretAutoScrollTop: 0,
   pendingEditorInputDebug: null,
-  debugLogStatus: ""
+  debugLogStatus: "",
+  selectionMemoryFrozenUntil: 0,
+  restoreSelectionAfterScreenSwitch: false,
+  restoreEditorFocusAfterScreenSwitch: false
 };
 applyUrlOverrides();
 
@@ -443,6 +447,7 @@ function bindEvents() {
   refs.editorRoot.addEventListener("pointerdown", (event) => {
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
+    clearScreenSwitchSelectionRestore();
     rememberEditorTapScroll(event);
   }, { passive: true });
 
@@ -453,6 +458,7 @@ function bindEvents() {
   refs.editorRoot.addEventListener("touchstart", (event) => {
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
+    clearScreenSwitchSelectionRestore();
     rememberEditorTapScroll(event);
   }, { passive: true });
 
@@ -695,6 +701,7 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("keydown", (event) => {
     if (getEditorFromEventTarget(event.target)) {
+      restoreEditorSelectionAfterScreenSwitch("keydown");
       hideBedIndex();
       handleNotepadKeydown(event);
     }
@@ -703,6 +710,7 @@ function bindEvents() {
   refs.editorRoot.addEventListener("beforeinput", (event) => {
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
+    restoreEditorSelectionAfterScreenSwitch("beforeinput");
     if (handleNotepadBeforeInput(event)) {
       event.preventDefault();
     }
@@ -832,11 +840,20 @@ function bindEvents() {
   document.addEventListener("selectionchange", () => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
     if (!editor) return;
+    if (isEditorSelectionMemoryFrozen()) return;
+    if (document.visibilityState !== "visible" || !document.hasFocus()) return;
     rememberEditorSelection(editor);
     stabilizeEditorTapScroll(editor);
   });
 
+  window.addEventListener("blur", () => {
+    freezeEditorSelectionForScreenSwitch("window-blur");
+  });
+  window.addEventListener("focus", () => {
+    scheduleScreenSwitchSelectionRestore("window-focus");
+  });
   window.addEventListener("pagehide", () => {
+    freezeEditorSelectionForScreenSwitch("pagehide");
     flushLocalStateSave();
     flushPendingEditorDebugLogsForLifecycle("pagehide");
   });
@@ -846,9 +863,11 @@ function bindEvents() {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
+      freezeEditorSelectionForScreenSwitch("hidden");
       flushLocalStateSave();
       flushPendingEditorDebugLogsForLifecycle("hidden");
     } else {
+      scheduleScreenSwitchSelectionRestore("visible");
       fetchLatestCloudState({ reason: "visible" }).catch((error) => {
         console.error("Cloud sync refresh failed:", error);
       });
@@ -2580,11 +2599,97 @@ function restoreEditorFocusAndSelection() {
   return editor;
 }
 
-function rememberEditorSelection(editor) {
+function rememberEditorSelection(editor, options = {}) {
+  const force = Boolean(options.force);
+  if (!force && isEditorSelectionMemoryFrozen()) return false;
+  if (!force && document.visibilityState !== "visible") return false;
   const selection = window.getSelection();
-  if (!editor || !selection || !selection.rangeCount) return;
-  if (!isNodeInsideEditor(editor, selection.anchorNode)) return;
+  if (!editor || !selection || !selection.rangeCount) return false;
+  if (!isNodeInsideEditor(editor, selection.anchorNode) || !isNodeInsideEditor(editor, selection.focusNode)) return false;
   uiState.savedSelection = selection.getRangeAt(0).cloneRange();
+  return true;
+}
+
+function isEditorSelectionMemoryFrozen() {
+  return Boolean(
+    uiState.restoreSelectionAfterScreenSwitch ||
+      (uiState.selectionMemoryFrozenUntil && Date.now() < uiState.selectionMemoryFrozenUntil)
+  );
+}
+
+function freezeEditorSelectionForScreenSwitch(reason = "screen-switch") {
+  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  if (!editor) return;
+  const selection = window.getSelection();
+  const hasEditorSelection =
+    selection &&
+    selection.rangeCount &&
+    isNodeInsideEditor(editor, selection.anchorNode) &&
+    isNodeInsideEditor(editor, selection.focusNode);
+  const editorWasActive = Boolean(
+    uiState.editorFocused ||
+      editor.contains(document.activeElement) ||
+      hasEditorSelection
+  );
+
+  if (hasEditorSelection && document.visibilityState === "visible" && document.hasFocus()) {
+    rememberEditorSelection(editor, { force: true });
+  }
+
+  uiState.selectionMemoryFrozenUntil = Date.now() + SCREEN_SWITCH_SELECTION_FREEZE_MS;
+  uiState.restoreSelectionAfterScreenSwitch = Boolean(editorWasActive && uiState.savedSelection);
+  uiState.restoreEditorFocusAfterScreenSwitch = Boolean(
+    editorWasActive && (uiState.editorFocused || editor.contains(document.activeElement))
+  );
+}
+
+function scheduleScreenSwitchSelectionRestore(reason = "screen-return") {
+  if (!uiState.restoreSelectionAfterScreenSwitch) return;
+  uiState.selectionMemoryFrozenUntil = Date.now() + SCREEN_SWITCH_SELECTION_FREEZE_MS;
+  window.requestAnimationFrame(() => {
+    restoreEditorSelectionAfterScreenSwitch(reason, { keepArmed: true });
+  });
+}
+
+function restoreEditorSelectionAfterScreenSwitch(reason = "screen-return", options = {}) {
+  if (!uiState.restoreSelectionAfterScreenSwitch) return false;
+  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  if (!editor || !uiState.savedSelection) {
+    clearScreenSwitchSelectionRestore();
+    return false;
+  }
+
+  const before = captureEditorDebugSnapshot(editor);
+  if (uiState.restoreEditorFocusAfterScreenSwitch && document.visibilityState === "visible") {
+    editor.focus({ preventScroll: true });
+  }
+  const restored = restoreSavedEditorSelection(editor, { forceSavedRange: true });
+  if (restored) {
+    uiState.editorFocused = Boolean(editor.contains(document.activeElement) || uiState.editorFocused);
+    rememberEditorSelection(editor, { force: true });
+  }
+  if (options.keepArmed) {
+    uiState.selectionMemoryFrozenUntil = Date.now() + SCREEN_SWITCH_SELECTION_FREEZE_MS;
+  } else {
+    clearScreenSwitchSelectionRestore();
+    uiState.selectionMemoryFrozenUntil = Date.now() + 250;
+  }
+
+  appendEditorDebugLog({
+    action: "selection-restore-screen-switch",
+    source: reason,
+    success: restored,
+    handledBy: "restoreEditorSelectionAfterScreenSwitch",
+    before,
+    after: captureEditorDebugSnapshot(editor)
+  });
+  return restored;
+}
+
+function clearScreenSwitchSelectionRestore() {
+  uiState.restoreSelectionAfterScreenSwitch = false;
+  uiState.restoreEditorFocusAfterScreenSwitch = false;
+  uiState.selectionMemoryFrozenUntil = 0;
 }
 
 function rememberEditorTapScroll(event) {
@@ -2718,17 +2823,37 @@ function restoreEditorSelection(editor) {
   return true;
 }
 
-function restoreSavedEditorSelection(editor) {
+function restoreSavedEditorSelection(editor, options = {}) {
   const selection = window.getSelection();
   if (!editor || !selection) return false;
 
   if (uiState.savedSelection) {
-    selection.removeAllRanges();
-    selection.addRange(uiState.savedSelection.cloneRange());
-    return true;
+    if (!isSavedSelectionUsable(editor, uiState.savedSelection)) {
+      uiState.savedSelection = null;
+      if (options.forceSavedRange) return false;
+      return restoreEditorSelection(editor);
+    }
+    try {
+      selection.removeAllRanges();
+      selection.addRange(uiState.savedSelection.cloneRange());
+      return true;
+    } catch {
+      uiState.savedSelection = null;
+      if (options.forceSavedRange) return false;
+      return restoreEditorSelection(editor);
+    }
   }
 
   return restoreEditorSelection(editor);
+}
+
+function isSavedSelectionUsable(editor, range) {
+  return Boolean(
+    editor &&
+      range &&
+      isNodeInsideEditor(editor, range.startContainer) &&
+      isNodeInsideEditor(editor, range.endContainer)
+  );
 }
 
 function queueEditorCaretVisibilityCheck(editor, reason = "input") {
