@@ -716,9 +716,21 @@ function bindEvents() {
   refs.mobileTagRoot?.addEventListener("click", (event) => {
     const toggle = event.target.closest("[data-mobile-tag-toggle]");
     if (toggle) {
+      const editor = refs.editorRoot.querySelector("#notepad-editor");
+      const debugEntry = beginEditorDebugAction(editor, {
+        action: "mobile-tag-menu-toggle",
+        source: "mobile-tag-dock",
+        open: !uiState.mobileTagsOpen
+      });
       uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
       restoreEditorFocusAndSelection();
       syncMobileTagDock();
+      finishEditorDebugAction(debugEntry, {
+        success: true,
+        handledBy: "toggleMobileTagMenu",
+        editor,
+        extra: { open: uiState.mobileTagsOpen }
+      });
       return;
     }
 
@@ -2295,7 +2307,7 @@ function renderMobileTagDock() {
         ${getAvailableQuickTags()
           .map((tag) => {
             const style = renderCustomTagStyle(tag);
-            return `<button class="mobile-tag-option ${escapeHtml(tag.className || "")}" type="button" data-mobile-tag="${escapeHtml(tag.key)}" ${style}>${escapeHtml(tag.label)}</button>`;
+            return `<button class="mobile-tag-option ${escapeHtml(tag.className || "")}" type="button" role="menuitem" data-mobile-tag="${escapeHtml(tag.key)}" ${style}>${escapeHtml(tag.label)}</button>`;
           })
           .join("")}
       </div>
@@ -2525,8 +2537,8 @@ function positionMobileTagDock() {
 
   if (!isCompactMobileLayout() || !dock.classList.contains("is-visible")) {
     dock.style.removeProperty("--mobile-tag-x");
-    dock.style.removeProperty("--mobile-tag-y");
     dock.style.removeProperty("--mobile-tag-width");
+    dock.style.removeProperty("--mobile-tag-tray-max-height");
     return;
   }
 
@@ -2534,20 +2546,17 @@ function positionMobileTagDock() {
   const compact = window.matchMedia("(max-width: 560px)").matches;
   const marginX = compact ? 10 : 12;
   const marginBottom = compact ? 6 : 8;
-  const keyboardOffset = getVisualKeyboardOffset();
-  const keyboardVisible = keyboardOffset >= 24;
-  const visualLeft = Math.round(keyboardVisible ? viewport?.offsetLeft || 0 : 0);
-  const visualTop = Math.round(keyboardVisible ? viewport?.offsetTop || 0 : 0);
-  const visualWidth = Math.round(keyboardVisible ? viewport?.width || window.innerWidth : window.innerWidth);
-  const visualHeight = Math.round(keyboardVisible ? viewport?.height || window.innerHeight : window.innerHeight);
+  const visualLeft = Math.round(viewport?.offsetLeft || 0);
+  const visualWidth = Math.round(viewport?.width || window.innerWidth);
+  const visualHeight = Math.round(viewport?.height || window.innerHeight);
   const dockHeight = Math.round(dock.offsetHeight || 44);
   const x = Math.max(0, visualLeft + marginX);
-  const y = Math.max(0, visualTop + visualHeight - dockHeight - marginBottom);
   const width = Math.max(0, visualWidth - marginX * 2);
+  const trayMaxHeight = Math.max(144, visualHeight - dockHeight - marginBottom - 18);
 
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
-  setDockStyleValue(dock, "--mobile-tag-y", `${y}px`);
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
+  setDockStyleValue(dock, "--mobile-tag-tray-max-height", `${trayMaxHeight}px`);
 }
 
 function setDockStyleValue(dock, property, value) {
@@ -4819,8 +4828,8 @@ function captureLayoutDebugSnapshot() {
       viewportOffsetTop: rootStyle.getPropertyValue("--viewport-offset-top").trim(),
       viewportOffsetLeft: rootStyle.getPropertyValue("--viewport-offset-left").trim(),
       mobileTagX: dock?.style.getPropertyValue("--mobile-tag-x") || "",
-      mobileTagY: dock?.style.getPropertyValue("--mobile-tag-y") || "",
-      mobileTagWidth: dock?.style.getPropertyValue("--mobile-tag-width") || ""
+      mobileTagWidth: dock?.style.getPropertyValue("--mobile-tag-width") || "",
+      mobileTagTrayMaxHeight: dock?.style.getPropertyValue("--mobile-tag-tray-max-height") || ""
     },
     editorFocused: uiState.editorFocused,
     mobileTagsOpen: uiState.mobileTagsOpen,

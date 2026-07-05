@@ -2533,9 +2533,9 @@ select:focus {
     display: flex;
     position: fixed;
     left: 0;
-    top: 0;
+    top: auto;
     right: auto;
-    bottom: auto;
+    bottom: max(6px, env(safe-area-inset-bottom));
     width: var(--mobile-tag-width, calc(100vw - 24px));
     height: 46px;
     z-index: 120;
@@ -2545,7 +2545,7 @@ select:focus {
     opacity: 0;
     pointer-events: none;
     visibility: hidden;
-    transform: translate3d(var(--mobile-tag-x, 12px), var(--mobile-tag-y, calc(100dvh - 56px)), 0);
+    transform: translate3d(var(--mobile-tag-x, 12px), 0, 0);
     will-change: transform;
     transition: opacity 100ms ease;
   }
@@ -2562,9 +2562,14 @@ select:focus {
     bottom: 54px;
     display: grid;
     width: min(100%, 380px);
+    max-height: var(--mobile-tag-tray-max-height, min(58dvh, 360px));
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
     gap: 8px;
     padding: 10px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
     border: 1px solid rgba(96, 76, 55, 0.14);
     border-radius: 22px;
     background: rgba(255, 252, 248, 0.96);
@@ -2951,12 +2956,12 @@ select:focus {
 
   .mobile-tag-dock {
     left: 0;
-    top: 0;
+    top: auto;
     right: auto;
-    bottom: auto;
+    bottom: max(6px, env(safe-area-inset-bottom));
     width: var(--mobile-tag-width, calc(100vw - 20px));
     height: 44px;
-    transform: translate3d(var(--mobile-tag-x, 10px), var(--mobile-tag-y, calc(100dvh - 52px)), 0);
+    transform: translate3d(var(--mobile-tag-x, 10px), 0, 0);
   }
 
   .mobile-tag-tray {
