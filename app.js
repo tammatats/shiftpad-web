@@ -2567,7 +2567,6 @@ function positionMobileTagDock() {
   const marginX = compact ? 10 : 12;
   const marginBottom = compact ? 6 : 8;
   const visualLeft = Math.round(viewport?.offsetLeft || 0);
-  const visualTop = Math.round(viewport?.offsetTop || 0);
   const visualWidth = Math.round(viewport?.width || window.innerWidth);
   const visualHeight = Math.round(viewport?.height || window.innerHeight);
   const layoutHeight = Math.round(window.innerHeight || visualHeight);
@@ -2575,8 +2574,7 @@ function positionMobileTagDock() {
   const x = Math.max(0, visualLeft + marginX);
   const width = Math.max(0, visualWidth - marginX * 2);
   const trayMaxHeight = Math.max(144, visualHeight - dockHeight - marginBottom - 18);
-  const visualBottom = visualTop + visualHeight;
-  const keyboardOverlap = Math.max(0, layoutHeight - visualBottom);
+  const keyboardOverlap = Math.max(0, layoutHeight - visualHeight);
 
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
   setDockStyleValue(dock, "--mobile-tag-y", keyboardOverlap ? `-${keyboardOverlap}px` : "0px");
