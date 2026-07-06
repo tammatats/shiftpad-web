@@ -2556,6 +2556,7 @@ function positionMobileTagDock() {
 
   if (!isCompactMobileLayout() || !dock.classList.contains("is-visible")) {
     dock.style.removeProperty("--mobile-tag-x");
+    dock.style.removeProperty("--mobile-tag-y");
     dock.style.removeProperty("--mobile-tag-width");
     dock.style.removeProperty("--mobile-tag-tray-max-height");
     return;
@@ -2566,14 +2567,19 @@ function positionMobileTagDock() {
   const marginX = compact ? 10 : 12;
   const marginBottom = compact ? 6 : 8;
   const visualLeft = Math.round(viewport?.offsetLeft || 0);
+  const visualTop = Math.round(viewport?.offsetTop || 0);
   const visualWidth = Math.round(viewport?.width || window.innerWidth);
   const visualHeight = Math.round(viewport?.height || window.innerHeight);
+  const layoutHeight = Math.round(window.innerHeight || visualHeight);
   const dockHeight = Math.round(dock.offsetHeight || 44);
   const x = Math.max(0, visualLeft + marginX);
   const width = Math.max(0, visualWidth - marginX * 2);
   const trayMaxHeight = Math.max(144, visualHeight - dockHeight - marginBottom - 18);
+  const visualBottom = visualTop + visualHeight;
+  const keyboardOverlap = Math.max(0, layoutHeight - visualBottom);
 
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
+  setDockStyleValue(dock, "--mobile-tag-y", keyboardOverlap ? `-${keyboardOverlap}px` : "0px");
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
   setDockStyleValue(dock, "--mobile-tag-tray-max-height", `${trayMaxHeight}px`);
 }
@@ -4953,6 +4959,7 @@ function captureLayoutDebugSnapshot() {
       viewportOffsetTop: rootStyle.getPropertyValue("--viewport-offset-top").trim(),
       viewportOffsetLeft: rootStyle.getPropertyValue("--viewport-offset-left").trim(),
       mobileTagX: dock?.style.getPropertyValue("--mobile-tag-x") || "",
+      mobileTagY: dock?.style.getPropertyValue("--mobile-tag-y") || "",
       mobileTagWidth: dock?.style.getPropertyValue("--mobile-tag-width") || "",
       mobileTagTrayMaxHeight: dock?.style.getPropertyValue("--mobile-tag-tray-max-height") || ""
     },

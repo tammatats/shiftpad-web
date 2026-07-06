@@ -2545,7 +2545,7 @@ select:focus {
     opacity: 0;
     pointer-events: none;
     visibility: hidden;
-    transform: translate3d(var(--mobile-tag-x, 12px), 0, 0);
+    transform: translate3d(var(--mobile-tag-x, 12px), var(--mobile-tag-y, 0px), 0);
     will-change: transform;
     transition: opacity 100ms ease;
   }
@@ -2961,7 +2961,7 @@ select:focus {
     bottom: max(6px, env(safe-area-inset-bottom));
     width: var(--mobile-tag-width, calc(100vw - 20px));
     height: 44px;
-    transform: translate3d(var(--mobile-tag-x, 10px), 0, 0);
+    transform: translate3d(var(--mobile-tag-x, 10px), var(--mobile-tag-y, 0px), 0);
   }
 
   .mobile-tag-tray {
