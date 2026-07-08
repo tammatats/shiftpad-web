@@ -21,6 +21,8 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
+const APP_BUILD = "2026-07-08-tag-dock-device-v1";
+window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
   lab: { label: "Lab", icon: "Lab", className: "kind-lab" },
@@ -2559,6 +2561,7 @@ function positionMobileTagDock() {
     dock.style.removeProperty("--mobile-tag-y");
     dock.style.removeProperty("--mobile-tag-width");
     dock.style.removeProperty("--mobile-tag-tray-max-height");
+    delete dock.dataset.mobileTagMode;
     return;
   }
 
@@ -2567,6 +2570,7 @@ function positionMobileTagDock() {
   const marginX = compact ? 10 : 12;
   const marginBottom = compact ? 6 : 8;
   const visualLeft = Math.round(viewport?.offsetLeft || 0);
+  const visualTop = Math.max(0, Math.round(viewport?.offsetTop || 0));
   const visualWidth = Math.round(viewport?.width || window.innerWidth);
   const visualHeight = Math.round(viewport?.height || window.innerHeight);
   const layoutHeight = Math.round(window.innerHeight || visualHeight);
@@ -2574,8 +2578,11 @@ function positionMobileTagDock() {
   const x = Math.max(0, visualLeft + marginX);
   const width = Math.max(0, visualWidth - marginX * 2);
   const trayMaxHeight = Math.max(144, visualHeight - dockHeight - marginBottom - 18);
-  const keyboardOverlap = Math.max(0, layoutHeight - visualHeight);
+  const heightLoss = Math.max(0, layoutHeight - visualHeight);
+  const useOffsetAwareMode = isLikelyIpadDevice();
+  const keyboardOverlap = useOffsetAwareMode ? Math.max(0, heightLoss - visualTop) : heightLoss;
 
+  dock.dataset.mobileTagMode = useOffsetAwareMode ? "ipad-offset" : "height-loss";
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
   setDockStyleValue(dock, "--mobile-tag-y", keyboardOverlap ? `-${keyboardOverlap}px` : "0px");
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
@@ -2591,6 +2598,16 @@ function refreshMobileTagDock() {
   if (!refs.mobileTagRoot) return;
   refs.mobileTagRoot.innerHTML = renderMobileTagDock();
   syncMobileTagDock();
+}
+
+function isLikelyIpadDevice() {
+  const userAgent = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  return /iPad/i.test(userAgent) || (platform === "MacIntel" && Number(navigator.maxTouchPoints || 0) > 1);
+}
+
+function isLikelyIphoneDevice() {
+  return /iPhone|iPod/i.test(navigator.userAgent || "");
 }
 
 function restoreEditorFocusAndSelection() {
@@ -3340,7 +3357,7 @@ function getNotificationSupport() {
     };
   }
 
-  const isLikelyIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isLikelyIos = isLikelyIpadDevice() || isLikelyIphoneDevice();
   const isStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true;
   if (isLikelyIos && !isStandalone) {
     return {
@@ -3366,7 +3383,9 @@ function getNotificationSetupIssue({ support, configured }) {
 async function registerShiftPadServiceWorker() {
   if (!("serviceWorker" in navigator)) return null;
   try {
-    return await navigator.serviceWorker.register("/sw.js");
+    const registration = await navigator.serviceWorker.register("/sw.js");
+    registration.update?.().catch(() => undefined);
+    return registration;
   } catch (error) {
     console.warn("Service worker registration failed:", error);
     uiState.notificationStatus = "Notification setup failed while registering the app worker.";
@@ -4470,6 +4489,7 @@ function appendEditorDebugLog(entry) {
   const logEntry = {
     clientLogId: entry.clientLogId || createId("debug-log"),
     timestamp: new Date().toISOString(),
+    appBuild: APP_BUILD,
     browser: getEditorDebugBrowserLabel(),
     path: window.location.pathname,
     activeView: state.activeView,
@@ -4483,6 +4503,7 @@ function appendEditorDebugLog(entry) {
     noteCreatedAt: note?.createdAt || 0,
     noteUpdatedAt: note?.updatedAt || 0,
     preferences: getPreferences(),
+    device: captureDeviceDebugSnapshot(),
     layout: captureLayoutDebugSnapshot(),
     ...entry
   };
@@ -4533,12 +4554,14 @@ async function copyEditorDebugLogs() {
   const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
   const payload = {
     exportedAt: new Date().toISOString(),
+    appBuild: APP_BUILD,
     browser: getEditorDebugBrowserLabel(),
     activeView: state.activeView,
     wardId: getCurrentWard()?.id || "",
     wardName: getCurrentWard()?.name || "",
     noteId: getCurrentNote()?.id || "",
     noteTitle: getCurrentNote()?.title || "",
+    device: captureDeviceDebugSnapshot(),
     layout: captureLayoutDebugSnapshot(),
     currentEditorSnapshot: captureEditorDebugSnapshot(editor),
     logCount: logs.length,
@@ -4958,6 +4981,7 @@ function captureLayoutDebugSnapshot() {
       viewportOffsetLeft: rootStyle.getPropertyValue("--viewport-offset-left").trim(),
       mobileTagX: dock?.style.getPropertyValue("--mobile-tag-x") || "",
       mobileTagY: dock?.style.getPropertyValue("--mobile-tag-y") || "",
+      mobileTagMode: dock?.dataset?.mobileTagMode || "",
       mobileTagWidth: dock?.style.getPropertyValue("--mobile-tag-width") || "",
       mobileTagTrayMaxHeight: dock?.style.getPropertyValue("--mobile-tag-tray-max-height") || ""
     },
@@ -4975,6 +4999,20 @@ function captureLayoutDebugSnapshot() {
           rect: getLayoutDebugRect(dock)
         }
       : null
+  };
+}
+
+function captureDeviceDebugSnapshot() {
+  return {
+    platform: navigator.platform || "",
+    userAgent: navigator.userAgent || "",
+    maxTouchPoints: Number(navigator.maxTouchPoints || 0),
+    isLikelyIpad: isLikelyIpadDevice(),
+    isLikelyIphone: isLikelyIphoneDevice(),
+    standalone: Boolean(window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true),
+    screenWidth: window.screen?.width || 0,
+    screenHeight: window.screen?.height || 0,
+    devicePixelRatio: window.devicePixelRatio || 1
   };
 }
 
