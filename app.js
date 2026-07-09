@@ -21,7 +21,7 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-08-tag-dock-device-v1";
+const APP_BUILD = "2026-07-09-tag-dock-cache-v2";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
@@ -3384,8 +3384,8 @@ async function registerShiftPadServiceWorker() {
   if (!("serviceWorker" in navigator)) return null;
   try {
     const registration = await navigator.serviceWorker.register("/sw.js");
-    registration.update?.().catch(() => undefined);
-    return registration;
+    registration?.update?.().catch(() => undefined);
+    return registration || null;
   } catch (error) {
     console.warn("Service worker registration failed:", error);
     uiState.notificationStatus = "Notification setup failed while registering the app worker.";
