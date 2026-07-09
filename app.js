@@ -21,7 +21,7 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-09-tag-dock-cache-v2";
+const APP_BUILD = "2026-07-09-signup-v3";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
@@ -1680,6 +1680,7 @@ async function applySession(session) {
 
 async function signInWithPassword() {
   if (!authState.client) return;
+  if (!validateAuthForm()) return;
   setAuthMessage("Signing in...");
   const email = String(refs.authEmail?.value || "").trim();
   const password = String(refs.authPassword?.value || "");
@@ -1698,15 +1699,17 @@ async function signInWithPassword() {
 
 async function signUpWithPassword() {
   if (!authState.client) return;
+  if (!validateAuthForm()) return;
   setAuthMessage("Creating account...");
   const email = String(refs.authEmail?.value || "").trim();
   const password = String(refs.authPassword?.value || "");
   const displayName = String(refs.authName?.value || "").trim();
   try {
-    const { error } = await authState.client.auth.signUp({
+    const { data, error } = await authState.client.auth.signUp({
       email,
       password,
       options: {
+        emailRedirectTo: getAuthRedirectUrl(),
         data: {
           display_name: displayName
         }
@@ -1716,11 +1719,39 @@ async function signUpWithPassword() {
       setAuthMessage(formatSupabaseError(error, "Account creation failed."));
       return;
     }
+    if (data?.session) {
+      setAuthMessage("Account created. Loading your notes...");
+      await applySession(data.session);
+      return;
+    }
+    if (data?.user?.identities && data.user.identities.length === 0) {
+      setAuthMessage("This email already has an account. Use Sign in instead.");
+      return;
+    }
   } catch (error) {
     setAuthMessage(formatSupabaseError(error, "Account creation failed."));
     return;
   }
-  setAuthMessage("Account created. Check your inbox if email confirmation is enabled, then sign in.");
+  setAuthMessage("Account created. Check your email to confirm it, then sign in.");
+}
+
+function validateAuthForm() {
+  if (refs.authForm?.reportValidity && !refs.authForm.reportValidity()) return false;
+  const email = String(refs.authEmail?.value || "").trim();
+  const password = String(refs.authPassword?.value || "");
+  if (!email || !password) {
+    setAuthMessage("Enter an email and password first.");
+    return false;
+  }
+  if (password.length < 6) {
+    setAuthMessage("Use a password with at least 6 characters.");
+    return false;
+  }
+  return true;
+}
+
+function getAuthRedirectUrl() {
+  return `${window.location.origin}${window.location.pathname || "/"}`;
 }
 
 async function signOutCurrentUser() {
@@ -2078,6 +2109,18 @@ function setAuthMessage(message) {
 
 function formatSupabaseError(error, fallback) {
   const rawMessage = String(error?.message || error?.error_description || error || fallback || "Supabase request failed.");
+  if (/signup.*disabled|signups.*disabled|signups not allowed|new users.*disabled|not accepting new users/i.test(rawMessage)) {
+    return "Account creation is disabled in Supabase Auth. Enable Email signups in Supabase Authentication -> Providers.";
+  }
+  if (/already registered|already exists|user already/i.test(rawMessage)) {
+    return "This email already has an account. Use Sign in instead.";
+  }
+  if (/password.*(short|weak|characters)|weak password/i.test(rawMessage)) {
+    return "Use a password with at least 6 characters.";
+  }
+  if (/invalid.*email|email.*invalid/i.test(rawMessage)) {
+    return "Enter a valid email address.";
+  }
   if (/load failed|failed to fetch|networkerror|fetch failed|network request failed/i.test(rawMessage)) {
     const configuredUrl = String(window.SHIFTPAD_PUBLIC_CONFIG?.supabaseUrl || "").trim();
     const suffix = configuredUrl ? ` Current SUPABASE_URL is ${configuredUrl}.` : "";
