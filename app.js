@@ -24,7 +24,7 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-bed-sort-v1";
+const APP_BUILD = "2026-07-11-bed-sort-spacing-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
@@ -629,6 +629,7 @@ function bindEvents() {
     if ((event.inputType || "") === "insertText") {
       removeBrowserTrailingEmptyLineAfterInput(editor);
     }
+    updateSortBedsButtonFromEditor(editor);
     const nextHtml = sanitizeEditorHtml(editor.innerHTML);
     if (nextHtml === note.documentHtml) {
       rememberEditorSelection(editor);
@@ -1618,21 +1619,30 @@ function sortCurrentWardBedSections() {
 
   if (sections.length < 2) return;
 
+  const previousHtml = sanitizeEditorHtml(editor.innerHTML);
   const sortedSections = [...sections].sort((left, right) => {
     const labelOrder = BED_SORT_COLLATOR.compare(left.label, right.label);
     return labelOrder || left.originalIndex - right.originalIndex;
   });
-  const alreadySorted = sortedSections.every((section, index) => section === sections[index]);
-  if (alreadySorted) return;
 
   const fragment = document.createDocumentFragment();
   prefixLines.forEach((line) => fragment.appendChild(line));
-  sortedSections.forEach((section) => {
+  sortedSections.forEach((section, sectionIndex) => {
     section.lines.forEach((line) => fragment.appendChild(line));
+    const isLastSection = sectionIndex === sortedSections.length - 1;
+    const lastSectionLine = section.lines[section.lines.length - 1];
+    if (!isLastSection && !isEditorLineEmpty(lastSectionLine)) {
+      const spacer = editor.ownerDocument.createElement("div");
+      spacer.innerHTML = "<br>";
+      fragment.appendChild(spacer);
+    }
   });
   editor.appendChild(fragment);
 
-  note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
+  const nextHtml = sanitizeEditorHtml(editor.innerHTML);
+  if (nextHtml === previousHtml) return;
+
+  note.documentHtml = nextHtml;
   note.updatedAt = Date.now();
   saveState();
   applyEditorCompletionClasses(editor);
@@ -1647,6 +1657,17 @@ function refreshEditorBedIndex(note) {
   surface.querySelector(".bed-index-rail")?.remove();
   const railHtml = renderBedIndexRail(getBedIndexForNote(note));
   if (railHtml) surface.insertAdjacentHTML("beforeend", railHtml);
+}
+
+function updateSortBedsButtonFromEditor(editor = refs.editorRoot.querySelector("#notepad-editor")) {
+  const button = refs.stickyWardRoot?.querySelector("[data-sort-beds]");
+  if (!button || !editor) return;
+  const bedLabels = new Set(
+    Array.from(editor.querySelectorAll('.tag-token[data-tag="bed"]'))
+      .map((token) => String(token.textContent || "").replace(/^Bed\s*/i, "").trim().toUpperCase())
+      .filter(Boolean)
+  );
+  button.disabled = bedLabels.size < 2;
 }
 
 function renderTimeline() {
@@ -2696,6 +2717,7 @@ function handleQuickTag(tag) {
   note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
   note.updatedAt = Date.now();
   saveState();
+  updateSortBedsButtonFromEditor(editor);
   rememberEditorSelection(editor);
   finishEditorDebugAction(debugEntry, {
     success: true,
@@ -8340,6 +8362,7 @@ function syncEditorDocument() {
     saveState();
     refreshWardDrawerMetricsIfOpen();
   }
+  updateSortBedsButtonFromEditor(editor);
 }
 
 function refreshWardDrawerMetricsIfOpen() {
