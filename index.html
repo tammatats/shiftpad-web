@@ -95,8 +95,14 @@
           </header>
 
           <nav class="view-tabs" aria-label="Views">
-            <button id="notes-tab-btn" class="view-tab is-active" type="button" data-view="notes">Notes</button>
-            <button id="timeline-tab-btn" class="view-tab" type="button" data-view="timeline">Summary</button>
+            <button id="notes-tab-btn" class="view-tab is-active" type="button" role="tab" data-view="notes">Notes</button>
+            <button id="timeline-tab-btn" class="view-tab" type="button" role="tab" data-view="timeline">Summary</button>
+            <button id="search-btn" class="view-search-btn" type="button" aria-label="Search all notes" title="Search all notes">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5"></circle>
+                <path d="m16 16 4 4"></path>
+              </svg>
+            </button>
           </nav>
 
           <div id="sticky-ward-root" class="sticky-ward-root"></div>
@@ -126,11 +132,12 @@
       </section>
       <div id="drawer-root"></div>
       <div id="bed-action-root"></div>
+      <div id="search-root"></div>
     </main>
     <div id="mobile-tag-root"></div>
 
     <script src="public-config.js" defer></script>
     <script src="/api/public-config.js" defer></script>
-    <script src="app.js?v=20260711-bedindex1" defer></script>
+    <script src="app.js?v=20260711-history1" defer></script>
   </body>
 </html>

@@ -25,7 +25,12 @@ const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
 const MAX_BED_INDEX_LABELS = 9;
-const APP_BUILD = "2026-07-11-bed-index-v1";
+const RECOVERY_HISTORY_LIMIT = 12;
+const SHIFT_ARCHIVE_LIMIT = 6;
+const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
+const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
+const NOTE_PARSE_CACHE_LIMIT = 180;
+const APP_BUILD = "2026-07-11-history-search-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -72,11 +77,13 @@ const refs = {
   syncStatus: document.getElementById("sync-status"),
   notesTabBtn: document.getElementById("notes-tab-btn"),
   timelineTabBtn: document.getElementById("timeline-tab-btn"),
+  searchBtn: document.getElementById("search-btn"),
   notesView: document.getElementById("notes-view"),
   timelineView: document.getElementById("timeline-view"),
   editorRoot: document.getElementById("editor-root"),
   drawerRoot: document.getElementById("drawer-root"),
   bedActionRoot: document.getElementById("bed-action-root"),
+  searchRoot: document.getElementById("search-root"),
   mobileTagRoot: document.getElementById("mobile-tag-root"),
   timelineRoot: document.getElementById("timeline-root"),
   workspace: document.querySelector(".workspace")
@@ -150,8 +157,14 @@ const uiState = {
   debugLogStatus: "",
   selectionMemoryFrozenUntil: 0,
   restoreSelectionAfterScreenSwitch: false,
-  restoreEditorFocusAfterScreenSwitch: false
+  restoreEditorFocusAfterScreenSwitch: false,
+  searchOpen: false,
+  searchQuery: "",
+  searchReturnFocus: null,
+  recoveryBaselines: new Map(),
+  recoveryLastSavedAt: new Map()
 };
+const noteParseCache = new Map();
 applyUrlOverrides();
 
 init();
@@ -317,6 +330,39 @@ function bindEvents() {
     switchWorkspace();
   });
 
+  refs.searchBtn?.addEventListener("click", () => {
+    openWorkspaceSearch();
+  });
+
+  refs.searchRoot?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-search-close]")) {
+      closeWorkspaceSearch();
+      return;
+    }
+    const result = event.target.closest("[data-search-result]");
+    if (result) {
+      openWorkspaceSearchResult(result);
+    }
+  });
+
+  refs.searchRoot?.addEventListener("input", (event) => {
+    const input = event.target.closest("[data-search-input]");
+    if (!input) return;
+    uiState.searchQuery = input.value;
+    renderWorkspaceSearchResults();
+  });
+
+  refs.searchRoot?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeWorkspaceSearch();
+      return;
+    }
+    if (event.key === "Tab") {
+      trapSearchFocus(event);
+    }
+  });
+
   refs.menuBtn?.addEventListener("click", () => {
     clearDrawerCloseTimer();
     syncDrawerControlPositions();
@@ -356,7 +402,7 @@ function bindEvents() {
 
     const action = event.target.closest("[data-drawer-action]");
     if (action) {
-      await handleDrawerAction(action.dataset.drawerAction);
+      await handleDrawerAction(action.dataset.drawerAction, action.dataset);
       return;
     }
 
@@ -1052,6 +1098,8 @@ function render() {
 
   refs.notesTabBtn.classList.toggle("is-active", state.activeView === "notes");
   refs.timelineTabBtn.classList.toggle("is-active", state.activeView === "timeline");
+  refs.notesTabBtn.setAttribute("aria-selected", String(state.activeView === "notes"));
+  refs.timelineTabBtn.setAttribute("aria-selected", String(state.activeView === "timeline"));
   refs.notesView.classList.toggle("hidden", state.activeView !== "notes");
   refs.timelineView.classList.toggle("hidden", state.activeView !== "timeline");
 
@@ -1060,8 +1108,162 @@ function render() {
   renderTimeline();
   renderDrawer();
   renderBedActionSheet();
+  renderWorkspaceSearch();
   refreshMobileTagDock();
   requestAnimationFrame(updateDesktopTagBarOffset);
+}
+
+function openWorkspaceSearch() {
+  syncEditorDocument();
+  uiState.searchOpen = true;
+  uiState.searchReturnFocus = document.activeElement;
+  renderWorkspaceSearch();
+  window.requestAnimationFrame(() => {
+    refs.searchRoot?.querySelector("[data-search-input]")?.focus({ preventScroll: true });
+  });
+}
+
+function closeWorkspaceSearch({ restoreFocus = true } = {}) {
+  uiState.searchOpen = false;
+  renderWorkspaceSearch();
+  if (restoreFocus) {
+    const returnTarget = uiState.searchReturnFocus?.isConnected ? uiState.searchReturnFocus : refs.searchBtn;
+    window.requestAnimationFrame(() => returnTarget?.focus?.({ preventScroll: true }));
+  }
+  uiState.searchReturnFocus = null;
+}
+
+function trapSearchFocus(event) {
+  const focusable = [...(refs.searchRoot?.querySelectorAll("button:not([disabled]), input:not([disabled])") || [])]
+    .filter((element) => element.offsetParent !== null);
+  if (focusable.length < 2) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function renderWorkspaceSearch() {
+  if (!refs.searchRoot) return;
+  if (!uiState.searchOpen) {
+    refs.searchRoot.innerHTML = "";
+    refs.searchBtn?.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  refs.searchBtn?.setAttribute("aria-expanded", "true");
+  refs.searchRoot.innerHTML = `
+    <div class="search-layer" role="dialog" aria-modal="true" aria-labelledby="search-title">
+      <button class="search-scrim" type="button" data-search-close="true" aria-label="Close search"></button>
+      <section class="search-sheet">
+        <header class="search-head">
+          <div>
+            <p class="section-kicker">${escapeHtml(getActiveWorkspaceMeta().title)}</p>
+            <h2 id="search-title">Search notes</h2>
+          </div>
+          <button class="search-close" type="button" data-search-close="true" aria-label="Close search" title="Close search">×</button>
+        </header>
+        <label class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+          <span class="sr-only">Search ward and note text</span>
+          <input type="search" data-search-input="true" value="${escapeAttribute(uiState.searchQuery)}" placeholder="Search beds, tasks, or text" autocomplete="off" />
+        </label>
+        <div class="search-results" data-search-results="true" aria-live="polite"></div>
+      </section>
+    </div>
+  `;
+  renderWorkspaceSearchResults();
+}
+
+function renderWorkspaceSearchResults() {
+  const root = refs.searchRoot?.querySelector("[data-search-results]");
+  if (!root) return;
+  const query = uiState.searchQuery.trim();
+  if (query.length < 2) {
+    root.innerHTML = `<p class="search-empty">Type at least two characters to search every ward in ${escapeHtml(getActiveWorkspaceMeta().title)}.</p>`;
+    return;
+  }
+
+  const results = buildWorkspaceSearchResults(query);
+  if (!results.length) {
+    root.innerHTML = `<p class="search-empty">No matching notes.</p>`;
+    return;
+  }
+
+  root.innerHTML = `
+    <p class="search-result-count">${results.length} result${results.length === 1 ? "" : "s"}</p>
+    <div class="search-result-list">
+      ${results.map((result) => `
+        <button
+          class="search-result-row"
+          type="button"
+          data-search-result="true"
+          data-search-ward="${escapeAttribute(result.wardId)}"
+          data-search-note="${escapeAttribute(result.noteId)}"
+          data-search-source-line="${result.sourceLineIndex}"
+        >
+          <span class="search-result-meta">${escapeHtml(result.wardName)}${result.bedLabel ? ` · Bed ${escapeHtml(result.bedLabel)}` : ""}</span>
+          <strong>${escapeHtml(result.text)}</strong>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function buildWorkspaceSearchResults(query) {
+  const needle = query.toLocaleLowerCase();
+  const results = [];
+  state.wards.some((ward) => {
+    return ward.notes.some((note) => {
+      const parsed = getCachedTaggedLines(note);
+      parsed.lines.forEach((line) => {
+        if (results.length >= 60) return;
+        const text = String(line.text || line.visibleText || "").trim();
+        const searchable = `${ward.name} ${note.title || ""} ${line.bedLabel || ""} ${text}`.toLocaleLowerCase();
+        if (!text || !searchable.includes(needle)) return;
+        results.push({
+          wardId: ward.id,
+          wardName: ward.name,
+          noteId: note.id,
+          bedLabel: line.bedLabel || "",
+          sourceLineIndex: Number.isInteger(line.sourceLineIndex) ? line.sourceLineIndex : line.lineIndex,
+          text: text.length > 140 ? `${text.slice(0, 137)}...` : text
+        });
+      });
+      return results.length >= 60;
+    });
+  });
+  return results;
+}
+
+function openWorkspaceSearchResult(button) {
+  const ward = state.wards.find((item) => item.id === button.dataset.searchWard);
+  const note = ward?.notes.find((item) => item.id === button.dataset.searchNote);
+  if (!ward || !note) return;
+  state.selectedWardId = ward.id;
+  state.selectedNoteId = note.id;
+  state.activeView = "notes";
+  uiState.searchOpen = false;
+  uiState.searchReturnFocus = null;
+  saveState();
+  render();
+  const sourceLineIndex = Number(button.dataset.searchSourceLine);
+  window.requestAnimationFrame(() => {
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    const line = Number.isInteger(sourceLineIndex) ? editor?.children?.[sourceLineIndex] : null;
+    line?.scrollIntoView?.({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    line?.classList?.add("search-result-flash");
+    window.setTimeout(() => line?.classList?.remove("search-result-flash"), 1100);
+  });
+}
+
+function prefersReducedMotion() {
+  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
 }
 
 function renderDrawer({ animateSide = "" } = {}) {
@@ -1216,6 +1418,7 @@ function renderSettingsMenu() {
   const notificationsOpen = isDrawerSectionOpen("notifications");
   const customOpen = isDrawerSectionOpen("custom-tags");
   const diagnosticsOpen = isDrawerSectionOpen("diagnostics");
+  const historyOpen = isDrawerSectionOpen("history");
   const resetOpen = isDrawerSectionOpen("reset");
   return `
     <section class="drawer-section ${tagDelaysOpen ? "is-open" : ""}">
@@ -1258,13 +1461,53 @@ function renderSettingsMenu() {
         ${renderDiagnosticsSettings()}
       </div>
     </section>
+    <section class="drawer-section ${historyOpen ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("history", "History", historyOpen)}
+      <div class="drawer-panel">
+        ${renderWorkspaceHistory()}
+      </div>
+    </section>
     <section class="drawer-section danger-zone ${resetOpen ? "is-open" : ""}">
       ${renderDrawerSectionToggle("reset", "Reset", resetOpen)}
       <div class="drawer-panel">
-        <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Reset all notes</button>
+        <p class="drawer-help">The current shift is archived before the workspace is cleared.</p>
+        <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Archive and reset</button>
       </div>
     </section>
   `;
+}
+
+function renderWorkspaceHistory() {
+  const recoveries = Array.isArray(state.recoveryHistory) ? state.recoveryHistory.slice(0, 6) : [];
+  const archives = Array.isArray(state.shiftArchives) ? state.shiftArchives : [];
+  return `
+    <div class="history-block">
+      <div class="history-block-head"><strong>Recent note versions</strong><small>${state.recoveryHistory.length}/${RECOVERY_HISTORY_LIMIT}</small></div>
+      ${recoveries.length ? recoveries.map((entry) => `
+        <div class="history-row">
+          <div><strong>${escapeHtml(entry.wardName || "Recovered ward")}</strong><small>${escapeHtml(formatHistoryTimestamp(entry.createdAt))} · ${escapeHtml(entry.reason || "Auto recovery")}</small></div>
+          <button class="tiny-btn" type="button" data-drawer-action="restore-recovery" data-history-id="${escapeAttribute(entry.id)}" aria-label="Restore version from ${escapeAttribute(formatHistoryTimestamp(entry.createdAt))}">Restore</button>
+        </div>
+      `).join("") : `<p class="drawer-help">Earlier note versions appear here automatically while you edit.</p>`}
+    </div>
+    <div class="history-block">
+      <div class="history-block-head"><strong>Shift archive</strong><small>${archives.length}/${SHIFT_ARCHIVE_LIMIT}</small></div>
+      ${archives.length ? archives.map((entry) => `
+        <div class="history-row">
+          <div><strong>${escapeHtml(entry.label || "Archived shift")}</strong><small>${escapeHtml(formatHistoryTimestamp(entry.createdAt))}</small></div>
+          <div class="history-actions">
+            <button class="tiny-btn" type="button" data-drawer-action="restore-archive" data-history-id="${escapeAttribute(entry.id)}">Restore</button>
+            <button class="history-delete-btn" type="button" data-drawer-action="delete-archive" data-history-id="${escapeAttribute(entry.id)}" aria-label="Delete archive" title="Delete archive">×</button>
+          </div>
+        </div>
+      `).join("") : `<p class="drawer-help">Archive and reset stores the completed shift here.</p>`}
+    </div>
+  `;
+}
+
+function formatHistoryTimestamp(value) {
+  const date = new Date(Number(value) || Date.now());
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function renderWardOptionsMenu() {
@@ -1575,6 +1818,7 @@ function renderEditor() {
     return;
   }
   const documentHtml = getNoteDocumentHtml(note);
+  rememberRecoveryBaseline(note);
 
   refs.editorRoot.innerHTML = `
     <div class="editor-shell">
@@ -2095,9 +2339,9 @@ function renderTimeline() {
   refs.timelineRoot.innerHTML = `
     <div class="summary-controls-row">
       <div class="summary-switcher" role="tablist" aria-label="Summary sections">
-        <button class="summary-tab ${summaryTab === "beds" ? "is-active" : ""}" type="button" data-summary-tab="beds">Bed Info</button>
-        <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" data-summary-tab="reminders">Reminders</button>
-        <button class="summary-tab ${summaryTab === "todo" ? "is-active" : ""}" type="button" data-summary-tab="todo">To-do list</button>
+        <button class="summary-tab ${summaryTab === "beds" ? "is-active" : ""}" type="button" role="tab" aria-selected="${summaryTab === "beds"}" data-summary-tab="beds">Bed Info</button>
+        <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" role="tab" aria-selected="${summaryTab === "reminders"}" data-summary-tab="reminders">Reminders</button>
+        <button class="summary-tab ${summaryTab === "todo" ? "is-active" : ""}" type="button" role="tab" aria-selected="${summaryTab === "todo"}" data-summary-tab="todo">To-do list</button>
       </div>
       <div class="summary-scope-actions">
         <button class="summary-scope-btn" type="button" data-summary-scope-toggle="true">${escapeHtml(nextScopeLabel)}</button>
@@ -2685,10 +2929,23 @@ function mergeWorkspaceStateForSave(localInput, remoteInput) {
     timelineScope: local.timelineScope,
     summaryTab: local.summaryTab,
     preferences: local.preferences,
+    recoveryHistory: mergeHistoryCollections(local.recoveryHistory, remote.recoveryHistory, RECOVERY_HISTORY_LIMIT),
+    // Archive deletion is intentional, so the locally visible archive is authoritative.
+    shiftArchives: local.shiftArchives,
     wards
   }, { blankFallback: true });
   ensureSelectionForState(mergedState);
   return mergedState;
+}
+
+function mergeHistoryCollections(localItems, remoteItems, limit) {
+  const merged = new Map();
+  [...(remoteItems || []), ...(localItems || [])].forEach((entry) => {
+    if (entry?.id) merged.set(entry.id, entry);
+  });
+  return [...merged.values()]
+    .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0))
+    .slice(0, limit);
 }
 
 function getNoteUpdatedAt(note) {
@@ -2892,11 +3149,14 @@ function renderSummaryTimedSection(items) {
   }
 
   const openItems = items.filter((item) => !item.entry.done);
+  const overdueItems = openItems.filter(isReminderOverdue);
+  const upcomingItems = openItems.filter((item) => !isReminderOverdue(item));
   const doneItems = items.filter((item) => item.entry.done);
 
   return `
     <section class="timeline-group reminders-board">
-      ${renderReminderListGroup("Open", openItems, `${openItems.length} active`)}
+      ${overdueItems.length ? renderReminderListGroup("Overdue", overdueItems, `${overdueItems.length} overdue`, "overdue") : ""}
+      ${renderReminderListGroup("Upcoming", upcomingItems, `${upcomingItems.length} open`, "upcoming")}
       ${doneItems.length ? renderReminderListGroup("Completed", doneItems, `${doneItems.length} done`) : ""}
     </section>
   `;
@@ -2931,10 +3191,10 @@ function renderTimelineEmptyState(title, actionLabel) {
   `;
 }
 
-function renderReminderListGroup(title, items, countLabel) {
+function renderReminderListGroup(title, items, countLabel, status = "") {
   if (!items.length) {
     return `
-      <div class="reminder-section">
+      <div class="reminder-section ${status ? `is-${escapeAttribute(status)}` : ""}">
         <div class="reminder-section-head">
           <h3>${escapeHtml(title)}</h3>
           <span>${escapeHtml(countLabel)}</span>
@@ -2947,7 +3207,7 @@ function renderReminderListGroup(title, items, countLabel) {
   }
 
   return `
-    <div class="reminder-section">
+    <div class="reminder-section ${status ? `is-${escapeAttribute(status)}` : ""}">
       <div class="reminder-section-head">
         <h3>${escapeHtml(title)}</h3>
         <span>${escapeHtml(countLabel)}</span>
@@ -2957,6 +3217,24 @@ function renderReminderListGroup(title, items, countLabel) {
       </div>
     </div>
   `;
+}
+
+function isReminderOverdue(item) {
+  const dueAt = getReminderDueAt(item);
+  return Number.isFinite(dueAt) && Date.now() > dueAt;
+}
+
+function getReminderDueAt(item) {
+  const time = String(item?.entry?.reminderTime || "");
+  const minutes = parseTime(time);
+  if (!Number.isFinite(minutes) || minutes < 0 || minutes === Number.MAX_SAFE_INTEGER || !item?.note) return NaN;
+  const createdAt = Number(item.note.createdAt || Date.now());
+  const due = new Date(createdAt);
+  due.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+  if (due.getTime() < createdAt - 30 * 60 * 1000) {
+    due.setDate(due.getDate() + 1);
+  }
+  return due.getTime();
 }
 
 function getReminderTypeLabel(type) {
@@ -3025,8 +3303,14 @@ function getPreferences() {
 
 function resetCurrentWardNote() {
   const ward = getCurrentWard();
+  const currentNote = getCurrentNote();
   if (!ward) return;
   if (!window.confirm("Reset this ward note? This clears the notepad and reminders for this ward.")) return;
+
+  if (currentNote) {
+    syncEditorDocument();
+    addRecoverySnapshot({ note: currentNote, ward, documentHtml: currentNote.documentHtml, reason: "Before note reset" });
+  }
 
   const note = createNote(`${ward.name} handover`, "");
   ward.notes = [note];
@@ -3036,7 +3320,7 @@ function resetCurrentWardNote() {
   uiState.savedSelection = null;
   uiState.editorFocused = false;
   uiState.mobileTagsOpen = false;
-  saveState();
+  saveState({ skipRecovery: true });
   render();
 }
 
@@ -3965,7 +4249,7 @@ function getEditorPlainText(editor) {
   return editor.innerText || editor.textContent || "";
 }
 
-async function handleDrawerAction(action) {
+async function handleDrawerAction(action, dataset = {}) {
   if (action === "logout" || action === "change-account") {
     await signOutCurrentUser();
     uiState.drawerOpen = false;
@@ -3990,6 +4274,21 @@ async function handleDrawerAction(action) {
 
   if (action === "add-ward") {
     addWard();
+    return;
+  }
+
+  if (action === "restore-recovery") {
+    restoreRecoverySnapshot(dataset.historyId);
+    return;
+  }
+
+  if (action === "restore-archive") {
+    restoreShiftArchive(dataset.historyId);
+    return;
+  }
+
+  if (action === "delete-archive") {
+    deleteShiftArchive(dataset.historyId);
     return;
   }
 
@@ -4326,8 +4625,16 @@ async function changeCurrentPassword() {
 
 function resetAllNotes() {
   const workspaceName = getActiveWorkspaceMeta().title;
-  if (!window.confirm(`Reset all wards and notes in ${workspaceName}? This cannot be undone.`)) return;
-  setActiveWorkspaceState(createBlankState());
+  if (!window.confirm(`Archive the current ${workspaceName} shift and start with a blank workspace?`)) return;
+  syncEditorDocument();
+  const archives = createShiftArchive(`Completed ${workspaceName} shift`);
+  const recoveryHistory = state.recoveryHistory;
+  const nextState = createBlankState();
+  nextState.shiftArchives = archives;
+  nextState.recoveryHistory = recoveryHistory;
+  setActiveWorkspaceState(nextState);
+  uiState.recoveryBaselines.clear();
+  uiState.recoveryLastSavedAt.clear();
   uiState.savedSelection = null;
   uiState.mobileTagsOpen = false;
   uiState.drawerOpen = false;
@@ -4335,6 +4642,126 @@ function resetAllNotes() {
   uiState.bedAction = null;
   saveState();
   render();
+}
+
+function rememberRecoveryBaseline(note) {
+  if (!note?.id || uiState.recoveryBaselines.has(note.id)) return;
+  uiState.recoveryBaselines.set(note.id, {
+    html: String(note.documentHtml || ""),
+    updatedAt: Number(note.updatedAt || 0)
+  });
+}
+
+function captureAutomaticRecoverySnapshot() {
+  if (authState.suppressCloudSave) return;
+  const note = getCurrentNote();
+  const ward = getCurrentWard();
+  if (!note || !ward) return;
+  const currentHtml = String(note.documentHtml || "");
+  const baseline = uiState.recoveryBaselines.get(note.id);
+  if (!baseline) {
+    rememberRecoveryBaseline(note);
+    return;
+  }
+  if (baseline.html === currentHtml) return;
+
+  const now = Date.now();
+  const lastSavedAt = Number(uiState.recoveryLastSavedAt.get(note.id) || 0);
+  if (now - lastSavedAt >= RECOVERY_SNAPSHOT_INTERVAL_MS && hasMeaningfulNoteHtml(baseline.html)) {
+    addRecoverySnapshot({ note, ward, documentHtml: baseline.html, reason: "Auto recovery", createdAt: now });
+    uiState.recoveryLastSavedAt.set(note.id, now);
+  }
+  uiState.recoveryBaselines.set(note.id, { html: currentHtml, updatedAt: Number(note.updatedAt || now) });
+}
+
+function hasMeaningfulNoteHtml(html) {
+  return String(html || "").replace(/<br\s*\/?\s*>/gi, "").replace(/<[^>]+>/g, "").trim().length > 0;
+}
+
+function addRecoverySnapshot({ note, ward, documentHtml, reason, createdAt = Date.now() }) {
+  if (!note || !ward || !hasMeaningfulNoteHtml(documentHtml)) return;
+  const html = String(documentHtml).slice(0, RECOVERY_SNAPSHOT_MAX_HTML);
+  if (state.recoveryHistory.some((entry) => entry.noteId === note.id && entry.documentHtml === html)) return;
+  state.recoveryHistory.unshift({
+    id: createId("recovery"),
+    createdAt,
+    reason: reason || "Recovery version",
+    wardId: ward.id,
+    wardName: ward.name,
+    wardColor: ward.color,
+    noteId: note.id,
+    noteTitle: note.title,
+    noteCreatedAt: note.createdAt,
+    documentHtml: html
+  });
+  state.recoveryHistory = state.recoveryHistory.slice(0, RECOVERY_HISTORY_LIMIT);
+}
+
+function createShiftArchive(label) {
+  const archive = {
+    id: createId("archive"),
+    createdAt: Date.now(),
+    label,
+    activeView: state.activeView,
+    selectedWardId: state.selectedWardId,
+    selectedNoteId: state.selectedNoteId,
+    timelineScope: state.timelineScope,
+    summaryTab: state.summaryTab,
+    preferences: cloneJson(state.preferences),
+    wards: cloneJson(state.wards)
+  };
+  return [archive, ...(state.shiftArchives || [])].slice(0, SHIFT_ARCHIVE_LIMIT);
+}
+
+function restoreRecoverySnapshot(historyId) {
+  const snapshot = state.recoveryHistory.find((entry) => entry.id === historyId);
+  if (!snapshot || !window.confirm(`Restore the ${formatHistoryTimestamp(snapshot.createdAt)} version?`)) return;
+  let ward = state.wards.find((entry) => entry.id === snapshot.wardId);
+  if (!ward) {
+    ward = createWard(snapshot.wardName || "Recovered ward", snapshot.wardColor || WARD_COLORS[state.wards.length % WARD_COLORS.length]);
+    ward.id = snapshot.wardId || ward.id;
+    state.wards.push(ward);
+  }
+  let note = ward.notes.find((entry) => entry.id === snapshot.noteId);
+  if (!note) {
+    note = createNote(snapshot.noteTitle || `${ward.name} recovered`, "");
+    note.id = snapshot.noteId || note.id;
+    note.createdAt = snapshot.noteCreatedAt || note.createdAt;
+    ward.notes.push(note);
+  } else {
+    addRecoverySnapshot({ note, ward, documentHtml: note.documentHtml, reason: "Before restore" });
+  }
+  note.documentHtml = sanitizeEditorHtml(snapshot.documentHtml);
+  note.updatedAt = Date.now();
+  state.selectedWardId = ward.id;
+  state.selectedNoteId = note.id;
+  state.activeView = "notes";
+  uiState.recoveryBaselines.set(note.id, { html: note.documentHtml, updatedAt: note.updatedAt });
+  saveState({ skipRecovery: true });
+  closeDrawersWithAnimation();
+  render();
+}
+
+function restoreShiftArchive(historyId) {
+  const archive = state.shiftArchives.find((entry) => entry.id === historyId);
+  if (!archive || !window.confirm(`Restore “${archive.label}”? The current shift will also be archived.`)) return;
+  const preservedArchives = createShiftArchive(`Before restoring ${archive.label}`);
+  const preservedRecovery = state.recoveryHistory;
+  const restored = normalizeWorkspaceState({ ...cloneJson(archive), recoveryHistory: preservedRecovery, shiftArchives: preservedArchives }, { blankFallback: true });
+  setActiveWorkspaceState(restored);
+  uiState.recoveryBaselines.clear();
+  uiState.recoveryLastSavedAt.clear();
+  saveState({ skipRecovery: true });
+  closeDrawersWithAnimation();
+  render();
+}
+
+function deleteShiftArchive(historyId) {
+  const archive = state.shiftArchives.find((entry) => entry.id === historyId);
+  if (!archive || !window.confirm(`Delete “${archive.label}” from the archive?`)) return;
+  state.shiftArchives = state.shiftArchives.filter((entry) => entry.id !== historyId);
+  saveState({ skipRecovery: true });
+  renderDrawer();
 }
 
 function addWard() {
@@ -4454,6 +4881,10 @@ function deleteWardFromDrawer(wardId) {
   const ward = state.wards[wardIndex];
   if (!window.confirm(`Delete ${ward.name}? Notes in this ward will be removed from this account.`)) return;
 
+  ward.notes.forEach((note) => {
+    addRecoverySnapshot({ note, ward, documentHtml: note.documentHtml, reason: "Before ward deletion" });
+  });
+
   const deletedSelectedWard = state.selectedWardId === ward.id;
   state.wards.splice(wardIndex, 1);
 
@@ -4467,7 +4898,7 @@ function deleteWardFromDrawer(wardId) {
   }
 
   ensureSelection();
-  saveState();
+  saveState({ skipRecovery: true });
   render();
 }
 
@@ -4739,7 +5170,7 @@ function buildSummaryGroups(scope) {
 
   wards.forEach((ward) => {
     ward.notes.forEach((note) => {
-      const parsed = extractTaggedLines(note);
+      const parsed = getCachedTaggedLines(note);
       parsed.lines.forEach((line) => {
         const reminderItemsForLine = getReminderItemsForLine(line);
         const reminderDone = reminderItemsForLine.length
@@ -4872,7 +5303,7 @@ function formatBedSummaryLine(line) {
 function countBedsForWard(ward) {
   const beds = new Set();
   ward.notes.forEach((note) => {
-    const parsed = extractTaggedLines(note);
+    const parsed = getCachedTaggedLines(note);
     parsed.lines.forEach((line) => {
       if (line.bedLabel) {
         beds.add(line.bedLabel.toUpperCase());
@@ -4885,12 +5316,29 @@ function countBedsForWard(ward) {
 function countOpenRemindersForWard(ward) {
   let count = 0;
   ward.notes.forEach((note) => {
-    const parsed = extractTaggedLines(note);
+    const parsed = getCachedTaggedLines(note);
     parsed.lines.forEach((line) => {
       count += getReminderItemsForLine(line).filter((reminder) => !reminder.done).length;
     });
   });
   return count;
+}
+
+function getCachedTaggedLines(note) {
+  if (!note?.id) return extractTaggedLines(note);
+  const html = getNoteDocumentHtml(note);
+  const signature = `${Number(note.updatedAt || 0)}:${html.length}`;
+  const cached = noteParseCache.get(note.id);
+  if (cached?.signature === signature && cached.html === html) {
+    return cached.value;
+  }
+  const value = extractTaggedLines(note);
+  noteParseCache.delete(note.id);
+  noteParseCache.set(note.id, { signature, html, value });
+  while (noteParseCache.size > NOTE_PARSE_CACHE_LIMIT) {
+    noteParseCache.delete(noteParseCache.keys().next().value);
+  }
+  return value;
 }
 
 function getBedIndexForNote(note) {
@@ -4981,6 +5429,8 @@ function createSeedState() {
     timelineScope: "all",
     summaryTab: "beds",
     preferences: defaultPreferences(),
+    recoveryHistory: [],
+    shiftArchives: [],
     wards: [wardA, wardB]
   };
 }
@@ -4996,6 +5446,8 @@ function createBlankState() {
     timelineScope: "active",
     summaryTab: "reminders",
     preferences: defaultPreferences(),
+    recoveryHistory: [],
+    shiftArchives: [],
     wards: [ward]
   };
 }
@@ -5127,8 +5579,54 @@ function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
     timelineScope: input.timelineScope === "active" ? "active" : "all",
     summaryTab: ["beds", "reminders", "todo"].includes(input.summaryTab) ? input.summaryTab : "beds",
     preferences: normalizePreferences(input.preferences),
+    recoveryHistory: normalizeRecoveryHistory(input.recoveryHistory),
+    shiftArchives: normalizeShiftArchives(input.shiftArchives),
     wards
   };
+}
+
+function normalizeRecoveryHistory(input) {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((entry) => entry && typeof entry.documentHtml === "string")
+    .map((entry) => ({
+      id: typeof entry.id === "string" ? entry.id : createId("recovery"),
+      createdAt: Number(entry.createdAt) || Date.now(),
+      reason: typeof entry.reason === "string" ? entry.reason.slice(0, 60) : "Auto recovery",
+      wardId: typeof entry.wardId === "string" ? entry.wardId : "",
+      wardName: typeof entry.wardName === "string" ? entry.wardName.slice(0, 80) : "",
+      wardColor: typeof entry.wardColor === "string" ? entry.wardColor : "",
+      noteId: typeof entry.noteId === "string" ? entry.noteId : "",
+      noteTitle: typeof entry.noteTitle === "string" ? entry.noteTitle.slice(0, 120) : "",
+      noteCreatedAt: Number(entry.noteCreatedAt) || Date.now(),
+      documentHtml: entry.documentHtml.slice(0, RECOVERY_SNAPSHOT_MAX_HTML)
+    }))
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, RECOVERY_HISTORY_LIMIT);
+}
+
+function normalizeShiftArchives(input) {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((entry) => entry && Array.isArray(entry.wards) && entry.wards.length)
+    .map((entry) => ({
+      id: typeof entry.id === "string" ? entry.id : createId("archive"),
+      createdAt: Number(entry.createdAt) || Date.now(),
+      label: typeof entry.label === "string" ? entry.label.slice(0, 100) : "Archived shift",
+      activeView: entry.activeView === "timeline" ? "timeline" : "notes",
+      selectedWardId: typeof entry.selectedWardId === "string" ? entry.selectedWardId : "",
+      selectedNoteId: typeof entry.selectedNoteId === "string" ? entry.selectedNoteId : "",
+      timelineScope: entry.timelineScope === "active" ? "active" : "all",
+      summaryTab: ["beds", "reminders", "todo"].includes(entry.summaryTab) ? entry.summaryTab : "beds",
+      preferences: normalizePreferences(entry.preferences),
+      wards: entry.wards
+    }))
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, SHIFT_ARCHIVE_LIMIT);
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 function getActiveWorkspaceKey(targetAppState = appState) {
@@ -5221,7 +5719,10 @@ function updateWorkspaceUrl(workspaceKey) {
   }
 }
 
-function saveState({ skipCloud = false, markDirty = true } = {}) {
+function saveState({ skipCloud = false, markDirty = true, skipRecovery = false } = {}) {
+  if (!skipRecovery) {
+    captureAutomaticRecoverySnapshot();
+  }
   if (markDirty && !authState.suppressCloudSave) {
     authState.lastLocalMutationAt = Date.now();
   }
