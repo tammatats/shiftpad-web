@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-11-ipad-split-dock-v1";
+const APP_BUILD = "2026-07-11-ipad-split-caret-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -154,6 +154,7 @@ const uiState = {
   lastCaretAutoScrollAt: 0,
   lastCaretAutoScrollTop: 0,
   pendingEditorInputDebug: null,
+  pendingEditorTapDebug: null,
   debugLogStatus: "",
   selectionMemoryFrozenUntil: 0,
   restoreSelectionAfterScreenSwitch: false,
@@ -559,6 +560,7 @@ function bindEvents() {
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     clearScreenSwitchSelectionRestore();
+    beginEditorTapDebug(editor, event);
     rememberEditorTapScroll(event);
   });
 
@@ -592,6 +594,7 @@ function bindEvents() {
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     clearScreenSwitchSelectionRestore();
+    beginEditorTapDebug(editor, event);
     rememberEditorTapScroll(event);
   }, { passive: true });
 
@@ -685,6 +688,7 @@ function bindEvents() {
       uiState.editorFocused = true;
       syncMobileTagDock();
       rememberEditorSelection(editor);
+      finishEditorTapDebug(editor);
       stabilizeEditorTapScroll(editor);
       return;
     }
@@ -3617,6 +3621,11 @@ function freezeEditorSelectionForScreenSwitch(reason = "screen-switch") {
     rememberEditorSelection(editor, { force: true });
   }
 
+  if (isIpadSplitViewLayout()) {
+    clearScreenSwitchSelectionRestore();
+    return;
+  }
+
   uiState.selectionMemoryFrozenUntil = Date.now() + SCREEN_SWITCH_SELECTION_FREEZE_MS;
   uiState.restoreSelectionAfterScreenSwitch = Boolean(editorWasActive && uiState.savedSelection);
   uiState.restoreEditorFocusAfterScreenSwitch = Boolean(
@@ -3625,6 +3634,10 @@ function freezeEditorSelectionForScreenSwitch(reason = "screen-switch") {
 }
 
 function scheduleScreenSwitchSelectionRestore(reason = "screen-return") {
+  if (isIpadSplitViewLayout()) {
+    clearScreenSwitchSelectionRestore();
+    return;
+  }
   if (!uiState.restoreSelectionAfterScreenSwitch) return;
   uiState.selectionMemoryFrozenUntil = Date.now() + SCREEN_SWITCH_SELECTION_FREEZE_MS;
   window.requestAnimationFrame(() => {
@@ -3671,6 +3684,48 @@ function clearScreenSwitchSelectionRestore() {
   uiState.restoreSelectionAfterScreenSwitch = false;
   uiState.restoreEditorFocusAfterScreenSwitch = false;
   uiState.selectionMemoryFrozenUntil = 0;
+}
+
+function beginEditorTapDebug(editor, event) {
+  if (!isEditorDebugLoggingEnabled() || !editor) return;
+  const point = getEditorPointerPoint(event);
+  const targetLine = findEditorLine(event.target);
+  uiState.pendingEditorTapDebug = {
+    startedAt: Date.now(),
+    point,
+    targetLineIndex: targetLine ? getEditorDebugLines(editor).indexOf(targetLine) : -1,
+    targetLineText: targetLine ? getEditorDebugReadableText(targetLine) : "",
+    before: captureEditorCaretDebugSnapshot(editor)
+  };
+}
+
+function finishEditorTapDebug(editor) {
+  const pending = uiState.pendingEditorTapDebug;
+  uiState.pendingEditorTapDebug = null;
+  if (!pending || !editor) return;
+  appendEditorDebugLog({
+    action: "editor-tap-selection",
+    source: "editor-click",
+    success: true,
+    handledBy: "native-editor-selection",
+    targetLineIndex: pending.targetLineIndex,
+    targetLineText: pending.targetLineText,
+    tapPoint: pending.point,
+    elapsedMs: Date.now() - pending.startedAt,
+    before: pending.before,
+    after: captureEditorCaretDebugSnapshot(editor)
+  });
+}
+
+function captureEditorCaretDebugSnapshot(editor) {
+  const snapshot = captureEditorDebugSnapshot(editor);
+  if (!snapshot) return null;
+  return {
+    currentLineIndex: snapshot.currentLineIndex,
+    currentLine: snapshot.currentLine,
+    selection: snapshot.selection,
+    layout: snapshot.layout
+  };
 }
 
 function rememberEditorTapScroll(event) {
@@ -5721,6 +5776,7 @@ function resetEditorUiForWorkspaceSwitch() {
   uiState.pendingTagInsertions.clear();
   uiState.lastInsertedTagTokenId = "";
   uiState.pendingEditorInputDebug = null;
+  uiState.pendingEditorTapDebug = null;
   uiState.restoreSelectionAfterScreenSwitch = false;
   uiState.restoreEditorFocusAfterScreenSwitch = false;
 }

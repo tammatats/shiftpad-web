@@ -3100,7 +3100,7 @@ select:focus {
 
   .mobile-tag-dock.is-visible {
     opacity: 1;
-    pointer-events: auto;
+    pointer-events: none;
     visibility: visible;
   }
 
@@ -3162,6 +3162,7 @@ select:focus {
     padding: 0 18px;
     background: rgba(36, 28, 22, 0.92);
     color: #fffaf4;
+    pointer-events: auto;
   }
 
   .mobile-tag-fab.is-cancel {
