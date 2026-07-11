@@ -24,7 +24,7 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-bed-sort-spacing-v1";
+const APP_BUILD = "2026-07-11-bed-sort-spacing-v2";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
@@ -1628,16 +1628,19 @@ function sortCurrentWardBedSections() {
   const fragment = document.createDocumentFragment();
   prefixLines.forEach((line) => fragment.appendChild(line));
   sortedSections.forEach((section, sectionIndex) => {
-    section.lines.forEach((line) => fragment.appendChild(line));
+    const compactedLines = [...section.lines];
+    while (compactedLines.length > 1 && isEditorLineEmpty(compactedLines[compactedLines.length - 1])) {
+      compactedLines.pop();
+    }
+    compactedLines.forEach((line) => fragment.appendChild(line));
     const isLastSection = sectionIndex === sortedSections.length - 1;
-    const lastSectionLine = section.lines[section.lines.length - 1];
-    if (!isLastSection && !isEditorLineEmpty(lastSectionLine)) {
+    if (!isLastSection) {
       const spacer = editor.ownerDocument.createElement("div");
       spacer.innerHTML = "<br>";
       fragment.appendChild(spacer);
     }
   });
-  editor.appendChild(fragment);
+  editor.replaceChildren(fragment);
 
   const nextHtml = sanitizeEditorHtml(editor.innerHTML);
   if (nextHtml === previousHtml) return;
