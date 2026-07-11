@@ -24,7 +24,7 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-workspaces-v1";
+const APP_BUILD = "2026-07-11-workspaces-v2";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -2186,6 +2186,7 @@ async function applySession(session) {
     uiState.bedAction = null;
     appState = loadAppState();
     state = getActiveWorkspaceState(appState);
+    applyUrlOverrides();
     render();
     return;
   }
