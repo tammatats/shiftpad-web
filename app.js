@@ -24,7 +24,8 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-workspaces-v2";
+const MAX_BED_INDEX_LABELS = 9;
+const APP_BUILD = "2026-07-11-bed-index-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -112,6 +113,9 @@ const uiState = {
   savedSelection: null,
   bedIndexVisible: false,
   bedIndexTimer: null,
+  bedIndexScrollRaf: 0,
+  bedIndexScrub: null,
+  suppressNextBedIndexClick: false,
   bedFinalizeTimer: null,
   editorTapScroll: null,
   suppressNextDeleteInput: false,
@@ -493,6 +497,11 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("pointerdown", (event) => {
+    const bedIndexRail = event.target.closest?.(".bed-index-rail");
+    if (bedIndexRail) {
+      startBedIndexScrub(bedIndexRail, event);
+      return;
+    }
     const bedToken = event.target.closest?.('.tag-token[data-tag="bed"]');
     if (bedToken) {
       startBedLongPress(bedToken, event);
@@ -501,15 +510,25 @@ function bindEvents() {
     if (!editor) return;
     clearScreenSwitchSelectionRestore();
     rememberEditorTapScroll(event);
-  }, { passive: true });
+  });
 
   refs.editorRoot.addEventListener("pointermove", (event) => {
+    if (uiState.bedIndexScrub) {
+      updateBedIndexScrub(event);
+      return;
+    }
     updateBedLongPress(event);
     markEditorPointerMoved(event);
   }, { passive: true });
 
-  refs.editorRoot.addEventListener("pointerup", cancelBedLongPress, { passive: true });
-  refs.editorRoot.addEventListener("pointercancel", cancelBedLongPress, { passive: true });
+  refs.editorRoot.addEventListener("pointerup", (event) => {
+    if (finishBedIndexScrub(event)) return;
+    cancelBedLongPress(event);
+  }, { passive: true });
+  refs.editorRoot.addEventListener("pointercancel", (event) => {
+    if (finishBedIndexScrub(event)) return;
+    cancelBedLongPress(event);
+  }, { passive: true });
 
   refs.editorRoot.addEventListener("contextmenu", (event) => {
     const bedToken = event.target.closest?.('.tag-token[data-tag="bed"]');
@@ -591,6 +610,10 @@ function bindEvents() {
 
     const bedJump = event.target.closest?.("[data-bed-jump]");
     if (bedJump) {
+      if (uiState.suppressNextBedIndexClick) {
+        uiState.suppressNextBedIndexClick = false;
+        return;
+      }
       jumpToBedInEditor(bedJump.dataset.bedJump);
       return;
     }
@@ -1658,17 +1681,47 @@ function renderNotepadWardTitle(ward, showSwitcher = shouldShowWardSwitcher()) {
 
 function renderBedIndexRail(beds) {
   if (!beds.length) return "";
+  const indexItems = getCompressedBedIndexItems(beds);
+  const condensed = indexItems.length < beds.length;
+  const scrubHeight = Math.min(480, Math.max(indexItems.length * 24, beds.length * 10));
   return `
-    <div class="bed-index-rail ${uiState.bedIndexVisible ? "is-visible" : ""}" aria-label="Bed index">
-      ${beds
+    <div
+      class="bed-index-rail ${condensed ? "is-condensed" : ""} ${uiState.bedIndexVisible ? "is-visible" : ""}"
+      aria-label="Bed index"
+      data-bed-index-labels="${escapeAttribute(JSON.stringify(beds))}"
+      style="--bed-index-slots:${indexItems.length};--bed-index-height:${scrubHeight}px"
+    >
+      <div class="bed-index-bubble" aria-live="polite"></div>
+      <div class="bed-index-track">
+        ${indexItems
         .map(
-          (bed) => `
-            <button type="button" data-bed-jump="${escapeHtml(bed)}">${escapeHtml(bed)}</button>
+          ({ bed, index }) => `
+            <button
+              type="button"
+              data-bed-jump="${escapeHtml(bed)}"
+              data-bed-index="${index}"
+              aria-label="Go to Bed ${escapeAttribute(bed)}"
+            >${escapeHtml(bed)}</button>
           `
         )
         .join("")}
+      </div>
     </div>
   `;
+}
+
+function getCompressedBedIndexItems(beds, maxLabels = MAX_BED_INDEX_LABELS) {
+  const labels = Array.isArray(beds) ? beds.filter(Boolean) : [];
+  const limit = Math.max(2, Number(maxLabels) || MAX_BED_INDEX_LABELS);
+  if (labels.length <= limit) {
+    return labels.map((bed, index) => ({ bed, index }));
+  }
+
+  const indices = new Set();
+  for (let slot = 0; slot < limit; slot += 1) {
+    indices.add(Math.round((slot * (labels.length - 1)) / (limit - 1)));
+  }
+  return [...indices].sort((left, right) => left - right).map((index) => ({ bed: labels[index], index }));
 }
 
 function startBedLongPress(token, event) {
@@ -5141,6 +5194,10 @@ function resetEditorUiForWorkspaceSwitch() {
   uiState.mobileTagsOpen = false;
   uiState.bedIndexVisible = false;
   uiState.bedIndexTimer = null;
+  window.cancelAnimationFrame(uiState.bedIndexScrollRaf);
+  uiState.bedIndexScrollRaf = 0;
+  uiState.bedIndexScrub = null;
+  uiState.suppressNextBedIndexClick = false;
   uiState.bedFinalizeTimer = null;
   uiState.editingWardId = "";
   uiState.bedAction = null;
@@ -6170,6 +6227,14 @@ function formatTimeFromTimestamp(timestamp) {
 }
 
 function showBedIndexDuringScroll() {
+  if (uiState.bedIndexScrollRaf) return;
+  uiState.bedIndexScrollRaf = window.requestAnimationFrame(() => {
+    uiState.bedIndexScrollRaf = 0;
+    updateBedIndexDuringScroll();
+  });
+}
+
+function updateBedIndexDuringScroll() {
   if (state.activeView !== "notes" || uiState.editorFocused) return;
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   const rail = refs.editorRoot.querySelector(".bed-index-rail");
@@ -6179,11 +6244,14 @@ function showBedIndexDuringScroll() {
   if (rect.bottom < 120 || rect.top > viewportHeight - 80) return;
 
   setBedIndexVisible(true);
+  updateBedIndexFromViewport(rail, editor);
+  if (uiState.bedIndexScrub) return;
   window.clearTimeout(uiState.bedIndexTimer);
   uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 1100);
 }
 
 function setBedIndexVisible(visible) {
+  if (!visible && uiState.bedIndexScrub) return;
   uiState.bedIndexVisible = Boolean(visible);
   refs.editorRoot.querySelector(".bed-index-rail")?.classList.toggle("is-visible", Boolean(visible));
 }
@@ -6193,7 +6261,121 @@ function hideBedIndex() {
   setBedIndexVisible(false);
 }
 
-function jumpToBedInEditor(bedLabel) {
+function startBedIndexScrub(rail, event) {
+  if (!rail || (event.button !== undefined && event.button !== 0)) return;
+  const labels = getBedIndexLabels(rail);
+  if (!labels.length) return;
+
+  event.preventDefault();
+  cancelBedLongPress();
+  window.clearTimeout(uiState.bedIndexTimer);
+  uiState.bedIndexScrub = {
+    rail,
+    labels,
+    pointerId: event.pointerId,
+    lastIndex: -1
+  };
+  rail.classList.add("is-visible", "is-scrubbing");
+  uiState.bedIndexVisible = true;
+  try {
+    rail.setPointerCapture?.(event.pointerId);
+  } catch {
+    // Pointer capture is optional on older iOS versions.
+  }
+  updateBedIndexScrub(event);
+}
+
+function updateBedIndexScrub(event) {
+  const scrub = uiState.bedIndexScrub;
+  if (!scrub || (event.pointerId !== undefined && scrub.pointerId !== undefined && event.pointerId !== scrub.pointerId)) return;
+  const track = scrub.rail.querySelector(".bed-index-track");
+  const trackRect = track?.getBoundingClientRect();
+  if (!trackRect?.height) return;
+
+  const ratio = Math.max(0, Math.min(1, (Number(event.clientY) - trackRect.top) / trackRect.height));
+  const index = Math.min(scrub.labels.length - 1, Math.round(ratio * (scrub.labels.length - 1)));
+  const railRect = scrub.rail.getBoundingClientRect();
+  const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), Number(event.clientY) - railRect.top));
+  setBedIndexActiveState(scrub.rail, index, { bubbleY, labels: scrub.labels });
+
+  if (index === scrub.lastIndex) return;
+  scrub.lastIndex = index;
+  jumpToBedInEditor(scrub.labels[index], { behavior: "auto", keepVisible: true, updateIndex: false });
+}
+
+function finishBedIndexScrub(event) {
+  const scrub = uiState.bedIndexScrub;
+  if (!scrub || (event.pointerId !== undefined && scrub.pointerId !== undefined && event.pointerId !== scrub.pointerId)) return false;
+  uiState.bedIndexScrub = null;
+  scrub.rail.classList.remove("is-scrubbing");
+  safelyReleasePointerCapture(scrub.rail, scrub.pointerId);
+  uiState.suppressNextBedIndexClick = true;
+  window.setTimeout(() => {
+    uiState.suppressNextBedIndexClick = false;
+  }, 180);
+  window.clearTimeout(uiState.bedIndexTimer);
+  uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 800);
+  return true;
+}
+
+function getBedIndexLabels(rail) {
+  try {
+    const labels = JSON.parse(rail?.dataset?.bedIndexLabels || "[]");
+    return Array.isArray(labels) ? labels.map((label) => String(label || "")).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function setBedIndexActiveState(rail, index, { bubbleY = null, labels = null } = {}) {
+  if (!rail || !Number.isInteger(index) || index < 0) return;
+  const bedLabels = labels || getBedIndexLabels(rail);
+  const label = bedLabels[index];
+  if (!label) return;
+  rail.dataset.activeIndex = String(index);
+  const closestSampledIndex = getClosestSampledBedIndex(rail, index);
+  rail.querySelectorAll("[data-bed-index]").forEach((button) => {
+    button.classList.toggle("is-active", Number(button.dataset.bedIndex) === closestSampledIndex);
+  });
+  const bubble = rail.querySelector(".bed-index-bubble");
+  if (bubble) bubble.textContent = `Bed ${label}`;
+  if (Number.isFinite(bubbleY)) {
+    rail.style.setProperty("--bed-index-bubble-y", `${Math.round(bubbleY)}px`);
+  }
+}
+
+function getClosestSampledBedIndex(rail, targetIndex) {
+  const indices = Array.from(rail?.querySelectorAll?.("[data-bed-index]") || [])
+    .map((button) => Number(button.dataset.bedIndex))
+    .filter(Number.isFinite);
+  return indices.reduce(
+    (closest, index) => Math.abs(index - targetIndex) < Math.abs(closest - targetIndex) ? index : closest,
+    indices[0] ?? targetIndex
+  );
+}
+
+function updateBedIndexFromViewport(rail, editor) {
+  const labels = getBedIndexLabels(rail);
+  if (!labels.length || !editor) return;
+  const labelIndices = new Map(labels.map((bed, index) => [bed.toUpperCase(), index]));
+  const viewport = window.visualViewport;
+  const viewportCenter = (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight) * 0.45;
+  let closestIndex = -1;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  editor.querySelectorAll('.tag-token[data-tag="bed"]').forEach((token) => {
+    const label = String(token.textContent || "").replace(/^Bed\s*/i, "").trim().toUpperCase();
+    const index = labelIndices.get(label) ?? -1;
+    if (index < 0) return;
+    const distance = Math.abs(token.getBoundingClientRect().top - viewportCenter);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = index;
+    }
+  });
+  if (closestIndex >= 0) setBedIndexActiveState(rail, closestIndex);
+}
+
+function jumpToBedInEditor(bedLabel, { behavior = "smooth", keepVisible = false, updateIndex = true } = {}) {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!editor || !bedLabel) return;
   const target = Array.from(editor.querySelectorAll('.tag-token[data-tag="bed"]')).find((token) => {
@@ -6202,8 +6384,15 @@ function jumpToBedInEditor(bedLabel) {
   });
   const line = target?.closest("div, p") || target;
   if (!line) return;
-  line.scrollIntoView({ behavior: "smooth", block: "center" });
+  line.scrollIntoView({ behavior, block: "center" });
   setBedIndexVisible(true);
+  if (updateIndex) {
+    const rail = refs.editorRoot.querySelector(".bed-index-rail");
+    const labels = getBedIndexLabels(rail);
+    const index = labels.findIndex((bed) => bed.toUpperCase() === String(bedLabel).toUpperCase());
+    if (index >= 0) setBedIndexActiveState(rail, index);
+  }
+  if (keepVisible) return;
   window.clearTimeout(uiState.bedIndexTimer);
   uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 900);
 }
