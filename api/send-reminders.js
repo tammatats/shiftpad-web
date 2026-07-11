@@ -18,13 +18,41 @@ function configureWebPush() {
   );
 }
 
-function assertCronAllowed(req) {
+const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+const GITHUB_OIDC_AUDIENCE = "shiftpad-reminders";
+const GITHUB_REPOSITORY = "tammatats/shiftpad-web";
+const GITHUB_WORKFLOW_REF = `${GITHUB_REPOSITORY}/.github/workflows/send-reminders.yml@refs/heads/main`;
+let githubJwks = null;
+
+async function assertCronAllowed(req) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return;
   const auth = req.headers.authorization || "";
-  if (auth !== `Bearer ${secret}`) {
+  const token = auth.replace(/^Bearer\s+/i, "");
+  if (secret && token === secret) return;
+
+  try {
+    const { createRemoteJWKSet, jwtVerify } = await import("jose");
+    githubJwks ||= createRemoteJWKSet(new URL(`${GITHUB_OIDC_ISSUER}/.well-known/jwks`));
+    const { payload } = await jwtVerify(token, githubJwks, {
+      issuer: GITHUB_OIDC_ISSUER,
+      audience: GITHUB_OIDC_AUDIENCE,
+      algorithms: ["RS256"]
+    });
+
+    const allowedEvent = payload.event_name === "schedule" || payload.event_name === "workflow_dispatch";
+    if (
+      payload.repository !== GITHUB_REPOSITORY ||
+      payload.workflow_ref !== GITHUB_WORKFLOW_REF ||
+      payload.ref !== "refs/heads/main" ||
+      !allowedEvent
+    ) {
+      throw new Error("GitHub Actions token claims are not allowed.");
+    }
+    return;
+  } catch (cause) {
     const error = new Error("Unauthorized.");
     error.statusCode = 401;
+    error.cause = cause;
     throw error;
   }
 }
@@ -36,7 +64,7 @@ module.exports = async function handler(req, res) {
       return sendJson(res, 405, { error: "Method not allowed." });
     }
 
-    assertCronAllowed(req);
+    await assertCronAllowed(req);
     configureWebPush();
 
     const now = new Date();

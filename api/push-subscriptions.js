@@ -34,27 +34,28 @@ function configureWebPush() {
   return true;
 }
 
-async function sendWelcomePush(subscription) {
-  if (!configureWebPush()) return;
-  await webpush
-    .sendNotification(
-      {
-        endpoint: subscription.endpoint,
-        keys: {
-          p256dh: subscription.p256dh,
-          auth: subscription.auth
-        }
-      },
-      JSON.stringify({
-        title: "ShiftPad notifications enabled",
-        body: "Reminder alerts can now appear on this device.",
-        tag: "shiftpad-notifications-enabled",
-        url: "/?view=timeline"
-      })
-    )
-    .catch((error) => {
-      console.warn("Welcome push failed:", error?.message || error);
-    });
+async function sendTestPush(subscription) {
+  if (!configureWebPush()) {
+    const error = new Error("Notification keys are not configured.");
+    error.statusCode = 503;
+    throw error;
+  }
+
+  await webpush.sendNotification(
+    {
+      endpoint: subscription.endpoint,
+      keys: {
+        p256dh: subscription.p256dh,
+        auth: subscription.auth
+      }
+    },
+    JSON.stringify({
+      title: "ShiftPad test notification",
+      body: "Notifications are working on this device.",
+      tag: `shiftpad-notification-test-${Date.now()}`,
+      url: "/?view=timeline"
+    })
+  );
 }
 
 module.exports = async function handler(req, res) {
@@ -95,8 +96,10 @@ module.exports = async function handler(req, res) {
       }
     });
 
-    await sendWelcomePush(subscription);
-    return sendJson(res, 200, { ok: true });
+    if (body.sendTest === true) {
+      await sendTestPush(subscription);
+    }
+    return sendJson(res, 200, { ok: true, testSent: body.sendTest === true });
   } catch (error) {
     return handleApiError(res, error);
   }

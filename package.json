@@ -3,6 +3,7 @@
     "vapid": "web-push generate-vapid-keys"
   },
   "dependencies": {
+    "jose": "6.2.3",
     "web-push": "^3.6.7"
   }
 }

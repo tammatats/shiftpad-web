@@ -76,11 +76,7 @@ https://shiftpad-web.vercel.app/api/send-reminders
 
 If your Vercel URL is different, add a GitHub repository variable named `SHIFTPAD_REMINDER_URL`.
 
-If `CRON_SECRET` is set in Vercel, add the same value as a GitHub Actions secret named `CRON_SECRET`; the workflow sends this header:
-
-```text
-Authorization: Bearer your_CRON_SECRET
-```
+Scheduled GitHub Actions calls authenticate with a short-lived GitHub OIDC token. The API verifies that the token came from this repository's `main` branch and the reminder workflow, so no shared GitHub secret needs to be maintained. `CRON_SECRET` remains an optional Vercel setting for authorized manual calls.
 
 Important: Vercel Hobby cron jobs can only run once per day, so this project uses GitHub Actions for the 10-minute reminder checks. If you later upgrade Vercel to Pro, you can use Vercel Cron instead.
 

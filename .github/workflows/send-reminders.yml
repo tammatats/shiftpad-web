@@ -9,19 +9,25 @@ jobs:
   send-reminders:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
     env:
       DEFAULT_REMINDER_URL: https://shiftpad-web.vercel.app/api/send-reminders
       REMINDER_URL_VAR: ${{ vars.SHIFTPAD_REMINDER_URL }}
       REMINDER_URL_SECRET: ${{ secrets.SHIFTPAD_REMINDER_URL }}
-      CRON_SECRET: ${{ secrets.CRON_SECRET }}
     steps:
       - name: Call reminder endpoint
         shell: bash
         run: |
           set -euo pipefail
           reminder_url="${REMINDER_URL_VAR:-${REMINDER_URL_SECRET:-$DEFAULT_REMINDER_URL}}"
-          args=(--fail-with-body --show-error --silent --request POST "$reminder_url")
-          if [ -n "${CRON_SECRET:-}" ]; then
-            args+=(--header "Authorization: Bearer ${CRON_SECRET}")
-          fi
-          curl "${args[@]}"
+          token_response="$(curl --fail-with-body --show-error --silent \
+            --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=shiftpad-reminders")"
+          id_token="$(jq -r '.value // empty' <<<"$token_response")"
+          test -n "$id_token"
+          curl --fail-with-body --show-error --silent \
+            --request POST \
+            --header "Authorization: Bearer ${id_token}" \
+            "$reminder_url"
