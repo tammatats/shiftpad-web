@@ -24,7 +24,7 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-bed-sort-spacing-v2";
+const APP_BUILD = "2026-07-11-bed-actions-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
@@ -57,6 +57,7 @@ const refs = {
   timelineView: document.getElementById("timeline-view"),
   editorRoot: document.getElementById("editor-root"),
   drawerRoot: document.getElementById("drawer-root"),
+  bedActionRoot: document.getElementById("bed-action-root"),
   mobileTagRoot: document.getElementById("mobile-tag-root"),
   timelineRoot: document.getElementById("timeline-root"),
   workspace: document.querySelector(".workspace")
@@ -112,6 +113,9 @@ const uiState = {
   notificationEnabled: null,
   notificationBusy: false,
   notificationLastSyncAt: 0,
+  bedAction: null,
+  bedLongPress: null,
+  suppressNextBedClick: false,
   pointerTracking: null,
   wardDrag: null,
   suppressWardHandleClick: false,
@@ -466,6 +470,10 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("pointerdown", (event) => {
+    const bedToken = event.target.closest?.('.tag-token[data-tag="bed"]');
+    if (bedToken) {
+      startBedLongPress(bedToken, event);
+    }
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     clearScreenSwitchSelectionRestore();
@@ -473,8 +481,20 @@ function bindEvents() {
   }, { passive: true });
 
   refs.editorRoot.addEventListener("pointermove", (event) => {
+    updateBedLongPress(event);
     markEditorPointerMoved(event);
   }, { passive: true });
+
+  refs.editorRoot.addEventListener("pointerup", cancelBedLongPress, { passive: true });
+  refs.editorRoot.addEventListener("pointercancel", cancelBedLongPress, { passive: true });
+
+  refs.editorRoot.addEventListener("contextmenu", (event) => {
+    const bedToken = event.target.closest?.('.tag-token[data-tag="bed"]');
+    if (!bedToken || bedToken.dataset.editing === "true") return;
+    event.preventDefault();
+    cancelBedLongPress();
+    openBedActionSheet(bedToken);
+  });
 
   refs.editorRoot.addEventListener("touchstart", (event) => {
     const editor = getEditorFromEventTarget(event.target);
@@ -521,6 +541,13 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
+    const clickedBedToken = event.target.closest?.('.tag-token[data-tag="bed"]');
+    if (clickedBedToken && uiState.suppressNextBedClick) {
+      uiState.suppressNextBedClick = false;
+      event.preventDefault();
+      return;
+    }
+
     const wardSwitch = event.target.closest?.("[data-ward-switch]");
     if (wardSwitch) {
       switchWardFromEditor(wardSwitch.dataset.wardSwitch);
@@ -785,6 +812,40 @@ function bindEvents() {
     }
   });
 
+  refs.bedActionRoot?.addEventListener("click", (event) => {
+    const close = event.target.closest?.("[data-bed-action-close]");
+    if (close || event.target.matches?.("[data-bed-action-backdrop]")) {
+      closeBedActionSheet();
+      return;
+    }
+
+    const action = event.target.closest?.("[data-bed-action]");
+    if (action) {
+      setBedActionMode(action.dataset.bedAction);
+      return;
+    }
+
+    const ward = event.target.closest?.("[data-bed-target-ward]");
+    if (ward) {
+      moveBedSectionToWard(ward.dataset.bedTargetWard);
+    }
+  });
+
+  refs.bedActionRoot?.addEventListener("submit", (event) => {
+    const form = event.target.closest?.("[data-bed-rename-form]");
+    if (!form) return;
+    event.preventDefault();
+    const input = form.querySelector("[data-bed-name-input]");
+    renameSelectedBed(input?.value || "");
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && uiState.bedAction) {
+      event.preventDefault();
+      closeBedActionSheet();
+    }
+  });
+
   refs.timelineRoot.addEventListener("change", (event) => {
     const bedEditor = event.target.closest("[data-bed-editor]");
     if (bedEditor) {
@@ -951,6 +1012,7 @@ function render() {
   renderEditor();
   renderTimeline();
   renderDrawer();
+  renderBedActionSheet();
   refreshMobileTagDock();
   requestAnimationFrame(updateDesktopTagBarOffset);
 }
@@ -1587,6 +1649,274 @@ function renderBedIndexRail(beds) {
   `;
 }
 
+function startBedLongPress(token, event) {
+  if (!token || token.dataset.editing === "true" || uiState.bedAction) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  cancelBedLongPress();
+
+  const press = {
+    token,
+    pointerId: event.pointerId,
+    startX: Number(event.clientX) || 0,
+    startY: Number(event.clientY) || 0,
+    timer: 0
+  };
+  press.timer = window.setTimeout(() => {
+    if (uiState.bedLongPress !== press || !document.contains(token)) return;
+    uiState.bedLongPress = null;
+    uiState.suppressNextBedClick = true;
+    window.setTimeout(() => {
+      uiState.suppressNextBedClick = false;
+    }, 800);
+    openBedActionSheet(token);
+  }, 520);
+  uiState.bedLongPress = press;
+}
+
+function updateBedLongPress(event) {
+  const press = uiState.bedLongPress;
+  if (!press || (event.pointerId !== undefined && event.pointerId !== press.pointerId)) return;
+  const distance = Math.hypot((Number(event.clientX) || 0) - press.startX, (Number(event.clientY) || 0) - press.startY);
+  if (distance > 10) cancelBedLongPress();
+}
+
+function cancelBedLongPress(event) {
+  const press = uiState.bedLongPress;
+  if (!press) return;
+  if (event?.pointerId !== undefined && event.pointerId !== press.pointerId) return;
+  window.clearTimeout(press.timer);
+  uiState.bedLongPress = null;
+}
+
+function openBedActionSheet(token) {
+  const ward = getCurrentWard();
+  const note = getCurrentNote();
+  if (!token || !ward || !note || token.dataset.editing === "true") return;
+
+  let tokenId = String(token.dataset.tokenId || "");
+  if (!tokenId) {
+    tokenId = createId("tag");
+    token.dataset.tokenId = tokenId;
+    syncEditorDocument();
+  }
+
+  const label = String(token.textContent || "").replace(/^Bed\s*/i, "").trim();
+  if (!label) return;
+
+  uiState.bedAction = {
+    mode: "menu",
+    wardId: ward.id,
+    noteId: note.id,
+    tokenId,
+    label
+  };
+  uiState.editorFocused = false;
+  uiState.mobileTagsOpen = false;
+  document.activeElement?.blur?.();
+  syncMobileTagDock();
+  renderBedActionSheet();
+}
+
+function closeBedActionSheet() {
+  uiState.bedAction = null;
+  cancelBedLongPress();
+  renderBedActionSheet();
+}
+
+function setBedActionMode(mode) {
+  if (!uiState.bedAction || !["menu", "rename", "move"].includes(mode)) return;
+  uiState.bedAction.mode = mode;
+  renderBedActionSheet();
+}
+
+function renderBedActionSheet() {
+  if (!refs.bedActionRoot) return;
+  const action = uiState.bedAction;
+  document.body.classList.toggle("bed-action-open", Boolean(action));
+  if (!action) {
+    refs.bedActionRoot.innerHTML = "";
+    return;
+  }
+
+  const sourceWard = state.wards.find((ward) => ward.id === action.wardId);
+  const targetWards = state.wards.filter((ward) => ward.id !== action.wardId);
+  if (!sourceWard) {
+    closeBedActionSheet();
+    return;
+  }
+
+  refs.bedActionRoot.innerHTML = `
+    <div class="bed-action-layer" data-bed-action-backdrop="true">
+      <section class="bed-action-sheet" role="dialog" aria-modal="true" aria-labelledby="bed-action-title">
+        <header class="bed-action-head">
+          <div>
+            <p class="section-kicker">${escapeHtml(sourceWard.name)} · Bed ${escapeHtml(action.label)}</p>
+            <h2 id="bed-action-title">${action.mode === "rename" ? "Rename bed" : action.mode === "move" ? "Move to ward" : "Bed actions"}</h2>
+          </div>
+          <button class="bed-action-close" type="button" data-bed-action-close="true" aria-label="Close bed actions">&times;</button>
+        </header>
+        ${action.mode === "rename" ? renderBedRenameForm(action) : ""}
+        ${action.mode === "move" ? renderBedMoveOptions(targetWards) : ""}
+        ${action.mode === "menu" ? renderBedActionOptions(targetWards.length > 0) : ""}
+      </section>
+    </div>
+  `;
+
+  if (action.mode === "rename") {
+    window.requestAnimationFrame(() => {
+      const input = refs.bedActionRoot.querySelector("[data-bed-name-input]");
+      input?.focus({ preventScroll: true });
+      input?.select();
+    });
+  }
+}
+
+function renderBedActionOptions(canMove) {
+  return `
+    <div class="bed-action-options">
+      <button class="bed-action-option" type="button" data-bed-action="rename">
+        <span>Rename bed</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"></path><path d="M13.5 6.5l4 4"></path></svg>
+      </button>
+      <button class="bed-action-option" type="button" data-bed-action="move" ${canMove ? "" : "disabled"}>
+        <span>Move to ward</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path><path d="m14 7 5 5-5 5"></path></svg>
+      </button>
+    </div>
+  `;
+}
+
+function renderBedRenameForm(action) {
+  return `
+    <form class="bed-action-form" data-bed-rename-form="true">
+      <label>
+        Bed name
+        <input type="text" value="${escapeAttribute(action.label)}" data-bed-name-input="true" autocomplete="off" enterkeyhint="done" required />
+      </label>
+      <div class="bed-action-form-actions">
+        <button class="ghost-btn" type="button" data-bed-action="menu">Back</button>
+        <button class="accent-btn" type="submit">Save</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderBedMoveOptions(targetWards) {
+  if (!targetWards.length) {
+    return `<p class="bed-action-empty">Add another ward before moving this bed.</p>`;
+  }
+  return `
+    <div class="bed-ward-options">
+      ${targetWards
+        .map(
+          (ward) => `
+            <button class="bed-ward-option" type="button" data-bed-target-ward="${escapeAttribute(ward.id)}">
+              <span>${escapeHtml(ward.name)}</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+            </button>
+          `
+        )
+        .join("")}
+      <button class="ghost-btn" type="button" data-bed-action="menu">Back</button>
+    </div>
+  `;
+}
+
+function getSelectedBedDocumentContext() {
+  const action = uiState.bedAction;
+  if (!action) return null;
+  const ward = state.wards.find((item) => item.id === action.wardId);
+  const note = ward?.notes.find((item) => item.id === action.noteId);
+  if (!ward || !note) return null;
+
+  const root = parseHtmlRoot(getNoteDocumentHtml(note));
+  normalizeEditorBlocks(root);
+  const token = root.querySelector(`[data-token-id="${cssEscape(action.tokenId)}"]`);
+  const line = token?.closest?.("div, p");
+  if (!token || !line || line.parentElement !== root || token.dataset.tag !== "bed") return null;
+  return { action, ward, note, root, token, line };
+}
+
+function renameSelectedBed(value) {
+  const context = getSelectedBedDocumentContext();
+  const label = String(value || "").replace(/^Bed\s*/i, "").trim();
+  if (!context || !label) return;
+
+  context.token.textContent = `Bed ${label}`;
+  context.note.documentHtml = sanitizeEditorHtml(context.root.innerHTML);
+  context.note.updatedAt = Date.now();
+  uiState.savedSelection = null;
+  uiState.bedAction = null;
+  saveState();
+  render();
+}
+
+function moveBedSectionToWard(targetWardId) {
+  const context = getSelectedBedDocumentContext();
+  const targetWard = state.wards.find((ward) => ward.id === targetWardId && ward.id !== context?.ward.id);
+  if (!context || !targetWard) return;
+
+  if (!targetWard.notes.length) {
+    targetWard.notes.push(createNote(`${targetWard.name} handover`, ""));
+  }
+  const targetNote = targetWard.notes[0];
+  const sourceLines = Array.from(context.root.children);
+  const startIndex = sourceLines.indexOf(context.line);
+  const nextBedOffset = sourceLines.slice(startIndex + 1).findIndex((line) => line.querySelector?.('.tag-token[data-tag="bed"]'));
+  const endIndex = nextBedOffset < 0 ? sourceLines.length : startIndex + 1 + nextBedOffset;
+  const sectionLines = sourceLines.slice(startIndex, endIndex);
+  while (sectionLines.length > 1 && isEditorLineEmpty(sectionLines[sectionLines.length - 1])) {
+    sectionLines.pop()?.remove();
+  }
+  const sectionHtml = sectionLines.map((line) => line.outerHTML).join("");
+  sectionLines.forEach((line) => line.remove());
+  normalizeBedSectionSeparators(context.root);
+
+  const targetRoot = parseHtmlRoot(getNoteDocumentHtml(targetNote));
+  normalizeEditorBlocks(targetRoot);
+  while (targetRoot.lastElementChild && isEditorLineEmpty(targetRoot.lastElementChild)) {
+    targetRoot.lastElementChild.remove();
+  }
+  const targetHasContent = Array.from(targetRoot.children).some((line) => !isEditorLineEmpty(line));
+  if (targetHasContent) {
+    const spacer = targetRoot.ownerDocument.createElement("div");
+    spacer.innerHTML = "<br>";
+    targetRoot.appendChild(spacer);
+  }
+  targetRoot.insertAdjacentHTML("beforeend", sectionHtml);
+  normalizeBedSectionSeparators(targetRoot);
+
+  const now = Date.now();
+  context.note.documentHtml = sanitizeEditorHtml(context.root.innerHTML);
+  context.note.updatedAt = now;
+  targetNote.documentHtml = sanitizeEditorHtml(targetRoot.innerHTML);
+  targetNote.updatedAt = now;
+  uiState.savedSelection = null;
+  uiState.bedAction = null;
+  saveState();
+  render();
+}
+
+function normalizeBedSectionSeparators(root) {
+  if (!root) return;
+  let seenBed = false;
+  Array.from(root.children).forEach((line) => {
+    if (!line.querySelector?.('.tag-token[data-tag="bed"]')) return;
+    if (seenBed) {
+      let previous = line.previousElementSibling;
+      while (previous && isEditorLineEmpty(previous)) {
+        const before = previous.previousElementSibling;
+        previous.remove();
+        previous = before;
+      }
+      const spacer = root.ownerDocument.createElement("div");
+      spacer.innerHTML = "<br>";
+      root.insertBefore(spacer, line);
+    }
+    seenBed = true;
+  });
+}
+
 function sortCurrentWardBedSections() {
   const note = getCurrentNote();
   const editor = refs.editorRoot.querySelector("#notepad-editor");
@@ -1826,6 +2156,7 @@ async function applySession(session) {
   authState.lastCloudUpdatedAtValue = "";
 
   if (!authState.user) {
+    uiState.bedAction = null;
     state = loadState();
     render();
     return;
@@ -3879,6 +4210,7 @@ function resetAllNotes() {
   uiState.mobileTagsOpen = false;
   uiState.drawerOpen = false;
   uiState.wardOptionsOpen = false;
+  uiState.bedAction = null;
   saveState();
   render();
 }
