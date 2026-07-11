@@ -24,8 +24,21 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-diagnostics-v1";
+const APP_BUILD = "2026-07-11-workspaces-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
+const WORKSPACE_KEYS = ["shift", "day"];
+const WORKSPACE_META = {
+  shift: {
+    title: "ShiftPad",
+    eyebrow: "Shift Note Workspace",
+    tagline: "Fast handover notes with bed tags and reminders."
+  },
+  day: {
+    title: "DayPad",
+    eyebrow: "Regular Hours Workspace",
+    tagline: "Daytime ward notes, tasks, and reminders."
+  }
+};
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
   lab: { label: "Lab", icon: "Lab", className: "kind-lab" },
@@ -36,6 +49,11 @@ const KIND_META = {
 const refs = {
   menuBtn: document.getElementById("menu-btn"),
   wardOptionsBtn: document.getElementById("ward-options-btn"),
+  workspaceSwitcher: document.getElementById("workspace-switcher"),
+  workspaceHeading: document.getElementById("workspace-heading"),
+  workspaceTitle: document.getElementById("workspace-title"),
+  workspaceEyebrow: document.getElementById("workspace-eyebrow"),
+  workspaceTagline: document.getElementById("workspace-tagline"),
   appHeader: document.querySelector(".app-header"),
   topControlStack: document.querySelector(".top-control-stack"),
   stickyWardRoot: document.getElementById("sticky-ward-root"),
@@ -63,7 +81,8 @@ const refs = {
   workspace: document.querySelector(".workspace")
 };
 
-let state = loadState();
+let appState = loadAppState();
+let state = getActiveWorkspaceState(appState);
 const authState = {
   client: null,
   user: null,
@@ -288,6 +307,10 @@ function bindEvents() {
 
   refs.logoutBtn?.addEventListener("click", async () => {
     await signOutCurrentUser();
+  });
+
+  refs.workspaceSwitcher?.addEventListener("click", () => {
+    switchWorkspace();
   });
 
   refs.menuBtn?.addEventListener("click", () => {
@@ -999,6 +1022,7 @@ function bindEvents() {
 
 function render() {
   ensureSelection();
+  renderWorkspaceIdentity();
   renderAuthUi();
   refs.workspace.classList.toggle("single-ward", Boolean(state.preferences.singleWardMode));
   refs.timelineView.classList.toggle("single-ward-summary", state.timelineScope === "active");
@@ -1044,7 +1068,7 @@ function renderDrawer({ animateSide = "" } = {}) {
         <div class="drawer-head">
           <div>
             <p class="section-kicker">Menu</p>
-            <h2>ShiftPad</h2>
+            <h2>${escapeHtml(getActiveWorkspaceMeta().title)}</h2>
           </div>
         </div>
         ${renderAccountMenu()}
@@ -2160,7 +2184,8 @@ async function applySession(session) {
 
   if (!authState.user) {
     uiState.bedAction = null;
-    state = loadState();
+    appState = loadAppState();
+    state = getActiveWorkspaceState(appState);
     render();
     return;
   }
@@ -2264,7 +2289,8 @@ async function hydrateStateFromCloud() {
   authState.isHydrating = true;
   renderAuthUi();
 
-  const fallback = loadStateForUser(authState.user.id) || createBlankState();
+  const fallback = loadStateForUser(authState.user.id) || createBlankAppState();
+  let needsCloudWorkspaceMigration = false;
   authState.suppressCloudSave = true;
 
   let data = null;
@@ -2279,7 +2305,8 @@ async function hydrateStateFromCloud() {
 
   if (error) {
     console.error("Cloud state load failed:", error);
-    state = normalizeState(fallback);
+    appState = normalizeAppState(fallback);
+    state = getActiveWorkspaceState(appState);
     authState.isHydrating = false;
     authState.suppressCloudSave = false;
     saveState({ skipCloud: true });
@@ -2289,10 +2316,13 @@ async function hydrateStateFromCloud() {
   }
 
   if (data?.state_json) {
-    state = normalizeState(data.state_json);
+    needsCloudWorkspaceMigration = !data.state_json.workspaces;
+    appState = mergeHydratedCloudState(data.state_json, fallback);
+    state = getActiveWorkspaceState(appState);
     rememberCloudVersion(data.updated_at);
   } else {
-    state = normalizeState(fallback);
+    appState = normalizeAppState(fallback);
+    state = getActiveWorkspaceState(appState);
     authState.suppressCloudSave = false;
     await saveCloudStateNow();
     authState.suppressCloudSave = true;
@@ -2300,7 +2330,11 @@ async function hydrateStateFromCloud() {
 
   authState.isHydrating = false;
   authState.suppressCloudSave = false;
+  applyUrlOverrides();
   saveLocalState();
+  if (needsCloudWorkspaceMigration) {
+    scheduleCloudSave();
+  }
   render();
 }
 
@@ -2454,14 +2488,15 @@ function applyRemoteCloudState(record, { force = false } = {}) {
   const remoteUpdatedAt = parseCloudUpdatedAt(record.updated_at) || Date.now();
   if (!record?.state_json || (!force && remoteUpdatedAt <= authState.lastCloudUpdatedAt)) return;
 
-  const remoteState = normalizeState(record.state_json);
+  const remoteState = mergeRemoteStatePreservingLocalView(record.state_json);
   if (authState.pendingDoneToggles.size) {
     authState.pendingDoneToggles.forEach((toggle) => {
       applyDoneToggleToState(remoteState, toggle);
     });
   }
 
-  state = mergeRemoteStatePreservingLocalView(remoteState);
+  appState = remoteState;
+  state = getActiveWorkspaceState(appState);
   rememberCloudVersion(record.updated_at || new Date(remoteUpdatedAt).toISOString());
   authState.lastRemoteAppliedAt = Date.now();
   authState.suppressCloudSave = true;
@@ -2475,34 +2510,68 @@ function rememberCloudVersion(updatedAtValue) {
   authState.lastCloudUpdatedAt = parseCloudUpdatedAt(updatedAtValue) || Date.now();
 }
 
-function mergeRemoteStatePreservingLocalView(remoteState) {
-  const currentView = {
-    activeView: state.activeView,
-    selectedWardId: state.selectedWardId,
-    selectedNoteId: state.selectedNoteId,
-    timelineScope: state.timelineScope,
-    summaryTab: state.summaryTab
-  };
-  const nextState = normalizeState(remoteState);
-  nextState.activeView = currentView.activeView === "timeline" ? "timeline" : "notes";
-  nextState.timelineScope = currentView.timelineScope === "active" ? "active" : "all";
-  nextState.summaryTab = ["beds", "reminders", "todo"].includes(currentView.summaryTab) ? currentView.summaryTab : "beds";
-
-  const currentWard = nextState.wards.find((ward) => ward.id === currentView.selectedWardId);
-  if (currentWard) {
-    nextState.selectedWardId = currentWard.id;
-    nextState.selectedNoteId = currentWard.notes.some((note) => note.id === currentView.selectedNoteId)
-      ? currentView.selectedNoteId
-      : currentWard.notes[0]?.id || "";
+function mergeHydratedCloudState(remoteInput, fallbackInput) {
+  const remote = normalizeAppState(remoteInput);
+  if (!remoteInput?.workspaces && fallbackInput?.workspaces) {
+    const fallback = normalizeAppState(fallbackInput);
+    remote.workspaces.day = fallback.workspaces.day;
   }
-
-  ensureSelectionForState(nextState);
-  return nextState;
+  return remote;
 }
 
-function mergeCloudStateForSave(localState, remoteState) {
-  const local = normalizeState(localState);
-  const remote = normalizeState(remoteState);
+function mergeRemoteStatePreservingLocalView(remoteInput) {
+  const nextAppState = normalizeAppState(remoteInput);
+  if (!remoteInput?.workspaces && appState?.workspaces?.day) {
+    nextAppState.workspaces.day = appState.workspaces.day;
+  }
+  nextAppState.activeWorkspace = getActiveWorkspaceKey(appState);
+
+  WORKSPACE_KEYS.forEach((workspaceKey) => {
+    preserveWorkspaceView(nextAppState.workspaces[workspaceKey], appState.workspaces?.[workspaceKey]);
+  });
+  return nextAppState;
+}
+
+function preserveWorkspaceView(nextState, currentState) {
+  if (!nextState || !currentState) return;
+  nextState.activeView = currentState.activeView === "timeline" ? "timeline" : "notes";
+  nextState.timelineScope = currentState.timelineScope === "active" ? "active" : "all";
+  nextState.summaryTab = ["beds", "reminders", "todo"].includes(currentState.summaryTab) ? currentState.summaryTab : "beds";
+
+  const currentWard = nextState.wards.find((ward) => ward.id === currentState.selectedWardId);
+  if (currentWard) {
+    nextState.selectedWardId = currentWard.id;
+    nextState.selectedNoteId = currentWard.notes.some((note) => note.id === currentState.selectedNoteId)
+      ? currentState.selectedNoteId
+      : currentWard.notes[0]?.id || "";
+  }
+  ensureSelectionForState(nextState);
+}
+
+function mergeCloudStateForSave(localInput, remoteInput) {
+  const local = normalizeAppState(localInput);
+  const remote = normalizeAppState(remoteInput);
+  if (!remoteInput?.workspaces) {
+    remote.workspaces.day = local.workspaces.day;
+  }
+
+  const mergedAppState = {
+    version: 3,
+    activeWorkspace: getActiveWorkspaceKey(local),
+    workspaces: {}
+  };
+  WORKSPACE_KEYS.forEach((workspaceKey) => {
+    mergedAppState.workspaces[workspaceKey] = mergeWorkspaceStateForSave(
+      local.workspaces[workspaceKey],
+      remote.workspaces[workspaceKey]
+    );
+  });
+  return normalizeAppState(mergedAppState);
+}
+
+function mergeWorkspaceStateForSave(localInput, remoteInput) {
+  const local = normalizeWorkspaceState(localInput, { blankFallback: true });
+  const remote = normalizeWorkspaceState(remoteInput, { blankFallback: true });
   const localWardMap = new Map(local.wards.map((ward) => [ward.id, ward]));
   const remoteWardMap = new Map(remote.wards.map((ward) => [ward.id, ward]));
   const wardIds = [
@@ -2554,7 +2623,7 @@ function mergeCloudStateForSave(localState, remoteState) {
     })
     .filter(Boolean);
 
-  const mergedState = normalizeState({
+  const mergedState = normalizeWorkspaceState({
     ...remote,
     activeView: local.activeView,
     selectedWardId: local.selectedWardId,
@@ -2563,7 +2632,7 @@ function mergeCloudStateForSave(localState, remoteState) {
     summaryTab: local.summaryTab,
     preferences: local.preferences,
     wards
-  });
+  }, { blankFallback: true });
   ensureSelectionForState(mergedState);
   return mergedState;
 }
@@ -3544,9 +3613,14 @@ function applyDoneToggleToState(targetState, toggle) {
 
 function findNoteByIdInState(targetState, noteId) {
   if (!targetState || !noteId) return null;
-  for (const ward of targetState.wards || []) {
-    const note = (ward.notes || []).find((item) => item.id === noteId);
-    if (note) return note;
+  const workspaceStates = targetState.workspaces
+    ? WORKSPACE_KEYS.map((key) => targetState.workspaces[key]).filter(Boolean)
+    : [targetState];
+  for (const workspaceState of workspaceStates) {
+    for (const ward of workspaceState.wards || []) {
+      const note = (ward.notes || []).find((item) => item.id === noteId);
+      if (note) return note;
+    }
   }
   return null;
 }
@@ -4197,8 +4271,9 @@ async function changeCurrentPassword() {
 }
 
 function resetAllNotes() {
-  if (!window.confirm("Reset all wards and notes? This cannot be undone.")) return;
-  state = createBlankState();
+  const workspaceName = getActiveWorkspaceMeta().title;
+  if (!window.confirm(`Reset all wards and notes in ${workspaceName}? This cannot be undone.`)) return;
+  setActiveWorkspaceState(createBlankState());
   uiState.savedSelection = null;
   uiState.mobileTagsOpen = false;
   uiState.drawerOpen = false;
@@ -4871,22 +4946,76 @@ function createBlankState() {
   };
 }
 
-function loadState() {
-  return normalizeState(loadAnonymousLocalState() || loadLegacyLocalState() || createSeedState());
+function createSeedAppState() {
+  return {
+    version: 3,
+    activeWorkspace: "shift",
+    workspaces: {
+      shift: createSeedState(),
+      day: createBlankState()
+    }
+  };
+}
+
+function createBlankAppState() {
+  return {
+    version: 3,
+    activeWorkspace: "shift",
+    workspaces: {
+      shift: createBlankState(),
+      day: createBlankState()
+    }
+  };
+}
+
+function loadAppState() {
+  return normalizeAppState(loadAnonymousLocalState() || loadLegacyLocalState() || createSeedAppState());
 }
 
 function applyUrlOverrides() {
   const params = new URLSearchParams(window.location.search);
   const requestedView = params.get("view");
+  const requestedWorkspace = params.get("workspace");
+
+  if (WORKSPACE_KEYS.includes(requestedWorkspace)) {
+    appState.activeWorkspace = requestedWorkspace;
+    state = getActiveWorkspaceState(appState);
+  }
 
   if (requestedView === "notes" || requestedView === "timeline") {
     state.activeView = requestedView;
   }
 }
 
-function normalizeState(input) {
+function normalizeAppState(input) {
+  if (input?.workspaces && typeof input.workspaces === "object") {
+    return {
+      version: 3,
+      activeWorkspace: WORKSPACE_KEYS.includes(input.activeWorkspace) ? input.activeWorkspace : "shift",
+      workspaces: {
+        shift: normalizeWorkspaceState(input.workspaces.shift, { blankFallback: true }),
+        day: normalizeWorkspaceState(input.workspaces.day, { blankFallback: true })
+      }
+    };
+  }
+
+  if (input && typeof input === "object" && Array.isArray(input.wards) && input.wards.length) {
+    return {
+      version: 3,
+      activeWorkspace: "shift",
+      workspaces: {
+        shift: normalizeWorkspaceState(input),
+        day: createBlankState()
+      }
+    };
+  }
+
+  return createSeedAppState();
+}
+
+function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
   if (!input || typeof input !== "object" || !Array.isArray(input.wards) || !input.wards.length) {
-    return createSeedState();
+    return blankFallback ? createBlankState() : createSeedState();
   }
 
   const wards = input.wards.map((ward, index) => {
@@ -4948,6 +5077,92 @@ function normalizeState(input) {
   };
 }
 
+function getActiveWorkspaceKey(targetAppState = appState) {
+  return WORKSPACE_KEYS.includes(targetAppState?.activeWorkspace) ? targetAppState.activeWorkspace : "shift";
+}
+
+function getActiveWorkspaceState(targetAppState = appState) {
+  const key = getActiveWorkspaceKey(targetAppState);
+  if (!targetAppState.workspaces?.[key]) {
+    targetAppState.workspaces ||= {};
+    targetAppState.workspaces[key] = createBlankState();
+  }
+  return targetAppState.workspaces[key];
+}
+
+function setActiveWorkspaceState(nextState) {
+  const key = getActiveWorkspaceKey();
+  appState.workspaces[key] = normalizeWorkspaceState(nextState, { blankFallback: true });
+  state = appState.workspaces[key];
+}
+
+function getActiveWorkspaceMeta() {
+  return WORKSPACE_META[getActiveWorkspaceKey()] || WORKSPACE_META.shift;
+}
+
+function renderWorkspaceIdentity() {
+  const currentKey = getActiveWorkspaceKey();
+  const current = WORKSPACE_META[currentKey];
+  const nextKey = currentKey === "shift" ? "day" : "shift";
+  const next = WORKSPACE_META[nextKey];
+  document.body.dataset.workspace = currentKey;
+  document.title = `${current.title} - Ward Notes`;
+  if (refs.workspaceTitle) refs.workspaceTitle.textContent = current.title;
+  refs.workspaceHeading?.setAttribute("aria-label", current.title);
+  if (refs.workspaceEyebrow) refs.workspaceEyebrow.textContent = current.eyebrow;
+  if (refs.workspaceTagline) refs.workspaceTagline.textContent = current.tagline;
+  refs.workspaceSwitcher?.setAttribute("aria-label", `Switch to ${next.title}`);
+  refs.workspaceSwitcher?.setAttribute("title", `Switch to ${next.title}`);
+}
+
+function switchWorkspace(targetKey = "") {
+  const currentKey = getActiveWorkspaceKey();
+  const nextKey = WORKSPACE_KEYS.includes(targetKey) ? targetKey : currentKey === "shift" ? "day" : "shift";
+  if (nextKey === currentKey) return;
+
+  syncEditorDocument();
+  appState.activeWorkspace = nextKey;
+  state = getActiveWorkspaceState(appState);
+  updateWorkspaceUrl(nextKey);
+  ensureSelection();
+  resetEditorUiForWorkspaceSwitch();
+  saveState();
+  render();
+  refs.workspaceSwitcher?.classList.add("is-switching");
+  window.setTimeout(() => refs.workspaceSwitcher?.classList.remove("is-switching"), 220);
+}
+
+function resetEditorUiForWorkspaceSwitch() {
+  window.clearTimeout(uiState.bedFinalizeTimer);
+  window.clearTimeout(uiState.bedIndexTimer);
+  uiState.savedSelection = null;
+  uiState.editorFocused = false;
+  uiState.mobileTagsOpen = false;
+  uiState.bedIndexVisible = false;
+  uiState.bedIndexTimer = null;
+  uiState.bedFinalizeTimer = null;
+  uiState.editingWardId = "";
+  uiState.bedAction = null;
+  uiState.editorTapScroll = null;
+  uiState.suppressNextDeleteInput = false;
+  uiState.suppressNextParagraphInput = false;
+  uiState.pendingTagInsertions.clear();
+  uiState.lastInsertedTagTokenId = "";
+  uiState.pendingEditorInputDebug = null;
+  uiState.restoreSelectionAfterScreenSwitch = false;
+  uiState.restoreEditorFocusAfterScreenSwitch = false;
+}
+
+function updateWorkspaceUrl(workspaceKey) {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("workspace", workspaceKey);
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // The workspace switch still works when history APIs are unavailable.
+  }
+}
+
 function saveState({ skipCloud = false, markDirty = true } = {}) {
   if (markDirty && !authState.suppressCloudSave) {
     authState.lastLocalMutationAt = Date.now();
@@ -4978,11 +5193,11 @@ function saveLocalState() {
   try {
     const userId = authState.user?.id || "";
     const key = getScopedStorageKey(userId);
-    localStorage.setItem(key, JSON.stringify(state));
+    localStorage.setItem(key, JSON.stringify(appState));
     if (userId) {
       localStorage.removeItem(LEGACY_STORAGE_KEY);
     } else {
-      localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(appState));
     }
   } catch (error) {
     console.error("Local save failed:", error);
@@ -5137,6 +5352,8 @@ function appendEditorDebugLog(entry) {
     appBuild: APP_BUILD,
     browser: getEditorDebugBrowserLabel(),
     path: window.location.pathname,
+    workspace: getActiveWorkspaceKey(),
+    workspaceName: getActiveWorkspaceMeta().title,
     activeView: state.activeView,
     summaryTab: state.summaryTab,
     timelineScope: state.timelineScope,
@@ -5771,7 +5988,7 @@ async function saveCloudStateNow({ conflictRetry = false } = {}) {
   const updatedAt = new Date().toISOString();
   const payload = {
     user_id: authState.user.id,
-    state_json: state,
+    state_json: appState,
     updated_at: updatedAt
   };
 
@@ -5833,11 +6050,12 @@ async function handleCloudSaveConflict({ conflictRetry = false } = {}) {
     if (error) throw error;
     if (data?.state_json) {
       const currentView = {
+        workspaceKey: getActiveWorkspaceKey(),
         selectedWardId: state.selectedWardId,
         selectedNoteId: state.selectedNoteId
       };
       const localActiveNote = getCurrentNote();
-      let mergedState = mergeCloudStateForSave(state, data.state_json);
+      let mergedState = mergeCloudStateForSave(appState, data.state_json);
       let replayedDoneToggle = false;
       if (authState.pendingDoneToggles.size) {
         let didReplayDoneToggle = false;
@@ -5847,19 +6065,24 @@ async function handleCloudSaveConflict({ conflictRetry = false } = {}) {
 
         if (didReplayDoneToggle) {
           replayedDoneToggle = true;
-          setAuthMessage("Cloud changed, so ShiftPad kept your checkbox change and saved it on top of the newer copy.");
+          setAuthMessage(`Cloud changed, so ${getActiveWorkspaceMeta().title} kept your checkbox change and saved it on top of the newer copy.`);
         }
         authState.pendingDoneToggles.clear();
       }
 
       authState.pendingRemoteRecord = null;
-      state = mergeRemoteStatePreservingLocalView(mergedState);
+      appState = mergeRemoteStatePreservingLocalView(mergedState);
+      state = getActiveWorkspaceState(appState);
       rememberCloudVersion(data.updated_at);
       authState.suppressCloudSave = true;
       saveState({ skipCloud: true, markDirty: false });
       authState.suppressCloudSave = false;
 
-      const mergedActiveNote = getStateNoteById(state, currentView.selectedWardId, currentView.selectedNoteId);
+      const mergedActiveNote = getStateNoteById(
+        appState.workspaces[currentView.workspaceKey],
+        currentView.selectedWardId,
+        currentView.selectedNoteId
+      );
       const activeNoteChangedToRemote =
         localActiveNote &&
         mergedActiveNote &&

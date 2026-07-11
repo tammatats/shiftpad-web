@@ -3,6 +3,10 @@ const { handleApiError, sendJson, supabaseRest } = require("./_supabase");
 
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const DEFAULT_WINDOW_MINUTES = 10;
+const WORKSPACE_LABELS = {
+  shift: "ShiftPad",
+  day: "DayPad"
+};
 
 function configureWebPush() {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
@@ -112,7 +116,7 @@ module.exports = async function handler(req, res) {
               title: reminder.title,
               body: reminder.body,
               tag: reminder.tag,
-              url: "/?view=timeline"
+              url: reminder.url || "/?view=timeline"
             })
           );
           sent += 1;
@@ -173,41 +177,46 @@ function encodeFilterValue(value) {
 }
 
 function buildDueReminders(state, { now, timeZone, windowMinutes }) {
-  const preferences = normalizePreferences(state.preferences);
   const reminders = [];
-  const wards = Array.isArray(state.wards) ? state.wards : [];
+  getReminderWorkspaces(state).forEach(({ key: workspaceKey, label: workspaceLabel, state: workspaceState }) => {
+    const preferences = normalizePreferences(workspaceState.preferences);
+    const wards = Array.isArray(workspaceState.wards) ? workspaceState.wards : [];
 
-  wards.forEach((ward) => {
-    const notes = Array.isArray(ward.notes) ? ward.notes : [];
-    notes.forEach((note) => {
-      extractTaggedLines(note, preferences).forEach((line) => {
-        if (!line.reminderType) return;
+    wards.forEach((ward) => {
+      const notes = Array.isArray(ward.notes) ? ward.notes : [];
+      notes.forEach((note) => {
+        extractTaggedLines(note, preferences).forEach((line) => {
+          if (!line.reminderType) return;
 
-        getReminderItemsForLine(line, preferences, timeZone).forEach((reminder) => {
-          if (reminder.done) return;
-          const reminderTime = reminder.time;
-          const anchorAt =
-            line.reminderType === "io"
-              ? line.ioCreatedAt || line.reminderCreatedAt || note.createdAt
-              : line.reminderCreatedAt || note.updatedAt || note.createdAt;
-          const scheduled = getScheduledInstant({
-            reminderTime,
-            noteCreatedAt: Number(anchorAt) || now.getTime(),
-            timeZone,
-            now
-          });
-          const ageMs = now.getTime() - scheduled.getTime();
-          if (ageMs < 0 || ageMs > windowMinutes * 60 * 1000) return;
+          getReminderItemsForLine(line, preferences, timeZone).forEach((reminder) => {
+            if (reminder.done) return;
+            const reminderTime = reminder.time;
+            const anchorAt =
+              line.reminderType === "io"
+                ? line.ioCreatedAt || line.reminderCreatedAt || note.createdAt
+                : line.reminderCreatedAt || note.updatedAt || note.createdAt;
+            const scheduled = getScheduledInstant({
+              reminderTime,
+              noteCreatedAt: Number(anchorAt) || now.getTime(),
+              timeZone,
+              now
+            });
+            const ageMs = now.getTime() - scheduled.getTime();
+            if (ageMs < 0 || ageMs > windowMinutes * 60 * 1000) return;
 
-          const typeLabel = getReminderTypeLabel(line.reminderType, preferences);
-          const bedText = line.bedLabel ? `Bed ${line.bedLabel.toUpperCase()}` : ward.name || "ShiftPad";
-          const summary = line.text || "Reminder due";
-          reminders.push({
-            key: [note.id || "note", line.lineIndex, line.reminderTokenId || line.primaryTokenId || line.reminderType, reminder.key || reminderTime].join(":"),
-            scheduledFor: scheduled.toISOString(),
-            title: `${formatTimeLabel(reminderTime)} ${typeLabel || "Reminder"}`,
-            body: `${ward.name || "Ward"}${line.bedLabel ? ` · ${bedText}` : ""}: ${summary}`.slice(0, 180),
-            tag: `shiftpad-${note.id || "note"}-${line.lineIndex}-${reminderTime}`.replace(/[^a-z0-9_.:-]/gi, "-")
+            const typeLabel = getReminderTypeLabel(line.reminderType, preferences);
+            const bedText = line.bedLabel ? `Bed ${line.bedLabel.toUpperCase()}` : "";
+            const summary = line.text || "Reminder due";
+            const reminderIdentity = [note.id || "note", line.lineIndex, line.reminderTokenId || line.primaryTokenId || line.reminderType, reminder.key || reminderTime];
+            if (workspaceKey !== "shift") reminderIdentity.unshift(workspaceKey);
+            reminders.push({
+              key: reminderIdentity.join(":"),
+              scheduledFor: scheduled.toISOString(),
+              title: `${formatTimeLabel(reminderTime)} ${typeLabel || "Reminder"}`,
+              body: `${workspaceLabel} · ${ward.name || "Ward"}${bedText ? ` · ${bedText}` : ""}: ${summary}`.slice(0, 180),
+              tag: `shiftpad-${workspaceKey === "shift" ? "" : `${workspaceKey}-`}${note.id || "note"}-${line.lineIndex}-${reminderTime}`.replace(/[^a-z0-9_.:-]/gi, "-"),
+              url: `/?view=timeline&workspace=${workspaceKey}`
+            });
           });
         });
       });
@@ -215,6 +224,15 @@ function buildDueReminders(state, { now, timeZone, windowMinutes }) {
   });
 
   return reminders;
+}
+
+function getReminderWorkspaces(state) {
+  if (state?.workspaces && typeof state.workspaces === "object") {
+    return Object.keys(WORKSPACE_LABELS)
+      .map((key) => ({ key, label: WORKSPACE_LABELS[key], state: state.workspaces[key] }))
+      .filter((workspace) => workspace.state && typeof workspace.state === "object");
+  }
+  return [{ key: "shift", label: WORKSPACE_LABELS.shift, state: state || {} }];
 }
 
 function normalizePreferences(input = {}) {

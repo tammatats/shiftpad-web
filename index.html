@@ -19,7 +19,7 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='8' y='8' width='48' height='48' rx='14' fill='%23e67d59'/%3E%3Cpath d='M20 22h24M20 32h24M20 42h16' stroke='white' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E"
     />
-    <link rel="stylesheet" href="styles.css?v=20260711-diagnostics1" />
+    <link rel="stylesheet" href="styles.css?v=20260711-workspaces1" />
   </head>
   <body>
     <div id="auth-gate" class="auth-gate hidden">
@@ -60,9 +60,19 @@
               </svg>
             </button>
             <div class="app-title">
-              <p class="eyebrow">Shift Note Workspace</p>
-              <h1>ShiftPad</h1>
-              <p class="tagline">Fast handover notes with bed tags and reminders.</p>
+              <p id="workspace-eyebrow" class="eyebrow">Shift Note Workspace</p>
+              <h1 id="workspace-heading" aria-label="ShiftPad">
+                <button id="workspace-switcher" class="workspace-switcher" type="button" aria-label="Switch to DayPad">
+                  <span id="workspace-title">ShiftPad</span>
+                  <svg class="workspace-switch-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7 7h11l-3-3"></path>
+                    <path d="m18 7-3 3"></path>
+                    <path d="M17 17H6l3 3"></path>
+                    <path d="m6 17 3-3"></path>
+                  </svg>
+                </button>
+              </h1>
+              <p id="workspace-tagline" class="tagline">Fast handover notes with bed tags and reminders.</p>
             </div>
             <button id="ward-options-btn" class="menu-btn header-options-btn header-icon-btn" type="button" aria-label="Open ward list" aria-expanded="false">
               <svg class="header-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -121,6 +131,6 @@
 
     <script src="public-config.js" defer></script>
     <script src="/api/public-config.js" defer></script>
-    <script src="app.js?v=20260711-diagnostics1" defer></script>
+    <script src="app.js?v=20260711-workspaces1" defer></script>
   </body>
 </html>
