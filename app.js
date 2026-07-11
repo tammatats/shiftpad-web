@@ -24,7 +24,7 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-bed-actions-v1";
+const APP_BUILD = "2026-07-11-bed-actions-v2";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
@@ -1726,10 +1726,10 @@ function closeBedActionSheet() {
 function setBedActionMode(mode) {
   if (!uiState.bedAction || !["menu", "rename", "move"].includes(mode)) return;
   uiState.bedAction.mode = mode;
-  renderBedActionSheet();
+  renderBedActionSheet({ focusRenameImmediately: mode === "rename" });
 }
 
-function renderBedActionSheet() {
+function renderBedActionSheet({ focusRenameImmediately = false } = {}) {
   if (!refs.bedActionRoot) return;
   const action = uiState.bedAction;
   document.body.classList.toggle("bed-action-open", Boolean(action));
@@ -1763,11 +1763,16 @@ function renderBedActionSheet() {
   `;
 
   if (action.mode === "rename") {
-    window.requestAnimationFrame(() => {
+    const focusRenameInput = () => {
       const input = refs.bedActionRoot.querySelector("[data-bed-name-input]");
-      input?.focus({ preventScroll: true });
+      input?.focus();
       input?.select();
-    });
+    };
+    if (focusRenameImmediately) {
+      focusRenameInput();
+    } else {
+      window.requestAnimationFrame(focusRenameInput);
+    }
   }
 }
 

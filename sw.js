@@ -1,4 +1,4 @@
-const CACHE_NAME = "shiftpad-shell-v14";
+const CACHE_NAME = "shiftpad-shell-v15";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
