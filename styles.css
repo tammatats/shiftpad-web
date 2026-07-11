@@ -1450,6 +1450,24 @@ button:disabled {
   white-space: nowrap;
 }
 
+.sort-beds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.sort-beds-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .notepad-title-block {
   flex: 1;
   min-width: 0;
@@ -2919,9 +2937,24 @@ select:focus {
     min-height: 34px;
   }
 
-  .sticky-ward-bar .section-kicker,
-  .sticky-ward-actions {
+  .sticky-ward-bar .section-kicker {
     display: none;
+  }
+
+  .sticky-ward-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: center;
+  }
+
+  .sticky-ward-actions small,
+  .sticky-ward-actions [data-reset-note] {
+    display: none;
+  }
+
+  .sort-beds-btn {
+    min-height: 32px;
+    padding: 5px 10px;
   }
 
   .sticky-ward-bar .notepad-ward-title,

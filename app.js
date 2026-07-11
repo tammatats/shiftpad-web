@@ -19,11 +19,12 @@ const EDITOR_DEBUG_CLOUD_LIFECYCLE_BATCH_LIMIT = 3;
 const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const PUSH_ENABLED_STORAGE_KEY = "shiftpad-push-enabled-v1";
 const PUSH_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const BED_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-notification-controls-v1";
+const APP_BUILD = "2026-07-11-bed-sort-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
@@ -510,6 +511,12 @@ function bindEvents() {
     const resetNote = event.target.closest?.("[data-reset-note]");
     if (resetNote) {
       resetCurrentWardNote();
+      return;
+    }
+
+    const sortBeds = event.target.closest?.("[data-sort-beds]");
+    if (sortBeds) {
+      sortCurrentWardBedSections();
     }
   });
 
@@ -523,6 +530,12 @@ function bindEvents() {
     const resetNote = event.target.closest?.("[data-reset-note]");
     if (resetNote) {
       resetCurrentWardNote();
+      return;
+    }
+
+    const sortBeds = event.target.closest?.("[data-sort-beds]");
+    if (sortBeds) {
+      sortCurrentWardBedSections();
       return;
     }
 
@@ -1501,12 +1514,30 @@ function renderStickyWardBar() {
   }
 
   refs.stickyWardRoot.classList.remove("is-empty");
+  const canSortBeds = getBedIndexForNote(note).length > 1;
   refs.stickyWardRoot.innerHTML = `
     <div class="sticky-ward-bar">
       <p class="section-kicker">Main notepad</p>
       ${renderNotepadWardTitle(ward)}
       <div class="sticky-ward-actions">
         <small>Updated ${escapeHtml(formatClock(note.updatedAt || note.createdAt))}</small>
+        <button
+          class="ghost-btn tiny-btn sort-beds-btn"
+          type="button"
+          data-sort-beds="true"
+          aria-label="Sort bed sections"
+          title="Arrange bed sections by bed name"
+          ${canSortBeds ? "" : "disabled"}
+        >
+          <svg class="sort-beds-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 7h10"></path>
+            <path d="M8 12h7"></path>
+            <path d="M8 17h4"></path>
+            <path d="M4 5v14"></path>
+            <path d="m2 17 2 2 2-2"></path>
+          </svg>
+          <span>Sort beds</span>
+        </button>
         <button class="ghost-btn tiny-btn" type="button" data-reset-note="true">Reset note</button>
       </div>
     </div>
@@ -1553,6 +1584,69 @@ function renderBedIndexRail(beds) {
         .join("")}
     </div>
   `;
+}
+
+function sortCurrentWardBedSections() {
+  const note = getCurrentNote();
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  if (!note || !editor) return;
+
+  normalizeEditorBlocks(editor);
+  const lines = Array.from(editor.children).filter((line) => ["DIV", "P"].includes(line.tagName));
+  const prefixLines = [];
+  const sections = [];
+  let currentSection = null;
+
+  lines.forEach((line) => {
+    const bedToken = line.querySelector('.tag-token[data-tag="bed"]');
+    if (bedToken) {
+      currentSection = {
+        label: String(bedToken.textContent || "").replace(/^Bed\s*/i, "").trim(),
+        originalIndex: sections.length,
+        lines: [line]
+      };
+      sections.push(currentSection);
+      return;
+    }
+
+    if (currentSection) {
+      currentSection.lines.push(line);
+    } else {
+      prefixLines.push(line);
+    }
+  });
+
+  if (sections.length < 2) return;
+
+  const sortedSections = [...sections].sort((left, right) => {
+    const labelOrder = BED_SORT_COLLATOR.compare(left.label, right.label);
+    return labelOrder || left.originalIndex - right.originalIndex;
+  });
+  const alreadySorted = sortedSections.every((section, index) => section === sections[index]);
+  if (alreadySorted) return;
+
+  const fragment = document.createDocumentFragment();
+  prefixLines.forEach((line) => fragment.appendChild(line));
+  sortedSections.forEach((section) => {
+    section.lines.forEach((line) => fragment.appendChild(line));
+  });
+  editor.appendChild(fragment);
+
+  note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
+  note.updatedAt = Date.now();
+  saveState();
+  applyEditorCompletionClasses(editor);
+  refreshEditorBedIndex(note);
+  renderStickyWardBar();
+  refreshWardDrawerMetricsIfOpen();
+}
+
+function refreshEditorBedIndex(note) {
+  const surface = refs.editorRoot.querySelector(".document-pad");
+  if (!surface) return;
+  surface.querySelector(".bed-index-rail")?.remove();
+  const railHtml = renderBedIndexRail(getBedIndexForNote(note));
+  if (railHtml) surface.insertAdjacentHTML("beforeend", railHtml);
 }
 
 function renderTimeline() {
