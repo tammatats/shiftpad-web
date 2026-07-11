@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-11-history-search-v1";
+const APP_BUILD = "2026-07-11-ipad-split-dock-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -274,6 +274,10 @@ function initMobileViewportDock() {
 function getVisualKeyboardOffset() {
   const viewport = window.visualViewport;
   if (!viewport) return 0;
+  const heightLoss = Math.max(0, window.innerHeight - viewport.height);
+  if (isIpadSplitViewLayout() && heightLoss >= 48) {
+    return heightLoss;
+  }
   return Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
 }
 
@@ -3523,10 +3527,15 @@ function positionMobileTagDock() {
   const width = Math.max(0, visualWidth - marginX * 2);
   const trayMaxHeight = Math.max(144, visualHeight - dockHeight - marginBottom - 18);
   const heightLoss = Math.max(0, layoutHeight - visualHeight);
-  const useOffsetAwareMode = isLikelyIpadDevice();
-  const keyboardOverlap = useOffsetAwareMode ? Math.max(0, heightLoss - visualTop) : heightLoss;
+  const ipadSplitView = isIpadSplitViewLayout();
+  const useOffsetAwareMode = isLikelyIpadDevice() && !ipadSplitView;
+  const keyboardOverlap = ipadSplitView
+    ? heightLoss
+    : useOffsetAwareMode
+      ? Math.max(0, heightLoss - visualTop)
+      : heightLoss;
 
-  dock.dataset.mobileTagMode = useOffsetAwareMode ? "ipad-offset" : "height-loss";
+  dock.dataset.mobileTagMode = ipadSplitView ? "ipad-split" : useOffsetAwareMode ? "ipad-offset" : "height-loss";
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
   setDockStyleValue(dock, "--mobile-tag-y", keyboardOverlap ? `-${keyboardOverlap}px` : "0px");
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
@@ -3552,6 +3561,13 @@ function isLikelyIpadDevice() {
 
 function isLikelyIphoneDevice() {
   return /iPhone|iPod/i.test(navigator.userAgent || "");
+}
+
+function isIpadSplitViewLayout() {
+  if (!isLikelyIpadDevice()) return false;
+  const screenWidth = Math.min(Number(window.screen?.width || 0), Number(window.screen?.height || 0));
+  const layoutWidth = Number(window.innerWidth || document.documentElement.clientWidth || 0);
+  return screenWidth > 0 && layoutWidth > 0 && layoutWidth < screenWidth * 0.72;
 }
 
 function restoreEditorFocusAndSelection() {
@@ -6361,6 +6377,7 @@ function captureDeviceDebugSnapshot() {
     userAgent: navigator.userAgent || "",
     maxTouchPoints: Number(navigator.maxTouchPoints || 0),
     isLikelyIpad: isLikelyIpadDevice(),
+    isIpadSplitView: isIpadSplitViewLayout(),
     isLikelyIphone: isLikelyIphoneDevice(),
     standalone: Boolean(window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true),
     screenWidth: window.screen?.width || 0,
