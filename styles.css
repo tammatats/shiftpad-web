@@ -576,10 +576,10 @@ h2 {
   gap: 8px;
 }
 
-.debug-actions .accent-btn,
 .debug-actions .ghost-btn {
   min-height: 40px;
   padding: 9px 12px;
+  width: 100%;
 }
 
 .debug-status {

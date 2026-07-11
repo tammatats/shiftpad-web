@@ -24,7 +24,7 @@ const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 200;
-const APP_BUILD = "2026-07-11-bed-actions-v2";
+const APP_BUILD = "2026-07-11-diagnostics-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
@@ -1168,7 +1168,7 @@ function renderSettingsMenu() {
   const tagDelaysOpen = isDrawerSectionOpen("tag-delays");
   const notificationsOpen = isDrawerSectionOpen("notifications");
   const customOpen = isDrawerSectionOpen("custom-tags");
-  const debugOpen = isDrawerSectionOpen("debug-logs");
+  const diagnosticsOpen = isDrawerSectionOpen("diagnostics");
   const resetOpen = isDrawerSectionOpen("reset");
   return `
     <section class="drawer-section ${tagDelaysOpen ? "is-open" : ""}">
@@ -1205,10 +1205,10 @@ function renderSettingsMenu() {
         </div>
       </div>
     </section>
-    <section class="drawer-section ${debugOpen ? "is-open" : ""}">
-      ${renderDrawerSectionToggle("debug-logs", "Debug logs", debugOpen)}
+    <section class="drawer-section ${diagnosticsOpen ? "is-open" : ""}">
+      ${renderDrawerSectionToggle("diagnostics", "Diagnostics", diagnosticsOpen)}
       <div class="drawer-panel">
-        ${renderEditorDebugSettings()}
+        ${renderDiagnosticsSettings()}
       </div>
     </section>
     <section class="drawer-section danger-zone ${resetOpen ? "is-open" : ""}">
@@ -1408,24 +1408,24 @@ function renderNotificationSettings() {
   `;
 }
 
-function renderEditorDebugSettings() {
+function renderDiagnosticsSettings() {
   const enabled = isEditorDebugLoggingEnabled();
   const logs = getEditorDebugLogs();
-  const latest = logs[logs.length - 1];
-  const cloudSavedCount = logs.filter((log) => log.cloudSavedAt).length;
   const cloudPendingCount = logs.filter((log) => log.clientLogId && !log.cloudSavedAt).length;
-  const latestText = latest ? `Latest ${formatClock(Date.parse(latest.timestamp) || Date.now())}` : "No logs yet";
-  const cloudText = authState.user
-    ? `${cloudSavedCount} saved to web${cloudPendingCount ? `, ${cloudPendingCount} waiting` : ""}`
-    : "sign in to save to web";
   const status =
     uiState.debugLogStatus ||
-    `${logs.length} local log${logs.length === 1 ? "" : "s"}. ${cloudText}. ${latestText}.`;
+    (enabled
+      ? cloudPendingCount
+        ? `${cloudPendingCount} diagnostic event${cloudPendingCount === 1 ? " is" : "s are"} waiting to sync.`
+        : authState.user
+          ? "Diagnostic events save to the cloud automatically."
+          : "Diagnostic events will upload after sign-in."
+      : "No new diagnostic events are being recorded.");
 
   return `
     <div class="debug-card">
       <label class="drawer-section-toggle drawer-direct-toggle debug-toggle" for="debug-logs-toggle">
-        <span>Record editor actions</span>
+        <span>Diagnostics</span>
         <strong>${enabled ? "On" : "Off"}</strong>
         <span class="switch">
           <input
@@ -1437,11 +1437,9 @@ function renderEditorDebugSettings() {
           <span class="switch-track"></span>
         </span>
       </label>
-      <p class="drawer-help">On by default for future bug reports. Includes note text, editor HTML, line details, cursor position, key type, and handler names. Saves to web automatically while signed in.</p>
+      <p class="drawer-help">Records editor behavior and note content for troubleshooting. Uploads automatically while signed in, and cloud data is deleted after 14 days.</p>
       <div class="debug-actions">
-        <button class="accent-btn" type="button" data-drawer-action="upload-debug-logs" ${logs.length && authState.user ? "" : "disabled"}>Save to web now</button>
-        <button class="accent-btn" type="button" data-drawer-action="copy-debug-logs" ${logs.length ? "" : "disabled"}>Copy latest logs</button>
-        <button class="ghost-btn" type="button" data-drawer-action="clear-debug-logs" ${logs.length ? "" : "disabled"}>Clear logs</button>
+        <button class="ghost-btn" type="button" data-drawer-action="clear-debug-logs" ${logs.length || authState.user ? "" : "disabled"}>Clear diagnostic data</button>
       </div>
       <p class="debug-status">${escapeHtml(status)}</p>
     </div>
@@ -3857,16 +3855,6 @@ async function handleDrawerAction(action) {
     return;
   }
 
-  if (action === "copy-debug-logs") {
-    await copyEditorDebugLogs();
-    return;
-  }
-
-  if (action === "upload-debug-logs") {
-    await uploadPendingEditorDebugLogsNow();
-    return;
-  }
-
   if (action === "clear-debug-logs") {
     await clearEditorDebugLogs();
     return;
@@ -5198,38 +5186,10 @@ async function clearEditorDebugLogs() {
       .delete()
       .eq("user_id", authState.user.id);
     uiState.debugLogStatus = error
-      ? `Local logs cleared. Web clear failed: ${error.message || "Unknown error"}.`
-      : "Debug logs cleared locally and on web.";
+      ? `Local diagnostics cleared. Cloud clear failed: ${error.message || "Unknown error"}.`
+      : "Diagnostic data cleared locally and from the cloud.";
   } else {
-    uiState.debugLogStatus = "Debug logs cleared locally.";
-  }
-  renderDrawer();
-}
-
-async function copyEditorDebugLogs() {
-  const logs = getEditorDebugLogs();
-  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
-  const payload = {
-    exportedAt: new Date().toISOString(),
-    appBuild: APP_BUILD,
-    browser: getEditorDebugBrowserLabel(),
-    activeView: state.activeView,
-    wardId: getCurrentWard()?.id || "",
-    wardName: getCurrentWard()?.name || "",
-    noteId: getCurrentNote()?.id || "",
-    noteTitle: getCurrentNote()?.title || "",
-    device: captureDeviceDebugSnapshot(),
-    layout: captureLayoutDebugSnapshot(),
-    currentEditorSnapshot: captureEditorDebugSnapshot(editor),
-    logCount: logs.length,
-    logs
-  };
-
-  try {
-    await copyTextToClipboard(JSON.stringify(payload, null, 2));
-    uiState.debugLogStatus = `Copied ${logs.length} debug log${logs.length === 1 ? "" : "s"}.`;
-  } catch {
-    uiState.debugLogStatus = "Could not copy logs. Try again from Safari/Chrome after tapping the page.";
+    uiState.debugLogStatus = "Diagnostic data cleared locally.";
   }
   renderDrawer();
 }
@@ -5264,28 +5224,6 @@ function flushPendingEditorDebugLogsForLifecycle(reason) {
   });
 }
 
-async function uploadPendingEditorDebugLogsNow() {
-  if (!isEditorDebugLoggingEnabled()) {
-    uiState.debugLogStatus = "Turn on debug logs first.";
-    renderDrawer();
-    return;
-  }
-  if (!authState.client || !authState.user) {
-    uiState.debugLogStatus = "Sign in before saving debug logs to web.";
-    renderDrawer();
-    return;
-  }
-
-  try {
-    await uploadPendingEditorDebugLogs();
-    uiState.debugLogStatus = getEditorDebugLogs().some((log) => log.clientLogId && !log.cloudSavedAt)
-      ? "Saved a batch of debug logs to web. More logs are queued."
-      : "Debug logs are saved to web.";
-  } catch (error) {
-    uiState.debugLogStatus = `Debug web save failed: ${error?.message || "Unknown error"}.`;
-  }
-  renderDrawer();
-}
 
 async function uploadPendingEditorDebugLogs({ batchLimit = EDITOR_DEBUG_CLOUD_BATCH_LIMIT, keepalive = false, renderStatus = true } = {}) {
   if (!isEditorDebugLoggingEnabled() || !authState.client || !authState.user) return;
@@ -5409,24 +5347,6 @@ function buildEditorDebugCloudRow(log) {
 function normalizeDebugLogTimestamp(value) {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date().toISOString();
-}
-
-async function copyTextToClipboard(text) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.top = "-9999px";
-  document.body.appendChild(textarea);
-  textarea.select();
-  const copied = document.execCommand("copy");
-  textarea.remove();
-  if (!copied) throw new Error("Clipboard copy failed");
 }
 
 function getEditorDebugBrowserLabel() {

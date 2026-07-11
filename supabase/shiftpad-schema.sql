@@ -138,6 +138,9 @@ create table if not exists public.shiftpad_editor_debug_logs (
 create index if not exists shiftpad_editor_debug_logs_user_created_idx
 on public.shiftpad_editor_debug_logs (user_id, created_at desc);
 
+create index if not exists shiftpad_editor_debug_logs_logged_at_idx
+on public.shiftpad_editor_debug_logs (logged_at);
+
 alter table public.shiftpad_editor_debug_logs enable row level security;
 
 drop policy if exists "shiftpad_editor_debug_logs_select_own" on public.shiftpad_editor_debug_logs;
@@ -168,6 +171,26 @@ on public.shiftpad_editor_debug_logs
 for delete
 to authenticated
 using ((select auth.uid()) = user_id);
+
+create extension if not exists pg_cron with schema pg_catalog;
+
+do $$
+declare
+  existing_job_id bigint;
+begin
+  for existing_job_id in
+    select jobid from cron.job where jobname = 'shiftpad_prune_editor_debug_logs_14_days'
+  loop
+    perform cron.unschedule(existing_job_id);
+  end loop;
+
+  perform cron.schedule(
+    'shiftpad_prune_editor_debug_logs_14_days',
+    '27 3 * * *',
+    $cron$delete from public.shiftpad_editor_debug_logs where logged_at < now() - interval '14 days'$cron$
+  );
+end
+$$;
 
 grant select, insert, update, delete on table public.shiftpad_editor_debug_logs to authenticated, service_role;
 grant usage, select on sequence public.shiftpad_editor_debug_logs_id_seq to authenticated, service_role;
