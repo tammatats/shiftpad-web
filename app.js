@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-12-hn-tag-v1";
+const APP_BUILD = "2026-07-12-bed-delete-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -937,6 +937,12 @@ function bindEvents() {
     const action = event.target.closest?.("[data-bed-action]");
     if (action) {
       setBedActionMode(action.dataset.bedAction);
+      return;
+    }
+
+    const deleteBed = event.target.closest?.("[data-bed-delete-confirm]");
+    if (deleteBed) {
+      deleteSelectedBedSection();
       return;
     }
 
@@ -2066,7 +2072,7 @@ function closeBedActionSheet() {
 }
 
 function setBedActionMode(mode) {
-  if (!uiState.bedAction || !["menu", "rename", "move"].includes(mode)) return;
+  if (!uiState.bedAction || !["menu", "rename", "move", "delete"].includes(mode)) return;
   uiState.bedAction.mode = mode;
   renderBedActionSheet({ focusRenameImmediately: mode === "rename" });
 }
@@ -2093,12 +2099,13 @@ function renderBedActionSheet({ focusRenameImmediately = false } = {}) {
         <header class="bed-action-head">
           <div>
             <p class="section-kicker">${escapeHtml(sourceWard.name)} · Bed ${escapeHtml(action.label)}</p>
-            <h2 id="bed-action-title">${action.mode === "rename" ? "Rename bed" : action.mode === "move" ? "Move to ward" : "Bed actions"}</h2>
+            <h2 id="bed-action-title">${action.mode === "rename" ? "Rename bed" : action.mode === "move" ? "Move to ward" : action.mode === "delete" ? "Delete bed" : "Bed actions"}</h2>
           </div>
           <button class="bed-action-close" type="button" data-bed-action-close="true" aria-label="Close bed actions">&times;</button>
         </header>
         ${action.mode === "rename" ? renderBedRenameForm(action) : ""}
         ${action.mode === "move" ? renderBedMoveOptions(targetWards) : ""}
+        ${action.mode === "delete" ? renderBedDeleteConfirmation(action) : ""}
         ${action.mode === "menu" ? renderBedActionOptions(targetWards.length > 0) : ""}
       </section>
     </div>
@@ -2128,6 +2135,10 @@ function renderBedActionOptions(canMove) {
       <button class="bed-action-option" type="button" data-bed-action="move" ${canMove ? "" : "disabled"}>
         <span>Move to ward</span>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path><path d="m14 7 5 5-5 5"></path></svg>
+      </button>
+      <button class="bed-action-option is-danger" type="button" data-bed-action="delete">
+        <span>Delete bed</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M6 6l1 14h10l1-14"></path><path d="M10 10v6M14 10v6"></path></svg>
       </button>
     </div>
   `;
@@ -2169,6 +2180,19 @@ function renderBedMoveOptions(targetWards) {
   `;
 }
 
+function renderBedDeleteConfirmation(action) {
+  return `
+    <div class="bed-action-confirm">
+      <p>Delete <strong>Bed ${escapeHtml(action.label)}</strong> and all of its notes, tasks, and reminders?</p>
+      <p class="bed-action-confirm-note">A recovery copy will be saved in History.</p>
+      <div class="bed-action-form-actions">
+        <button class="ghost-btn" type="button" data-bed-action="menu">Back</button>
+        <button class="bed-delete-confirm-btn" type="button" data-bed-delete-confirm="true">Delete bed</button>
+      </div>
+    </div>
+  `;
+}
+
 function getSelectedBedDocumentContext() {
   const action = uiState.bedAction;
   if (!action) return null;
@@ -2198,6 +2222,41 @@ function renameSelectedBed(value) {
   render();
 }
 
+function getSelectedBedSectionLines(context) {
+  if (!context?.root || !context.line) return [];
+  const sourceLines = Array.from(context.root.children);
+  const startIndex = sourceLines.indexOf(context.line);
+  if (startIndex < 0) return [];
+  const nextBedOffset = sourceLines
+    .slice(startIndex + 1)
+    .findIndex((line) => line.querySelector?.('.tag-token[data-tag="bed"]'));
+  const endIndex = nextBedOffset < 0 ? sourceLines.length : startIndex + 1 + nextBedOffset;
+  return sourceLines.slice(startIndex, endIndex);
+}
+
+function deleteSelectedBedSection() {
+  const context = getSelectedBedDocumentContext();
+  if (!context) return;
+  const sectionLines = getSelectedBedSectionLines(context);
+  if (!sectionLines.length) return;
+
+  addRecoverySnapshot({
+    note: context.note,
+    ward: context.ward,
+    documentHtml: context.note.documentHtml,
+    reason: `Before deleting Bed ${context.action.label}`
+  });
+  sectionLines.forEach((line) => line.remove());
+  normalizeBedSectionSeparators(context.root);
+
+  context.note.documentHtml = sanitizeEditorHtml(context.root.innerHTML);
+  context.note.updatedAt = Date.now();
+  uiState.savedSelection = null;
+  uiState.bedAction = null;
+  saveState({ skipRecovery: true });
+  render();
+}
+
 function moveBedSectionToWard(targetWardId) {
   const context = getSelectedBedDocumentContext();
   const targetWard = state.wards.find((ward) => ward.id === targetWardId && ward.id !== context?.ward.id);
@@ -2207,11 +2266,8 @@ function moveBedSectionToWard(targetWardId) {
     targetWard.notes.push(createNote(`${targetWard.name} handover`, ""));
   }
   const targetNote = targetWard.notes[0];
-  const sourceLines = Array.from(context.root.children);
-  const startIndex = sourceLines.indexOf(context.line);
-  const nextBedOffset = sourceLines.slice(startIndex + 1).findIndex((line) => line.querySelector?.('.tag-token[data-tag="bed"]'));
-  const endIndex = nextBedOffset < 0 ? sourceLines.length : startIndex + 1 + nextBedOffset;
-  const sectionLines = sourceLines.slice(startIndex, endIndex);
+  const sectionLines = getSelectedBedSectionLines(context);
+  if (!sectionLines.length) return;
   while (sectionLines.length > 1 && isEditorLineEmpty(sectionLines[sectionLines.length - 1])) {
     sectionLines.pop()?.remove();
   }

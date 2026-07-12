@@ -2333,6 +2333,38 @@ select:focus {
   stroke-linejoin: round;
 }
 
+.bed-action-option.is-danger {
+  border-color: rgba(166, 53, 40, 0.18);
+  background: rgba(255, 239, 235, 0.78);
+  color: #a63528;
+}
+
+.bed-action-confirm {
+  display: grid;
+  gap: 12px;
+}
+
+.bed-action-confirm p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.bed-action-confirm-note {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.bed-delete-confirm-btn {
+  min-height: 44px;
+  padding: 9px 14px;
+  border: 1px solid #a63528;
+  border-radius: 8px;
+  background: #a63528;
+  color: #fff;
+  font: inherit;
+  font-weight: 800;
+}
+
 .bed-action-form label {
   display: grid;
   gap: 7px;
