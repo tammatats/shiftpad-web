@@ -2215,7 +2215,9 @@ select:focus {
   overflow-anchor: none;
 }
 
-.notepad-editor:focus {
+.notepad-editor:focus,
+.notepad-editor:focus-visible {
+  outline: none;
   box-shadow: none;
 }
 
