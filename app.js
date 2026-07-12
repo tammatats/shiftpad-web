@@ -5540,57 +5540,6 @@ function createNote(title, patientFocus) {
   };
 }
 
-function createEntry({ bedTag, timeTag, kind, text }) {
-  return {
-    id: createId("entry"),
-    bedTag,
-    timeTag,
-    kind: getKindMeta(kind) ? kind : "general",
-    text,
-    done: false,
-    createdAt: Date.now()
-  };
-}
-
-function createSeedState() {
-  const wardA = createWard("Ward A", WARD_COLORS[0]);
-  const wardB = createWard("Ward B", WARD_COLORS[1]);
-
-  const noteA = createNote("Respiratory handover", "Beds 12 to 16");
-  noteA.summary = "Unwell patients clustered near the front bay. Watch labs and procedure timing through the morning.";
-  noteA.entries = [
-    createEntry({ bedTag: "12", timeTag: "07:30", kind: "lab", text: "CBC and magnesium sent. Chase result before consultant round." }),
-    createEntry({ bedTag: "14", timeTag: "09:00", kind: "procedure", text: "Pleural tap planned. Keep consent form and post-procedure obs ready." }),
-    createEntry({ bedTag: "15", timeTag: "", kind: "review", text: "Discuss repeat chest X-ray if oxygen need remains above baseline." })
-  ];
-  noteA.documentHtml = convertEntriesToDocumentHtml(noteA.entries);
-  noteA.updatedAt = Date.now();
-
-  const noteB = createNote("Overflow bay", "Recovery and procedure boarders");
-  noteB.summary = "Mostly stable, but timed reviews matter because procedures are spread through the day.";
-  noteB.entries = [
-    createEntry({ bedTag: "3", timeTag: "10:15", kind: "followup", text: "Call family after endoscopy slot is confirmed." }),
-    createEntry({ bedTag: "5", timeTag: "11:00", kind: "meds", text: "Restart anticoagulation only after GI team clears." })
-  ];
-  noteB.documentHtml = convertEntriesToDocumentHtml(noteB.entries);
-  noteB.updatedAt = Date.now();
-
-  wardA.notes.push(noteA);
-  wardB.notes.push(noteB);
-
-  return {
-    activeView: "notes",
-    selectedWardId: wardA.id,
-    selectedNoteId: noteA.id,
-    timelineScope: "all",
-    summaryTab: "beds",
-    preferences: defaultPreferences(),
-    recoveryHistory: [],
-    shiftArchives: [],
-    wards: [wardA, wardB]
-  };
-}
-
 function createBlankState() {
   const ward = createWard("Ward A", WARD_COLORS[0]);
   const note = createNote("Ward A handover", "");
@@ -5605,17 +5554,6 @@ function createBlankState() {
     recoveryHistory: [],
     shiftArchives: [],
     wards: [ward]
-  };
-}
-
-function createSeedAppState() {
-  return {
-    version: 3,
-    activeWorkspace: "shift",
-    workspaces: {
-      shift: createSeedState(),
-      day: createBlankState()
-    }
   };
 }
 
