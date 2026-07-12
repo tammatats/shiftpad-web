@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-12-cloud-recovery-v1";
+const APP_BUILD = "2026-07-12-cloud-recovery-v2";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -4829,6 +4829,32 @@ function hasMeaningfulNoteHtml(html) {
   return String(html || "").replace(/<br\s*\/?\s*>/gi, "").replace(/<[^>]+>/g, "").trim().length > 0;
 }
 
+function hasMeaningfulWorkspaceData(workspace) {
+  if (!workspace || !Array.isArray(workspace.wards)) return false;
+  if (workspace.wards.length > 1) return true;
+  return workspace.wards.some((ward) =>
+    Array.isArray(ward.notes) && ward.notes.some((note) =>
+      hasMeaningfulNoteHtml(note.documentHtml) || (Array.isArray(note.entries) && note.entries.length > 0)
+    )
+  );
+}
+
+function isSuspiciouslyBlankAppState(targetAppState) {
+  const workspaces = targetAppState?.workspaces;
+  return Boolean(
+    workspaces &&
+    !hasMeaningfulWorkspaceData(workspaces.shift) &&
+    !hasMeaningfulWorkspaceData(workspaces.day)
+  );
+}
+
+function hasRecoverableCloudData(remoteInput) {
+  if (remoteInput?.workspaces) {
+    return hasMeaningfulWorkspaceData(remoteInput.workspaces.shift) || hasMeaningfulWorkspaceData(remoteInput.workspaces.day);
+  }
+  return hasMeaningfulWorkspaceData(remoteInput);
+}
+
 function addRecoverySnapshot({ note, ward, documentHtml, reason, createdAt = Date.now() }) {
   if (!note || !ward || !hasMeaningfulNoteHtml(documentHtml)) return;
   const html = String(documentHtml).slice(0, RECOVERY_SNAPSHOT_MAX_HTML);
@@ -6663,6 +6689,27 @@ async function saveCloudStateNow({ conflictRetry = false } = {}) {
 
   authState.isSaving = true;
   renderAuthUi();
+
+  if (isSuspiciouslyBlankAppState(appState) && authState.lastCloudUpdatedAtValue) {
+    const { data: cloudRecord, error: cloudReadError } = await fetchCloudStateRecord();
+    if (cloudReadError) {
+      authState.isSaving = false;
+      throw cloudReadError;
+    }
+    if (cloudRecord?.state_json && hasRecoverableCloudData(cloudRecord.state_json)) {
+      appState = mergeRemoteStatePreservingLocalView(cloudRecord.state_json);
+      state = getActiveWorkspaceState(appState);
+      rememberCloudVersion(cloudRecord.updated_at);
+      authState.isSaving = false;
+      authState.suppressCloudSave = true;
+      saveState({ skipCloud: true, markDirty: false });
+      authState.suppressCloudSave = false;
+      setAuthMessage("Cloud notes were restored instead of being replaced by an empty local copy.");
+      render();
+      return;
+    }
+  }
+
   const updatedAt = new Date().toISOString();
   const payload = {
     user_id: authState.user.id,
