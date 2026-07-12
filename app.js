@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-12-bed-delete-v1";
+const APP_BUILD = "2026-07-12-hn-confirm-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -7175,6 +7175,12 @@ function handleNotepadBeforeInput(event) {
       return finishEditorDebugHandled(debugEntry, "finalize-time-tag-enter", editor);
     }
 
+    const hnLine = getCurrentEditingHnLine();
+    if (hnLine) {
+      finalizeEditingHnLine(hnLine);
+      return finishEditorDebugHandled(debugEntry, "finalize-hn-line-enter", editor);
+    }
+
     const bedLine = getCurrentEditingBedLine();
     if (bedLine) {
       finalizeEditingBedLine(bedLine);
@@ -7200,6 +7206,13 @@ function handleNotepadBeforeInput(event) {
       removeTagToken(activeToken);
       syncEditorDocument();
       return finishEditorDebugHandled(debugEntry, "delete-editing-tag", editor);
+    }
+
+    const hnLine = getCurrentEditingHnLine();
+    if (hnLine && isEditingHnLineEmpty(hnLine)) {
+      removeEditingHnLine(hnLine);
+      syncEditorDocument();
+      return finishEditorDebugHandled(debugEntry, "removeEmptyEditingHnLine", editor);
     }
 
     if (removeEmptyAutoTodoContinuation(editor)) {
@@ -7548,6 +7561,26 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
         key
       })
     : null;
+  const editingHnLine = getCurrentEditingHnLine();
+  if (editingHnLine) {
+    if (key === "Escape") {
+      removeEditingHnLine(editingHnLine);
+      syncEditorDocument();
+      return finishEditorDebugHandled(debugEntry, "removeEditingHnLine-escape", editor);
+    }
+
+    if (key === "Enter" || key === "Tab") {
+      finalizeEditingHnLine(editingHnLine);
+      return finishEditorDebugHandled(debugEntry, "finalizeEditingHnLine", editor);
+    }
+
+    if ((key === "Backspace" || key === "Delete") && isEditingHnLineEmpty(editingHnLine)) {
+      removeEditingHnLine(editingHnLine);
+      syncEditorDocument();
+      return finishEditorDebugHandled(debugEntry, "removeEmptyEditingHnLine", editor);
+    }
+  }
+
   const editingBedLine = getCurrentEditingBedLine();
   if (editingBedLine) {
     if (key === "Escape") {
@@ -7868,14 +7901,16 @@ function insertTagIntoEditor(editor, tag) {
 
   if (tag === "hn") {
     const tokenId = createId("tag");
-    insertHtmlAtSelection(
-      `<span class="tag-token tag-hn tag-editing" data-tag="hn" data-token-id="${escapeAttribute(
+    const insertion = insertBedEditorLine(
+      editor,
+      `<span class="tag-token tag-hn tag-editing" contenteditable="false" data-tag="hn" data-token-id="${escapeAttribute(
         tokenId
-      )}" data-hn-value="" data-editing="true">HN </span>`
+      )}" data-hn-value="" data-editing="true">HN</span>&nbsp;`
     );
-    const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
-    rememberPendingTagInsertion(tokenId, editor, insertionPoint);
-    placeCaretInsideTextNode(inserted, String(inserted?.textContent || "").length);
+    rememberPendingTagInsertion(tokenId, editor, insertionPoint, {
+      placedBeforeExistingLine: insertion.placedBeforeExistingLine
+    });
+    placeCaretAtEndOfLine(insertion.line);
     rememberEditorSelection(editor);
     return;
   }
@@ -9384,6 +9419,20 @@ function getEditingBedToken(line) {
   return line?.querySelector?.('.tag-token[data-tag="bed"][data-editing="true"]') || null;
 }
 
+function getCurrentEditingHnLine() {
+  const line = getCurrentEditorLine();
+  if (!line) return null;
+  return line.querySelector('.tag-token[data-tag="hn"][data-editing="true"]') ? line : null;
+}
+
+function getEditingHnToken(line) {
+  return line?.querySelector?.('.tag-token[data-tag="hn"][data-editing="true"]') || null;
+}
+
+function isEditingHnLineEmpty(line) {
+  return getEditableTextFromLine(line).trim() === "";
+}
+
 function isEditingBedLineEmpty(line) {
   return getEditableTextFromLine(line).trim() === "";
 }
@@ -9436,10 +9485,53 @@ function finalizeEditingBedLine(line) {
   syncEditorDocument();
 }
 
+function finalizeEditingHnLine(line) {
+  const token = getEditingHnToken(line);
+  if (!token) return;
+
+  const digits = getEditableTextFromLine(line).replace(/\D/g, "").slice(0, 20);
+  if (!digits) {
+    removeEditingHnLine(line);
+    syncEditorDocument();
+    return;
+  }
+
+  const pendingInsertion = consumePendingTagInsertion(token);
+  token.textContent = `HN ${digits}`;
+  token.dataset.hnValue = digits;
+  token.dataset.editing = "false";
+  token.setAttribute("contenteditable", "false");
+  token.setAttribute("role", "button");
+  token.setAttribute("tabindex", "0");
+  token.setAttribute("aria-label", `HN ${digits}. Copy number`);
+  token.setAttribute("title", "Copy HN number");
+  token.classList.remove("tag-editing");
+  line.replaceChildren(token);
+  refreshLineTagClasses(line);
+  const shouldResumeOriginalLine =
+    pendingInsertion?.placedBeforeExistingLine &&
+    pendingInsertion.line &&
+    document.contains(pendingInsertion.line) &&
+    getNextEditorLine(line) === pendingInsertion.line;
+  if (shouldResumeOriginalLine) {
+    placeCaretAtTextOffset(pendingInsertion.line, pendingInsertion.textOffset);
+  } else {
+    placeCaretOnNewLine(line);
+  }
+  syncEditorDocument();
+}
+
+function removeEditingHnLine(line) {
+  removeEditingTagEntryLine(line, getEditingHnToken(line));
+}
+
 function removeEditingBedLine(line) {
+  removeEditingTagEntryLine(line, getEditingBedToken(line));
+}
+
+function removeEditingTagEntryLine(line, token) {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!line || !editor) return;
-  const token = getEditingBedToken(line);
   const pendingInsertion = consumePendingTagInsertion(token);
 
   const nextLine = line.nextElementSibling;
