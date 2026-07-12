@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-12-bed-sort-cleanup-v1";
+const APP_BUILD = "2026-07-12-cloud-recovery-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -5631,7 +5631,7 @@ function createBlankAppState() {
 }
 
 function loadAppState() {
-  return normalizeAppState(loadAnonymousLocalState() || loadLegacyLocalState() || createSeedAppState());
+  return normalizeAppState(loadAnonymousLocalState() || loadLegacyLocalState() || createBlankAppState());
 }
 
 function applyUrlOverrides() {
@@ -5672,12 +5672,12 @@ function normalizeAppState(input) {
     };
   }
 
-  return createSeedAppState();
+  return createBlankAppState();
 }
 
 function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
   if (!input || typeof input !== "object" || !Array.isArray(input.wards) || !input.wards.length) {
-    return blankFallback ? createBlankState() : createSeedState();
+    return createBlankState();
   }
 
   const wards = input.wards.map((ward, index) => {
@@ -5726,12 +5726,25 @@ function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
       color: typeof ward.color === "string" && ward.color ? ward.color : WARD_COLORS[index % WARD_COLORS.length],
       notes
     };
-  });
+  }).filter((ward) => !isBuiltInDemoWard(ward));
+
+  if (!wards.length) {
+    const blank = createBlankState();
+    return {
+      ...blank,
+      preferences: normalizePreferences(input.preferences),
+      recoveryHistory: normalizeRecoveryHistory(input.recoveryHistory),
+      shiftArchives: normalizeShiftArchives(input.shiftArchives)
+    };
+  }
+
+  const selectedWard = wards.find((ward) => ward.id === input.selectedWardId) || wards[0];
+  const selectedNote = selectedWard.notes.find((note) => note.id === input.selectedNoteId) || selectedWard.notes[0];
 
   return {
     activeView: input.activeView === "timeline" ? "timeline" : "notes",
-    selectedWardId: typeof input.selectedWardId === "string" ? input.selectedWardId : wards[0].id,
-    selectedNoteId: typeof input.selectedNoteId === "string" ? input.selectedNoteId : wards[0].notes[0]?.id || "",
+    selectedWardId: selectedWard.id,
+    selectedNoteId: selectedNote?.id || "",
     timelineScope: input.timelineScope === "active" ? "active" : "all",
     summaryTab: ["beds", "reminders", "todo"].includes(input.summaryTab) ? input.summaryTab : "beds",
     preferences: normalizePreferences(input.preferences),
@@ -5739,6 +5752,16 @@ function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
     shiftArchives: normalizeShiftArchives(input.shiftArchives),
     wards
   };
+}
+
+function isBuiltInDemoWard(ward) {
+  return ward.notes.some((note) => {
+    const searchable = `${note.title}\n${note.summary}\n${note.documentHtml}\n${note.entries.map((entry) => entry.text).join("\n")}`;
+    return (
+      (note.title === "Respiratory handover" && searchable.includes("CBC and magnesium sent. Chase result before consultant round.")) ||
+      (note.title === "Overflow bay" && searchable.includes("Restart anticoagulation only after GI team clears."))
+    );
+  });
 }
 
 function normalizeRecoveryHistory(input) {
