@@ -1949,6 +1949,12 @@ select:focus {
   border-color: rgba(67, 149, 96, 0.18);
 }
 
+.quick-chip.hn {
+  background: rgba(255, 226, 198, 0.84);
+  border-color: rgba(205, 123, 55, 0.24);
+  color: #82491f;
+}
+
 .quick-chip.time {
   background: rgba(234, 242, 255, 0.78);
   border-color: rgba(94, 142, 216, 0.18);
@@ -2392,6 +2398,27 @@ select:focus {
   font-weight: inherit;
 }
 
+.notepad-editor .tag-hn {
+  background: rgba(255, 221, 187, 0.88);
+  border-color: rgba(205, 123, 55, 0.25);
+  color: #7f451c;
+  font-size: 0.94em;
+  font-weight: 800;
+  cursor: copy;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.notepad-editor .tag-hn.tag-editing {
+  cursor: text;
+}
+
+.notepad-editor .tag-hn.is-copied {
+  background: rgba(220, 243, 224, 0.96);
+  border-color: rgba(67, 149, 96, 0.38);
+  box-shadow: 0 0 0 2px rgba(67, 149, 96, 0.12);
+  color: #285d3a;
+}
+
 .notepad-editor .tag-lab {
   background: rgba(240, 234, 255, 0.76);
   border-color: rgba(143, 101, 214, 0.15);
@@ -2645,6 +2672,12 @@ select:focus {
   border-color: rgba(67, 149, 96, 0.18);
   background: rgba(232, 246, 238, 0.86);
   color: #285d3a;
+}
+
+.bed-summary-tag.tag-hn {
+  border-color: rgba(205, 123, 55, 0.22);
+  background: rgba(255, 226, 198, 0.88);
+  color: #82491f;
 }
 
 .bed-summary-tag.tag-todo.is-done {
@@ -3181,6 +3214,12 @@ select:focus {
   .mobile-tag-option.todo {
     background: rgba(232, 246, 238, 0.86);
     border-color: rgba(67, 149, 96, 0.18);
+  }
+
+  .mobile-tag-option.hn {
+    background: rgba(255, 226, 198, 0.94);
+    border-color: rgba(205, 123, 55, 0.24);
+    color: #82491f;
   }
 
   .mobile-tag-option.time {

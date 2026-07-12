@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-11-ipad-split-caret-v1";
+const APP_BUILD = "2026-07-12-hn-tag-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -47,6 +47,7 @@ const WORKSPACE_META = {
 };
 const KIND_META = {
   general: { label: "General", icon: "Memo", className: "" },
+  hn: { label: "HN", icon: "HN", className: "kind-hn" },
   lab: { label: "Lab", icon: "Lab", className: "kind-lab" },
   io: { label: "I/O", icon: "I/O", className: "kind-io" },
   todo: { label: "To-do", icon: "To-do", className: "kind-todo" }
@@ -677,6 +678,14 @@ function bindEvents() {
       return;
     }
 
+    const hnToken = event.target.closest('.tag-token[data-tag="hn"]');
+    if (hnToken && hnToken.dataset.editing !== "true") {
+      event.preventDefault();
+      uiState.pendingEditorTapDebug = null;
+      copyHnNumber(hnToken);
+      return;
+    }
+
     const todoToken = event.target.closest('.tag-token[data-tag="todo"]');
     if (todoToken) {
       toggleTodoTokenInEditor(todoToken);
@@ -861,6 +870,12 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("keydown", (event) => {
+    const hnToken = event.target.closest?.('.tag-token[data-tag="hn"][data-editing="false"]');
+    if (hnToken && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      copyHnNumber(hnToken);
+      return;
+    }
     if (getEditorFromEventTarget(event.target)) {
       restoreEditorSelectionAfterScreenSwitch("keydown");
       hideBedIndex();
@@ -3122,7 +3137,9 @@ function getBedSummaryBadges(entry) {
   }
 
   if (entry.kind && entry.kind !== "general" && entry.kind !== entry.reminderType && entry.kind !== "todo") {
-    const kindLabel = getKindMeta(entry.kind)?.label || entry.kind;
+    const kindLabel = entry.kind === "hn"
+      ? String(entry.primaryTagText || "").trim() || "HN"
+      : getKindMeta(entry.kind)?.label || entry.kind;
     if (kindLabel) badges.push({ type: entry.kind, label: kindLabel });
   }
 
@@ -3291,6 +3308,7 @@ function renderEntryChip(label, extraClass = "") {
 function getAvailableQuickTags() {
   return [
     { key: "bed", label: "Bed", className: "bed" },
+    { key: "hn", label: "HN", className: "hn" },
     { key: "todo", label: "To-do", className: "todo" },
     { key: "time", label: "Time", className: "time" },
     { key: "lab", label: "Lab", className: "lab" },
@@ -5266,6 +5284,7 @@ function buildSummaryGroups(scope) {
             summaryText: formatTimedSummaryLine(line),
             bedTag: line.bedLabel,
             kind: line.primaryKind,
+            primaryTagText: line.primaryTagText,
             reminderType: line.reminderType
           }
         };
@@ -5364,7 +5383,11 @@ function formatBedSummaryLine(line) {
     }
   }
   if (line.primaryKind && line.primaryKind !== "general") {
-    labels.push(getKindMeta(line.primaryKind)?.label || line.primaryKind);
+    labels.push(
+      line.primaryKind === "hn"
+        ? String(line.primaryTagText || "").trim() || "HN"
+        : getKindMeta(line.primaryKind)?.label || line.primaryKind
+    );
   }
 
   const prefix = labels.filter(Boolean).join(" · ");
@@ -7083,6 +7106,14 @@ function handleNotepadBeforeInput(event) {
 
     discardFreshFinalizedTagInsertions();
     const activeToken = getActiveTagToken();
+    if (activeToken && activeToken.dataset.tag === "hn" && activeToken.dataset.editing === "true") {
+      if (finalizeHnToken(activeToken, { moveToNewLine: true })) {
+        return finishEditorDebugHandled(debugEntry, "finalize-hn-tag-enter", editor);
+      }
+      removeTagToken(activeToken);
+      syncEditorDocument();
+      return finishEditorDebugHandled(debugEntry, "remove-empty-hn-tag-enter", editor);
+    }
     if (activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true") {
       finalizeTagToken(activeToken, { moveToNewLine: true });
       return finishEditorDebugHandled(debugEntry, "finalize-time-tag-enter", editor);
@@ -7105,6 +7136,10 @@ function handleNotepadBeforeInput(event) {
     }
 
     const activeToken = getActiveTagToken();
+    if (activeToken && activeToken.dataset.tag === "hn" && activeToken.dataset.editing === "true") {
+      handleEditingHnDelete(activeToken, inputType);
+      return finishEditorDebugHandled(debugEntry, "handleEditingHnDelete", editor);
+    }
     if (activeToken && shouldDeleteEditingTag(activeToken)) {
       removeTagToken(activeToken);
       syncEditorDocument();
@@ -7150,6 +7185,10 @@ function handleNotepadBeforeInput(event) {
     }
   } else if (inputType.startsWith("insert") || inputType === "formatSetBlockTextDirection") {
     const activeToken = getActiveTagToken();
+    if (inputType === "insertText" && activeToken && activeToken.dataset.tag === "hn" && activeToken.dataset.editing === "true") {
+      handleEditingHnTextInput(activeToken, event.data || "");
+      return finishEditorDebugHandled(debugEntry, "handleEditingHnTextInput", editor);
+    }
     if (inputType === "insertText" && activeToken && isTimeLikeTag(activeToken.dataset.tag) && activeToken.dataset.editing === "true") {
       handleEditingTimeTextInput(activeToken, event.data || "");
       return finishEditorDebugHandled(debugEntry, "handleEditingTimeTextInput", editor);
@@ -7266,6 +7305,142 @@ function handleEditingTimeTextInput(token, text) {
   syncEditorDocument();
 }
 
+function handleEditingHnTextInput(token, text) {
+  if (!token || token.dataset.editing !== "true") return false;
+  const digitsToInsert = String(text || "").replace(/\D/g, "");
+  if (!digitsToInsert) return true;
+
+  const currentDigits = getHnNumber(token);
+  const selectionRange = getTokenTextSelectionRange(token);
+  const prefixLength = getHnPrefixLength(token);
+  const start = selectionRange ? Math.max(0, selectionRange.start - prefixLength) : currentDigits.length;
+  const end = selectionRange ? Math.max(start, selectionRange.end - prefixLength) : currentDigits.length;
+  const nextDigits = `${currentDigits.slice(0, start)}${digitsToInsert}${currentDigits.slice(end)}`.slice(0, 20);
+  const nextOffset = Math.min(nextDigits.length, start + digitsToInsert.length);
+  setEditingHnValue(token, nextDigits, nextOffset);
+  syncEditorDocument();
+  return true;
+}
+
+function handleEditingHnDelete(token, inputType) {
+  if (!token || token.dataset.editing !== "true") return false;
+  const currentDigits = getHnNumber(token);
+  if (!currentDigits) {
+    removeTagToken(token);
+    syncEditorDocument();
+    return true;
+  }
+
+  const selectionRange = getTokenTextSelectionRange(token);
+  const prefixLength = getHnPrefixLength(token);
+  let start = selectionRange ? Math.max(0, selectionRange.start - prefixLength) : currentDigits.length;
+  let end = selectionRange ? Math.max(start, selectionRange.end - prefixLength) : currentDigits.length;
+  start = Math.min(start, currentDigits.length);
+  end = Math.min(end, currentDigits.length);
+
+  if (start === end) {
+    if (inputType === "deleteContentForward") {
+      end = Math.min(currentDigits.length, end + 1);
+    } else {
+      start = Math.max(0, start - 1);
+    }
+  }
+
+  const nextDigits = `${currentDigits.slice(0, start)}${currentDigits.slice(end)}`;
+  setEditingHnValue(token, nextDigits, start);
+  syncEditorDocument();
+  return true;
+}
+
+function setEditingHnValue(token, digits, caretDigitOffset = String(digits || "").length) {
+  const normalizedDigits = String(digits || "").replace(/\D/g, "").slice(0, 20);
+  token.textContent = normalizedDigits ? `HN ${normalizedDigits}` : "HN ";
+  token.dataset.hnValue = normalizedDigits;
+  placeCaretInsideTextNode(token, getHnPrefixLength(token) + Math.min(normalizedDigits.length, caretDigitOffset));
+}
+
+function getHnPrefixLength(token) {
+  return String(token?.textContent || "").match(/^HN\s*/i)?.[0]?.length || 3;
+}
+
+function getHnNumber(token) {
+  const stored = String(token?.dataset?.hnValue || "").replace(/\D/g, "");
+  if (stored) return stored.slice(0, 20);
+  return String(token?.textContent || "").replace(/^HN\s*/i, "").replace(/\D/g, "").slice(0, 20);
+}
+
+function finalizeHnToken(token, { moveToNewLine = false } = {}) {
+  const digits = getHnNumber(token);
+  if (!token || !digits) return false;
+  token.textContent = `HN ${digits}`;
+  token.dataset.hnValue = digits;
+  token.dataset.editing = "false";
+  token.setAttribute("contenteditable", "false");
+  token.setAttribute("role", "button");
+  token.setAttribute("tabindex", "0");
+  token.setAttribute("aria-label", `HN ${digits}. Copy number`);
+  token.setAttribute("title", "Copy HN number");
+  token.classList.remove("tag-editing");
+  discardPendingTagInsertion(token);
+  const line = findEditorLine(token);
+  refreshLineTagClasses(line);
+  if (moveToNewLine) {
+    placeCaretOnNewLine(line || token);
+  } else {
+    placeCaretAfterNode(token, true);
+  }
+  syncEditorDocument();
+  return true;
+}
+
+async function copyHnNumber(token) {
+  const digits = getHnNumber(token);
+  if (!digits) return false;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(digits);
+    copied = true;
+  } catch {
+    copied = copyTextWithFallback(digits);
+  }
+
+  if (copied) {
+    token.classList.add("is-copied");
+    token.setAttribute("aria-label", `HN ${digits}. Number copied`);
+    window.setTimeout(() => {
+      token.classList.remove("is-copied");
+      token.setAttribute("aria-label", `HN ${digits}. Copy number`);
+    }, 850);
+  }
+  appendEditorDebugLog({
+    action: "copy-hn-number",
+    source: "hn-tag",
+    success: copied,
+    handledBy: copied ? "clipboard" : "clipboard-failed",
+    before: null,
+    after: captureEditorCaretDebugSnapshot(refs.editorRoot.querySelector("#notepad-editor"))
+  });
+  return copied;
+}
+
+function copyTextWithFallback(text) {
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  input.remove();
+  return copied;
+}
+
 function getTokenTextSelectionRange(token) {
   const selection = window.getSelection();
   const textNode = token?.firstChild;
@@ -7340,6 +7515,26 @@ function handleEditorSpecialKey(key, { shiftKey = false, keyboardEvent = null } 
     }
 
     const tagType = token.dataset.tag;
+    if (tagType === "hn" && token.dataset.editing === "true") {
+      if (key === "Enter" || key === "Tab") {
+        const finalized = finalizeHnToken(token, { moveToNewLine: key === "Enter" });
+        if (!finalized) {
+          removeTagToken(token);
+          syncEditorDocument();
+        }
+        return finishEditorDebugHandled(debugEntry, finalized ? "finalize-hn-tag" : "remove-empty-hn-tag", editor);
+      }
+
+      if (key === "Backspace" || key === "Delete") {
+        handleEditingHnDelete(token, key === "Delete" ? "deleteContentForward" : "deleteContentBackward");
+        return finishEditorDebugHandled(debugEntry, "handleEditingHnDelete", editor);
+      }
+
+      if (keyboardEvent && isPrintableKey(keyboardEvent)) {
+        handleEditingHnTextInput(token, key);
+        return finishEditorDebugHandled(debugEntry, "handleEditingHnTextInput", editor);
+      }
+    }
     if (tagType === "bed" && (key === " " || key === "Tab")) {
       finalizeTagToken(token, { moveToNewLine: true });
       return finishEditorDebugHandled(debugEntry, "finalize-bed-tag-space-tab", editor);
@@ -7611,6 +7806,20 @@ function insertTagIntoEditor(editor, tag) {
       placedBeforeExistingLine: insertion.placedBeforeExistingLine
     });
     placeCaretAtEndOfLine(insertion.line);
+    rememberEditorSelection(editor);
+    return;
+  }
+
+  if (tag === "hn") {
+    const tokenId = createId("tag");
+    insertHtmlAtSelection(
+      `<span class="tag-token tag-hn tag-editing" data-tag="hn" data-token-id="${escapeAttribute(
+        tokenId
+      )}" data-hn-value="" data-editing="true">HN </span>`
+    );
+    const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
+    rememberPendingTagInsertion(tokenId, editor, insertionPoint);
+    placeCaretInsideTextNode(inserted, String(inserted?.textContent || "").length);
     rememberEditorSelection(editor);
     return;
   }
@@ -7957,6 +8166,20 @@ function createCleanPastedTagToken(token) {
     return clean;
   }
 
+  if (tag === "hn") {
+    const digits = getHnNumber(token);
+    if (!digits) return doc.createTextNode(token.textContent || "");
+    clean.classList.add("tag-hn");
+    clean.dataset.hnValue = digits;
+    clean.dataset.editing = "false";
+    clean.setAttribute("role", "button");
+    clean.setAttribute("tabindex", "0");
+    clean.setAttribute("aria-label", `HN ${digits}. Copy number`);
+    clean.setAttribute("title", "Copy HN number");
+    clean.textContent = `HN ${digits}`;
+    return clean;
+  }
+
   if (tag === "io") {
     clean.classList.add("tag-io");
     clean.setAttribute("data-done-14", token.getAttribute("data-done-14") === "true" ? "true" : "false");
@@ -7988,7 +8211,7 @@ function createCleanPastedTagToken(token) {
 }
 
 function isPreservablePastedTag(tag) {
-  return ["bed", "time", "lab", "io", "todo"].includes(tag) || Boolean(getCustomTagDefinition(tag));
+  return ["bed", "hn", "time", "lab", "io", "todo"].includes(tag) || Boolean(getCustomTagDefinition(tag));
 }
 
 function stripElementAttributes(element) {
@@ -8921,6 +9144,10 @@ function shouldDeleteEditingTag(token) {
     return text.replace(/^Bed\s*/i, "").trim() === "";
   }
 
+  if (token.dataset.tag === "hn") {
+    return getHnNumber(token) === "";
+  }
+
   if (isTimeLikeTag(token.dataset.tag)) {
     if (!selection) return text === "" || text === "00.00";
     const selectedText = String(selection.toString() || "").replace(/\u00a0/g, " ").trim();
@@ -9317,6 +9544,7 @@ function extractTaggedLines(note) {
       ioDoneByTime: reminderTag?.type === "io" ? getIoDoneState(reminderTag) : {},
       timeAtStart: Boolean(line.timeAtStart && reminderTag && reminderTag.type !== "io"),
       primaryKind: primaryTag?.type || "general",
+      primaryTagText: primaryTag?.text || "",
       primaryTokenId: primaryTag?.id || ""
     }));
   });
@@ -9343,6 +9571,7 @@ function createParsedLine({
   ioDoneByTime = {},
   timeAtStart = false,
   primaryKind = "general",
+  primaryTagText = "",
   primaryTokenId = "",
   bedHeaderOnly = false
 }) {
@@ -9365,6 +9594,7 @@ function createParsedLine({
     ioDoneByTime,
     timeAtStart,
     primaryKind,
+    primaryTagText,
     primaryTokenId,
     bedHeaderOnly
   };
@@ -9717,6 +9947,19 @@ function normalizeEditorBlocks(root) {
     Array.from(line.querySelectorAll('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]')).forEach((token) => {
       if (token.dataset.editing === "true") return;
       token.textContent = normalizeTimeTagValue(token.textContent) || "00.00";
+    });
+    Array.from(line.querySelectorAll('.tag-token[data-tag="hn"]')).forEach((token) => {
+      if (token.dataset.editing === "true") return;
+      const digits = getHnNumber(token);
+      if (!digits) return;
+      token.textContent = `HN ${digits}`;
+      token.dataset.hnValue = digits;
+      token.dataset.editing = "false";
+      token.setAttribute("contenteditable", "false");
+      token.setAttribute("role", "button");
+      token.setAttribute("tabindex", "0");
+      token.setAttribute("aria-label", `HN ${digits}. Copy number`);
+      token.setAttribute("title", "Copy HN number");
     });
     const hasTime = Boolean(line.querySelector('.tag-token[data-tag="time"], .tag-token[data-tag="lab"]'));
     const hasIo = Boolean(line.querySelector('.tag-token[data-tag="io"]'));
