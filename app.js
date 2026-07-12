@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-12-hn-confirm-v1";
+const APP_BUILD = "2026-07-12-bed-sort-cleanup-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const WORKSPACE_META = {
@@ -1895,7 +1895,7 @@ function renderStickyWardBar() {
   }
 
   refs.stickyWardRoot.classList.remove("is-empty");
-  const canSortBeds = getBedIndexForNote(note).length > 1;
+  const canSortBeds = getBedIndexForNote(note).length > 0;
   refs.stickyWardRoot.innerHTML = `
     <div class="sticky-ward-bar">
       <p class="section-kicker">Main notepad</p>
@@ -2350,7 +2350,7 @@ function sortCurrentWardBedSections() {
     }
   });
 
-  if (sections.length < 2) return;
+  if (!sections.length) return;
 
   const previousHtml = sanitizeEditorHtml(editor.innerHTML);
   const sortedSections = [...sections].sort((left, right) => {
@@ -2359,7 +2359,13 @@ function sortCurrentWardBedSections() {
   });
 
   const fragment = document.createDocumentFragment();
-  prefixLines.forEach((line) => fragment.appendChild(line));
+  const meaningfulPrefixLines = prefixLines.filter((line) => !isEditorLineEmpty(line));
+  meaningfulPrefixLines.forEach((line) => fragment.appendChild(line));
+  if (meaningfulPrefixLines.length) {
+    const spacer = editor.ownerDocument.createElement("div");
+    spacer.innerHTML = "<br>";
+    fragment.appendChild(spacer);
+  }
   sortedSections.forEach((section, sectionIndex) => {
     const compactedLines = [...section.lines];
     while (compactedLines.length > 1 && isEditorLineEmpty(compactedLines[compactedLines.length - 1])) {
@@ -2403,7 +2409,7 @@ function updateSortBedsButtonFromEditor(editor = refs.editorRoot.querySelector("
       .map((token) => String(token.textContent || "").replace(/^Bed\s*/i, "").trim().toUpperCase())
       .filter(Boolean)
   );
-  button.disabled = bedLabels.size < 2;
+  button.disabled = bedLabels.size < 1;
 }
 
 function renderTimeline() {
