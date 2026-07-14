@@ -30,9 +30,10 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-12-cloud-recovery-v2";
+const APP_BUILD = "2026-07-14-summary-tabs-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
+const SUMMARY_TABS = ["reminders", "todo"];
 const WORKSPACE_META = {
   shift: {
     title: "ShiftPad",
@@ -1029,7 +1030,7 @@ function bindEvents() {
   refs.timelineRoot.addEventListener("click", (event) => {
     const tab = event.target.closest("[data-summary-tab]");
     if (tab) {
-      state.summaryTab = ["beds", "reminders", "todo"].includes(tab.dataset.summaryTab) ? tab.dataset.summaryTab : "beds";
+      state.summaryTab = SUMMARY_TABS.includes(tab.dataset.summaryTab) ? tab.dataset.summaryTab : "reminders";
       saveState();
       renderTimeline();
       return;
@@ -2414,7 +2415,7 @@ function updateSortBedsButtonFromEditor(editor = refs.editorRoot.querySelector("
 
 function renderTimeline() {
   const scope = state.timelineScope || "all";
-  const summaryTab = ["beds", "reminders", "todo"].includes(state.summaryTab) ? state.summaryTab : "beds";
+  const summaryTab = SUMMARY_TABS.includes(state.summaryTab) ? state.summaryTab : "reminders";
   const summary = buildSummaryGroups(scope);
   const openReminderCount = summary.timed.filter((item) => !item.entry.done).length;
   const openTodoCount = summary.todo.filter((item) => !item.entry.done).length;
@@ -2424,7 +2425,6 @@ function renderTimeline() {
   refs.timelineRoot.innerHTML = `
     <div class="summary-controls-row">
       <div class="summary-switcher" role="tablist" aria-label="Summary sections">
-        <button class="summary-tab ${summaryTab === "beds" ? "is-active" : ""}" type="button" role="tab" aria-selected="${summaryTab === "beds"}" data-summary-tab="beds">Bed Info</button>
         <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" role="tab" aria-selected="${summaryTab === "reminders"}" data-summary-tab="reminders">Reminders</button>
         <button class="summary-tab ${summaryTab === "todo" ? "is-active" : ""}" type="button" role="tab" aria-selected="${summaryTab === "todo"}" data-summary-tab="todo">To-do list</button>
       </div>
@@ -2433,7 +2433,6 @@ function renderTimeline() {
         <strong class="summary-count">${escapeHtml(scopeLabel)} · ${openReminderCount} reminder${openReminderCount === 1 ? "" : "s"} · ${openTodoCount} to-do</strong>
       </div>
     </div>
-    ${summaryTab === "beds" ? renderSummaryBedSection(summary.byBed) : ""}
     ${summaryTab === "reminders" ? renderSummaryTimedSection(summary.timed) : ""}
     ${summaryTab === "todo" ? renderSummaryTodoSection(summary.todo) : ""}
   `;
@@ -2919,7 +2918,7 @@ function preserveWorkspaceView(nextState, currentState) {
   if (!nextState || !currentState) return;
   nextState.activeView = currentState.activeView === "timeline" ? "timeline" : "notes";
   nextState.timelineScope = currentState.timelineScope === "active" ? "active" : "all";
-  nextState.summaryTab = ["beds", "reminders", "todo"].includes(currentState.summaryTab) ? currentState.summaryTab : "beds";
+  nextState.summaryTab = SUMMARY_TABS.includes(currentState.summaryTab) ? currentState.summaryTab : "reminders";
 
   const currentWard = nextState.wards.find((ward) => ward.id === currentState.selectedWardId);
   if (currentWard) {
@@ -5710,7 +5709,7 @@ function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
     selectedWardId: selectedWard.id,
     selectedNoteId: selectedNote?.id || "",
     timelineScope: input.timelineScope === "active" ? "active" : "all",
-    summaryTab: ["beds", "reminders", "todo"].includes(input.summaryTab) ? input.summaryTab : "beds",
+    summaryTab: SUMMARY_TABS.includes(input.summaryTab) ? input.summaryTab : "reminders",
     preferences: normalizePreferences(input.preferences),
     recoveryHistory: normalizeRecoveryHistory(input.recoveryHistory),
     shiftArchives: normalizeShiftArchives(input.shiftArchives),
@@ -5760,7 +5759,7 @@ function normalizeShiftArchives(input) {
       selectedWardId: typeof entry.selectedWardId === "string" ? entry.selectedWardId : "",
       selectedNoteId: typeof entry.selectedNoteId === "string" ? entry.selectedNoteId : "",
       timelineScope: entry.timelineScope === "active" ? "active" : "all",
-      summaryTab: ["beds", "reminders", "todo"].includes(entry.summaryTab) ? entry.summaryTab : "beds",
+      summaryTab: SUMMARY_TABS.includes(entry.summaryTab) ? entry.summaryTab : "reminders",
       preferences: normalizePreferences(entry.preferences),
       wards: entry.wards
     }))
