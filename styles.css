@@ -3290,6 +3290,69 @@ select:focus {
   .mobile-tag-dock {
     display: none;
   }
+
+  html.is-ipad-device .quick-tags {
+    display: none;
+  }
+
+  html.is-ipad-device .mobile-tag-dock {
+    display: flex;
+  }
+}
+
+@media (max-width: 700px) {
+  .note-pad-card {
+    gap: 6px;
+  }
+
+  .note-pad-card .section-kicker {
+    display: none;
+  }
+
+  .note-pad-card h2 {
+    font-size: 1.04rem;
+  }
+
+  .notepad-ward-title {
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+  }
+
+  .sticky-ward-bar {
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+    gap: 8px;
+    min-height: 34px;
+  }
+
+  .sticky-ward-bar .section-kicker {
+    display: none;
+  }
+
+  .sticky-ward-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: center;
+  }
+
+  .sticky-ward-actions small,
+  .sticky-ward-actions [data-reset-note] {
+    display: none;
+  }
+
+  .sort-beds-btn {
+    min-height: 32px;
+    padding: 5px 10px;
+  }
+
+  .sticky-ward-bar .notepad-ward-title,
+  .sticky-ward-bar > h2 {
+    grid-column: 1 / -1;
+  }
+
+  .ward-switch-btn {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+  }
 }
 
 @media (max-width: 560px) {
@@ -3482,62 +3545,9 @@ select:focus {
     margin-top: 4px;
   }
 
-  .note-pad-card {
-    gap: 6px;
-  }
-
   .note-pad-card .stack-head {
     display: grid;
     gap: 2px;
-  }
-
-  .note-pad-card .section-kicker {
-    display: none;
-  }
-
-  .note-pad-card h2 {
-    font-size: 1.04rem;
-  }
-
-  .notepad-ward-title {
-    grid-template-columns: 32px minmax(0, 1fr) 32px;
-  }
-
-  .sticky-ward-bar {
-    grid-template-columns: 32px minmax(0, 1fr) 32px;
-    gap: 8px;
-    min-height: 34px;
-  }
-
-  .sticky-ward-bar .section-kicker {
-    display: none;
-  }
-
-  .sticky-ward-actions {
-    grid-column: 1 / -1;
-    display: flex;
-    justify-content: center;
-  }
-
-  .sticky-ward-actions small,
-  .sticky-ward-actions [data-reset-note] {
-    display: none;
-  }
-
-  .sort-beds-btn {
-    min-height: 32px;
-    padding: 5px 10px;
-  }
-
-  .sticky-ward-bar .notepad-ward-title,
-  .sticky-ward-bar > h2 {
-    grid-column: 1 / -1;
-  }
-
-  .ward-switch-btn {
-    width: 32px;
-    height: 32px;
-    min-height: 32px;
   }
 
   .note-pad-card .stack-head small {

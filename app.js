@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-15-ipad-split-viewport-v1";
+const APP_BUILD = "2026-07-15-ipad-half-split-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -173,6 +173,7 @@ applyUrlOverrides();
 init();
 
 async function init() {
+  document.documentElement.classList.toggle("is-ipad-device", isLikelyIpadDevice());
   bindEvents();
   initMobileViewportDock();
   registerShiftPadServiceWorker();
@@ -3640,7 +3641,7 @@ function handleQuickTag(tag) {
 function isCompactMobileLayout() {
   const narrow = window.matchMedia("(max-width: 860px)").matches;
   const touchLike = window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(hover: none)").matches;
-  return narrow && touchLike;
+  return narrow && (touchLike || isLikelyIpadDevice());
 }
 
 function syncMobileTagDock() {
