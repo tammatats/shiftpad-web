@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-14-summary-tabs-v1";
+const APP_BUILD = "2026-07-15-ipad-split-viewport-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -187,7 +187,35 @@ function initMobileViewportDock() {
   let rafId = 0;
   let lastViewportHeight = window.visualViewport?.height || window.innerHeight || 0;
   let lastKeyboardOffset = 0;
+  let stableIpadViewportHeight = lastViewportHeight;
+  let lastLayoutWidth = window.innerWidth || 0;
   let settleTimers = [];
+
+  const refreshStableIpadViewportHeight = () => {
+    const viewport = window.visualViewport;
+    if (!viewport || !isLikelyIpadDevice()) return;
+    const viewportHeight = viewport.height || window.innerHeight || 0;
+    const layoutHeight = window.innerHeight || viewportHeight;
+    const isUnpanned = Math.abs(viewport.offsetTop || 0) < 24;
+    const fillsLayoutViewport = viewportHeight >= layoutHeight - 24;
+    if (isUnpanned && fillsLayoutViewport) {
+      stableIpadViewportHeight = viewportHeight;
+    } else if (viewportHeight > stableIpadViewportHeight) {
+      stableIpadViewportHeight = viewportHeight;
+    }
+  };
+
+  const isIpadKeyboardLikelyVisible = () => {
+    const viewport = window.visualViewport;
+    if (!viewport || !isLikelyIpadDevice()) return false;
+    const viewportHeight = viewport.height || window.innerHeight || 0;
+    const baselineHeight = Math.max(stableIpadViewportHeight, viewportHeight);
+    return Boolean(
+      uiState.editorFocused &&
+        baselineHeight - viewportHeight > 72 &&
+        Math.max(0, viewport.offsetTop || 0) > 36
+    );
+  };
 
   const updateViewportOffset = () => {
     const viewport = window.visualViewport;
@@ -198,6 +226,8 @@ function initMobileViewportDock() {
       updateDesktopTagBarOffset();
       return;
     }
+
+    refreshStableIpadViewportHeight();
 
     const rawKeyboardOffset = getVisualKeyboardOffset();
     const keyboardOffset = rawKeyboardOffset < 24 ? 0 : rawKeyboardOffset;
@@ -230,9 +260,24 @@ function initMobileViewportDock() {
   };
 
   const settleHiddenKeyboardViewport = (shouldLog = false) => {
-    if (getVisualKeyboardOffset() >= 24) {
+    if (getVisualKeyboardOffset() >= 24 || isIpadKeyboardLikelyVisible()) {
       requestViewportOffsetUpdate();
       return;
+    }
+
+    const viewport = window.visualViewport;
+    const staleIpadPan = Boolean(
+      viewport &&
+        isLikelyIpadDevice() &&
+        viewport.height >= stableIpadViewportHeight - 24 &&
+        (viewport.offsetTop || 0) > 2
+    );
+
+    if (staleIpadPan) {
+      const targetScrollY = getIpadViewportSettleScrollY(viewport, window.scrollY);
+      if (Math.abs(window.scrollY - targetScrollY) > 1) {
+        window.scrollTo({ left: window.scrollX, top: targetScrollY, behavior: "auto" });
+      }
     }
 
     document.documentElement.style.setProperty("--keyboard-offset", "0px");
@@ -246,8 +291,17 @@ function initMobileViewportDock() {
     }
     positionMobileTagDock();
     updateDesktopTagBarOffset();
+    if (staleIpadPan) {
+      window.requestAnimationFrame(() => {
+        requestViewportOffsetUpdate();
+        updateDesktopTagBarOffset();
+      });
+    }
     if (shouldLog) {
-      appendViewportDebugLog("keyboard-hidden-settle", "settleHiddenKeyboardViewport");
+      appendViewportDebugLog(
+        staleIpadPan ? "ipad-viewport-pan-normalized" : "keyboard-hidden-settle",
+        "settleHiddenKeyboardViewport"
+      );
     }
   };
 
@@ -264,14 +318,39 @@ function initMobileViewportDock() {
   window.visualViewport?.addEventListener("resize", requestViewportOffsetUpdate);
   window.visualViewport?.addEventListener("scroll", requestViewportOffsetUpdate);
   window.addEventListener("scroll", requestViewportOffsetUpdate, { passive: true });
+  window.addEventListener(
+    "resize",
+    () => {
+      const nextLayoutWidth = window.innerWidth || 0;
+      const layoutWidthChanged = Math.abs(nextLayoutWidth - lastLayoutWidth) > 1;
+      lastLayoutWidth = nextLayoutWidth;
+      requestViewportOffsetUpdate();
+      if (layoutWidthChanged) {
+        scheduleKeyboardHiddenViewportSettle();
+      }
+    },
+    { passive: true }
+  );
   window.addEventListener("focusin", requestViewportOffsetUpdate);
   window.addEventListener("focusout", () => {
     scheduleKeyboardHiddenViewportSettle();
+  });
+  window.addEventListener("focus", scheduleKeyboardHiddenViewportSettle);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      scheduleKeyboardHiddenViewportSettle();
+    }
   });
   window.addEventListener("orientationchange", () => {
     window.setTimeout(requestViewportOffsetUpdate, 120);
     window.setTimeout(scheduleKeyboardHiddenViewportSettle, 520);
   });
+}
+
+function getIpadViewportSettleScrollY(viewport, fallbackScrollY = 0) {
+  const pageTop = Number.isFinite(viewport?.pageTop) ? viewport.pageTop : fallbackScrollY;
+  const offsetTop = Math.max(0, Number(viewport?.offsetTop || 0));
+  return Math.max(0, Math.round(pageTop - offsetTop));
 }
 
 function getVisualKeyboardOffset() {
