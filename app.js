@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-16-bed-index-scrub-v1";
+const APP_BUILD = "2026-07-17-bed-index-scrub-v2";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -7057,6 +7057,10 @@ function hideBedIndex() {
 
 function startBedIndexScrub(rail, event) {
   if (!rail || (event.button !== undefined && event.button !== 0)) return;
+  if (uiState.bedIndexScrub) {
+    event.preventDefault();
+    return;
+  }
   const labels = getBedIndexLabels(rail);
   if (!labels.length) return;
 
@@ -7093,6 +7097,7 @@ function startBedIndexScrub(rail, event) {
     scrub: {
       labelCount: labels.length,
       anchorCount: uiState.bedIndexScrub.anchors.length,
+      pointerId: uiState.bedIndexScrub.pointerId,
       pointerType: uiState.bedIndexScrub.pointerType,
       clientY: Math.round(Number(event.clientY) || 0),
       startScrollY: Math.round(window.scrollY)
@@ -7142,6 +7147,7 @@ function finishBedIndexScrub(event) {
     scrub: {
       labelCount: scrub.labels.length,
       anchorCount: scrub.anchors.length,
+      pointerId: scrub.pointerId,
       pointerType: scrub.pointerType,
       selectedIndex: scrub.lastIndex,
       selectedBed: scrub.labels[scrub.lastIndex] || "",
