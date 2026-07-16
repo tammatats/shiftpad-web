@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-17-bed-index-scrub-v2";
+const APP_BUILD = "2026-07-17-bed-index-relative-v3";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -7063,18 +7063,28 @@ function startBedIndexScrub(rail, event) {
   }
   const labels = getBedIndexLabels(rail);
   if (!labels.length) return;
+  const track = rail.querySelector(".bed-index-track");
+  const trackRect = track?.getBoundingClientRect();
+  if (!trackRect?.height) return;
 
   event.preventDefault();
   cancelBedLongPress();
   window.clearTimeout(uiState.bedIndexTimer);
+  const anchors = getBedIndexScrubAnchors(labels);
+  const startRatio = Math.max(0, Math.min(1, (Number(event.clientY) - trackRect.top) / trackRect.height));
+  const startIndex = getBedIndexScrubStartIndex(anchors);
   uiState.bedIndexScrub = {
     rail,
     labels,
-    anchors: getBedIndexScrubAnchors(labels),
+    anchors,
     pointerId: event.pointerId,
     pointerType: event.pointerType || "unknown",
-    lastIndex: -1,
-    pendingRatio: null,
+    startRatio,
+    startIndex,
+    startAnchorDocumentTop: anchors.find((anchor) => anchor.index === startIndex)?.documentTop ?? null,
+    lastIndex: startIndex,
+    lastPosition: startIndex,
+    pendingPosition: null,
     scrollFrame: 0,
     startScrollY: window.scrollY,
     lastTargetScrollY: window.scrollY,
@@ -7087,6 +7097,9 @@ function startBedIndexScrub(rail, event) {
   } catch {
     // Pointer capture is optional on older iOS versions.
   }
+  const railRect = rail.getBoundingClientRect();
+  const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), Number(event.clientY) - railRect.top));
+  setBedIndexActiveState(rail, startIndex, { bubbleY, labels });
   appendEditorDebugLog({
     action: "bed-index-scrub-start",
     source: "pointer",
@@ -7100,10 +7113,14 @@ function startBedIndexScrub(rail, event) {
       pointerId: uiState.bedIndexScrub.pointerId,
       pointerType: uiState.bedIndexScrub.pointerType,
       clientY: Math.round(Number(event.clientY) || 0),
+      trackTop: Math.round(trackRect.top),
+      trackBottom: Math.round(trackRect.bottom),
+      startRatio: Number(startRatio.toFixed(4)),
+      startIndex,
+      startBed: labels[startIndex] || "",
       startScrollY: Math.round(window.scrollY)
     }
   });
-  updateBedIndexScrub(event);
 }
 
 function updateBedIndexScrub(event) {
@@ -7114,12 +7131,14 @@ function updateBedIndexScrub(event) {
   if (!trackRect?.height) return;
 
   const ratio = Math.max(0, Math.min(1, (Number(event.clientY) - trackRect.top) / trackRect.height));
-  const index = Math.min(scrub.labels.length - 1, Math.round(ratio * (scrub.labels.length - 1)));
+  const position = getBedIndexScrubPosition(scrub, ratio);
+  const index = Math.min(scrub.labels.length - 1, Math.round(position));
   const railRect = scrub.rail.getBoundingClientRect();
   const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), Number(event.clientY) - railRect.top));
   setBedIndexActiveState(scrub.rail, index, { bubbleY, labels: scrub.labels });
   scrub.lastIndex = index;
-  scheduleBedIndexScrubScroll(scrub, ratio);
+  scrub.lastPosition = position;
+  scheduleBedIndexScrubScroll(scrub, position);
 }
 
 function finishBedIndexScrub(event) {
@@ -7151,6 +7170,8 @@ function finishBedIndexScrub(event) {
       pointerType: scrub.pointerType,
       selectedIndex: scrub.lastIndex,
       selectedBed: scrub.labels[scrub.lastIndex] || "",
+      startIndex: scrub.startIndex,
+      startBed: scrub.labels[scrub.startIndex] || "",
       startScrollY: Math.round(scrub.startScrollY),
       targetScrollY: Math.round(scrub.lastTargetScrollY),
       endScrollY: Math.round(window.scrollY),
@@ -7181,9 +7202,35 @@ function getBedIndexScrubAnchors(labels) {
   }).filter(Boolean);
 }
 
-function scheduleBedIndexScrubScroll(scrub, ratio) {
-  if (!scrub || !Number.isFinite(ratio)) return;
-  scrub.pendingRatio = ratio;
+function getBedIndexScrubStartIndex(anchors) {
+  if (!anchors.length) return 0;
+  const viewport = window.visualViewport;
+  const viewportDocumentY = window.scrollY
+    + (viewport?.offsetTop || 0)
+    + (viewport?.height || window.innerHeight) * 0.42;
+  return anchors.reduce((closest, anchor) => (
+    Math.abs(anchor.documentTop - viewportDocumentY) < Math.abs(closest.documentTop - viewportDocumentY)
+      ? anchor
+      : closest
+  ), anchors[0]).index;
+}
+
+function getBedIndexScrubPosition(scrub, ratio) {
+  const lastIndex = Math.max(0, scrub.labels.length - 1);
+  if (!lastIndex) return 0;
+  const startRatio = Math.max(0, Math.min(1, scrub.startRatio));
+  if (ratio <= startRatio) {
+    if (startRatio <= 0.001) return scrub.startIndex;
+    return Math.max(0, scrub.startIndex * (ratio / startRatio));
+  }
+  if (startRatio >= 0.999) return scrub.startIndex;
+  const progress = (ratio - startRatio) / (1 - startRatio);
+  return Math.min(lastIndex, scrub.startIndex + (lastIndex - scrub.startIndex) * progress);
+}
+
+function scheduleBedIndexScrubScroll(scrub, position) {
+  if (!scrub || !Number.isFinite(position)) return;
+  scrub.pendingPosition = position;
   if (scrub.scrollFrame) return;
   scrub.scrollFrame = window.requestAnimationFrame(() => {
     scrub.scrollFrame = 0;
@@ -7197,11 +7244,11 @@ function flushBedIndexScrubScroll(scrub) {
     window.cancelAnimationFrame(scrub.scrollFrame);
     scrub.scrollFrame = 0;
   }
-  const ratio = scrub.pendingRatio;
-  scrub.pendingRatio = null;
-  if (!Number.isFinite(ratio) || !scrub.anchors.length) return;
+  const position = scrub.pendingPosition;
+  scrub.pendingPosition = null;
+  if (!Number.isFinite(position) || !scrub.anchors.length) return;
 
-  const scaled = ratio * Math.max(0, scrub.anchors.length - 1);
+  const scaled = Math.max(0, Math.min(scrub.anchors.length - 1, position));
   const lowerIndex = Math.floor(scaled);
   const upperIndex = Math.min(scrub.anchors.length - 1, Math.ceil(scaled));
   const lower = scrub.anchors[lowerIndex];
@@ -7209,12 +7256,14 @@ function flushBedIndexScrubScroll(scrub) {
   if (!lower || !upper) return;
   const progress = scaled - lowerIndex;
   const documentTop = lower.documentTop + (upper.documentTop - lower.documentTop) * progress;
-  const viewport = window.visualViewport;
-  const viewportHeight = viewport?.height || window.innerHeight;
-  const viewportTop = viewport?.offsetTop || 0;
-  const viewportAnchor = viewportTop + viewportHeight * 0.42;
   const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-  const targetScrollY = Math.max(0, Math.min(maxScrollY, documentTop - viewportAnchor));
+  const startAnchorDocumentTop = Number.isFinite(scrub.startAnchorDocumentTop)
+    ? scrub.startAnchorDocumentTop
+    : lower.documentTop;
+  const targetScrollY = Math.max(0, Math.min(
+    maxScrollY,
+    scrub.startScrollY + documentTop - startAnchorDocumentTop
+  ));
   scrub.lastTargetScrollY = targetScrollY;
   window.scrollTo({ left: window.scrollX, top: targetScrollY, behavior: "auto" });
 }
