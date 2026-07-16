@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-16-ipad-split-position-v2";
+const APP_BUILD = "2026-07-16-bed-index-scrub-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -125,6 +125,7 @@ const uiState = {
   bedIndexScrollRaf: 0,
   bedIndexScrub: null,
   suppressNextBedIndexClick: false,
+  bedIndexClickSuppressTimer: null,
   bedFinalizeTimer: null,
   editorTapScroll: null,
   suppressNextDeleteInput: false,
@@ -653,12 +654,13 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("pointermove", (event) => {
     if (uiState.bedIndexScrub) {
+      event.preventDefault();
       updateBedIndexScrub(event);
       return;
     }
     updateBedLongPress(event);
     markEditorPointerMoved(event);
-  }, { passive: true });
+  }, { passive: false });
 
   refs.editorRoot.addEventListener("pointerup", (event) => {
     if (finishBedIndexScrub(event)) return;
@@ -752,6 +754,8 @@ function bindEvents() {
     if (bedJump) {
       if (uiState.suppressNextBedIndexClick) {
         uiState.suppressNextBedIndexClick = false;
+        window.clearTimeout(uiState.bedIndexClickSuppressTimer);
+        uiState.bedIndexClickSuppressTimer = null;
         return;
       }
       jumpToBedInEditor(bedJump.dataset.bedJump);
@@ -5950,6 +5954,8 @@ function switchWorkspace(targetKey = "") {
 function resetEditorUiForWorkspaceSwitch() {
   window.clearTimeout(uiState.bedFinalizeTimer);
   window.clearTimeout(uiState.bedIndexTimer);
+  window.clearTimeout(uiState.bedIndexClickSuppressTimer);
+  window.cancelAnimationFrame(uiState.bedIndexScrub?.scrollFrame || 0);
   uiState.savedSelection = null;
   uiState.editorFocused = false;
   uiState.mobileTagsOpen = false;
@@ -5959,6 +5965,7 @@ function resetEditorUiForWorkspaceSwitch() {
   uiState.bedIndexScrollRaf = 0;
   uiState.bedIndexScrub = null;
   uiState.suppressNextBedIndexClick = false;
+  uiState.bedIndexClickSuppressTimer = null;
   uiState.bedFinalizeTimer = null;
   uiState.editingWardId = "";
   uiState.bedAction = null;
@@ -7031,8 +7038,8 @@ function updateBedIndexDuringScroll() {
   if (rect.bottom < 120 || rect.top > viewportHeight - 80) return;
 
   setBedIndexVisible(true);
-  updateBedIndexFromViewport(rail, editor);
   if (uiState.bedIndexScrub) return;
+  updateBedIndexFromViewport(rail, editor);
   window.clearTimeout(uiState.bedIndexTimer);
   uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 1100);
 }
@@ -7059,8 +7066,15 @@ function startBedIndexScrub(rail, event) {
   uiState.bedIndexScrub = {
     rail,
     labels,
+    anchors: getBedIndexScrubAnchors(labels),
     pointerId: event.pointerId,
-    lastIndex: -1
+    pointerType: event.pointerType || "unknown",
+    lastIndex: -1,
+    pendingRatio: null,
+    scrollFrame: 0,
+    startScrollY: window.scrollY,
+    lastTargetScrollY: window.scrollY,
+    startedAt: Date.now()
   };
   rail.classList.add("is-visible", "is-scrubbing");
   uiState.bedIndexVisible = true;
@@ -7069,6 +7083,21 @@ function startBedIndexScrub(rail, event) {
   } catch {
     // Pointer capture is optional on older iOS versions.
   }
+  appendEditorDebugLog({
+    action: "bed-index-scrub-start",
+    source: "pointer",
+    success: true,
+    handledBy: "startBedIndexScrub",
+    before: null,
+    after: null,
+    scrub: {
+      labelCount: labels.length,
+      anchorCount: uiState.bedIndexScrub.anchors.length,
+      pointerType: uiState.bedIndexScrub.pointerType,
+      clientY: Math.round(Number(event.clientY) || 0),
+      startScrollY: Math.round(window.scrollY)
+    }
+  });
   updateBedIndexScrub(event);
 }
 
@@ -7084,25 +7113,104 @@ function updateBedIndexScrub(event) {
   const railRect = scrub.rail.getBoundingClientRect();
   const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), Number(event.clientY) - railRect.top));
   setBedIndexActiveState(scrub.rail, index, { bubbleY, labels: scrub.labels });
-
-  if (index === scrub.lastIndex) return;
   scrub.lastIndex = index;
-  jumpToBedInEditor(scrub.labels[index], { behavior: "auto", keepVisible: true, updateIndex: false });
+  scheduleBedIndexScrubScroll(scrub, ratio);
 }
 
 function finishBedIndexScrub(event) {
   const scrub = uiState.bedIndexScrub;
   if (!scrub || (event.pointerId !== undefined && scrub.pointerId !== undefined && event.pointerId !== scrub.pointerId)) return false;
+  flushBedIndexScrubScroll(scrub);
   uiState.bedIndexScrub = null;
   scrub.rail.classList.remove("is-scrubbing");
   safelyReleasePointerCapture(scrub.rail, scrub.pointerId);
   uiState.suppressNextBedIndexClick = true;
-  window.setTimeout(() => {
+  window.clearTimeout(uiState.bedIndexClickSuppressTimer);
+  uiState.bedIndexClickSuppressTimer = window.setTimeout(() => {
     uiState.suppressNextBedIndexClick = false;
-  }, 180);
+    uiState.bedIndexClickSuppressTimer = null;
+  }, 700);
   window.clearTimeout(uiState.bedIndexTimer);
   uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 800);
+  appendEditorDebugLog({
+    action: "bed-index-scrub-end",
+    source: "pointer",
+    success: true,
+    handledBy: "finishBedIndexScrub",
+    before: null,
+    after: null,
+    scrub: {
+      labelCount: scrub.labels.length,
+      anchorCount: scrub.anchors.length,
+      pointerType: scrub.pointerType,
+      selectedIndex: scrub.lastIndex,
+      selectedBed: scrub.labels[scrub.lastIndex] || "",
+      startScrollY: Math.round(scrub.startScrollY),
+      targetScrollY: Math.round(scrub.lastTargetScrollY),
+      endScrollY: Math.round(window.scrollY),
+      durationMs: Math.max(0, Date.now() - scrub.startedAt)
+    }
+  });
   return true;
+}
+
+function getBedIndexScrubAnchors(labels) {
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  if (!editor) return [];
+  const tokensByLabel = new Map();
+  editor.querySelectorAll('.tag-token[data-tag="bed"]').forEach((token) => {
+    const label = String(token.textContent || "").replace(/^Bed\s*/i, "").trim().toUpperCase();
+    if (label && !tokensByLabel.has(label)) tokensByLabel.set(label, token);
+  });
+
+  return labels.map((label, index) => {
+    const token = tokensByLabel.get(String(label).toUpperCase());
+    const line = token?.closest("div, p") || token;
+    if (!line) return null;
+    return {
+      index,
+      label,
+      documentTop: window.scrollY + line.getBoundingClientRect().top
+    };
+  }).filter(Boolean);
+}
+
+function scheduleBedIndexScrubScroll(scrub, ratio) {
+  if (!scrub || !Number.isFinite(ratio)) return;
+  scrub.pendingRatio = ratio;
+  if (scrub.scrollFrame) return;
+  scrub.scrollFrame = window.requestAnimationFrame(() => {
+    scrub.scrollFrame = 0;
+    flushBedIndexScrubScroll(scrub);
+  });
+}
+
+function flushBedIndexScrubScroll(scrub) {
+  if (!scrub) return;
+  if (scrub.scrollFrame) {
+    window.cancelAnimationFrame(scrub.scrollFrame);
+    scrub.scrollFrame = 0;
+  }
+  const ratio = scrub.pendingRatio;
+  scrub.pendingRatio = null;
+  if (!Number.isFinite(ratio) || !scrub.anchors.length) return;
+
+  const scaled = ratio * Math.max(0, scrub.anchors.length - 1);
+  const lowerIndex = Math.floor(scaled);
+  const upperIndex = Math.min(scrub.anchors.length - 1, Math.ceil(scaled));
+  const lower = scrub.anchors[lowerIndex];
+  const upper = scrub.anchors[upperIndex] || lower;
+  if (!lower || !upper) return;
+  const progress = scaled - lowerIndex;
+  const documentTop = lower.documentTop + (upper.documentTop - lower.documentTop) * progress;
+  const viewport = window.visualViewport;
+  const viewportHeight = viewport?.height || window.innerHeight;
+  const viewportTop = viewport?.offsetTop || 0;
+  const viewportAnchor = viewportTop + viewportHeight * 0.42;
+  const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  const targetScrollY = Math.max(0, Math.min(maxScrollY, documentTop - viewportAnchor));
+  scrub.lastTargetScrollY = targetScrollY;
+  window.scrollTo({ left: window.scrollX, top: targetScrollY, behavior: "auto" });
 }
 
 function getBedIndexLabels(rail) {
