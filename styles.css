@@ -3280,6 +3280,10 @@ select:focus {
   .note-pad-card {
     padding-bottom: 0;
   }
+
+  .notepad-editor {
+    min-height: max(180px, calc(100dvh - var(--top-controls-height) - 96px));
+  }
 }
 
 @media (max-width: 860px) and (hover: hover) and (pointer: fine) {

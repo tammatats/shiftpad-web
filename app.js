@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-15-ipad-half-split-v1";
+const APP_BUILD = "2026-07-16-ipad-split-position-v2";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -225,6 +225,7 @@ function initMobileViewportDock() {
       document.documentElement.style.setProperty("--viewport-offset-top", "0px");
       document.documentElement.style.setProperty("--viewport-offset-left", "0px");
       updateDesktopTagBarOffset();
+      clampCompactShortNoteScrollPosition();
       return;
     }
 
@@ -238,6 +239,9 @@ function initMobileViewportDock() {
     document.documentElement.style.setProperty("--viewport-offset-top", `${viewportTop}px`);
     document.documentElement.style.setProperty("--viewport-offset-left", `${viewportLeft}px`);
     updateDesktopTagBarOffset();
+    if (keyboardOffset === 0) {
+      clampCompactShortNoteScrollPosition();
+    }
 
     const nextViewportHeight = viewport.height || window.innerHeight || 0;
     if ((lastKeyboardOffset > 48 && keyboardOffset === 0) || nextViewportHeight > lastViewportHeight + 36) {
@@ -292,6 +296,7 @@ function initMobileViewportDock() {
     }
     positionMobileTagDock();
     updateDesktopTagBarOffset();
+    clampCompactShortNoteScrollPosition();
     if (staleIpadPan) {
       window.requestAnimationFrame(() => {
         requestViewportOffsetUpdate();
@@ -3692,17 +3697,23 @@ function positionMobileTagDock() {
   const heightLoss = Math.max(0, layoutHeight - visualHeight);
   const ipadSplitView = isIpadSplitViewLayout();
   const useOffsetAwareMode = isLikelyIpadDevice() && !ipadSplitView;
-  const keyboardOverlap = ipadSplitView
-    ? heightLoss
-    : useOffsetAwareMode
-      ? Math.max(0, heightLoss - visualTop)
-      : heightLoss;
+  const keyboardOverlap = useOffsetAwareMode ? Math.max(0, heightLoss - visualTop) : heightLoss;
 
   dock.dataset.mobileTagMode = ipadSplitView ? "ipad-split" : useOffsetAwareMode ? "ipad-offset" : "height-loss";
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
-  setDockStyleValue(dock, "--mobile-tag-y", keyboardOverlap ? `-${keyboardOverlap}px` : "0px");
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
   setDockStyleValue(dock, "--mobile-tag-tray-max-height", `${trayMaxHeight}px`);
+
+  if (ipadSplitView && heightLoss > 0) {
+    setDockStyleValue(dock, "--mobile-tag-y", "0px");
+    const baseTop = dock.getBoundingClientRect().top;
+    const targetTop = visualTop + visualHeight - marginBottom - dockHeight;
+    const measuredOffset = Math.min(0, Math.max(-heightLoss, Math.round(targetTop - baseTop)));
+    setDockStyleValue(dock, "--mobile-tag-y", `${measuredOffset}px`);
+    dock.dataset.mobileTagMode = "ipad-split-measured";
+  } else {
+    setDockStyleValue(dock, "--mobile-tag-y", keyboardOverlap ? `-${keyboardOverlap}px` : "0px");
+  }
 }
 
 function setDockStyleValue(dock, property, value) {
@@ -3731,6 +3742,36 @@ function isIpadSplitViewLayout() {
   const screenWidth = Math.min(Number(window.screen?.width || 0), Number(window.screen?.height || 0));
   const layoutWidth = Number(window.innerWidth || document.documentElement.clientWidth || 0);
   return screenWidth > 0 && layoutWidth > 0 && layoutWidth < screenWidth * 0.72;
+}
+
+function clampCompactShortNoteScrollPosition() {
+  if (
+    !isCompactMobileLayout() ||
+    state.activeView !== "notes" ||
+    window.scrollY <= 0 ||
+    getVisualKeyboardOffset() >= 24 ||
+    uiState.drawerOpen ||
+    uiState.wardOptionsOpen ||
+    uiState.searchOpen
+  ) {
+    return false;
+  }
+
+  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  if (!editor) return false;
+
+  const editorRect = editor.getBoundingClientRect();
+  const lineBottom = Array.from(editor.children).reduce((bottom, line) => {
+    const rect = line.getBoundingClientRect();
+    return Math.max(bottom, rect.bottom);
+  }, editorRect.top + (Number.parseFloat(getComputedStyle(editor).lineHeight) || 28));
+  const contentBottomAtPageTop = lineBottom + window.scrollY;
+  const viewportBottomAllowance = 18;
+
+  if (contentBottomAtPageTop > window.innerHeight - viewportBottomAllowance) return false;
+
+  window.scrollTo({ top: 0, left: window.scrollX, behavior: "auto" });
+  return true;
 }
 
 function restoreEditorFocusAndSelection() {
