@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-17-bed-index-screen-coordinate-v5";
+const APP_BUILD = "2026-07-17-bed-index-touch-coordinate-v6";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -656,6 +656,10 @@ function bindEvents() {
   refs.editorRoot.addEventListener("pointermove", (event) => {
     if (uiState.bedIndexScrub) {
       event.preventDefault();
+      if (uiState.bedIndexScrub.useTouchCoordinate) {
+        observeBedIndexCapturedPointer(event);
+        return;
+      }
       updateBedIndexScrub(event);
       return;
     }
@@ -689,7 +693,19 @@ function bindEvents() {
   }, { passive: true });
 
   refs.editorRoot.addEventListener("touchmove", (event) => {
+    if (uiState.bedIndexScrub?.useTouchCoordinate) {
+      event.preventDefault();
+      updateBedIndexScrubFromTouch(event);
+      return;
+    }
     markEditorPointerMoved(event);
+  }, { passive: false });
+
+  refs.editorRoot.addEventListener("touchend", (event) => {
+    if (uiState.bedIndexScrub?.useTouchCoordinate) finishBedIndexScrub(event);
+  }, { passive: true });
+  refs.editorRoot.addEventListener("touchcancel", (event) => {
+    if (uiState.bedIndexScrub?.useTouchCoordinate) finishBedIndexScrub(event);
   }, { passive: true });
 
   refs.notesTabBtn.addEventListener("click", () => {
@@ -7082,12 +7098,11 @@ function startBedIndexScrub(rail, event) {
   const anchors = getBedIndexScrubAnchors(labels);
   const rawStartClientY = Number(event.clientY);
   const startScreenY = Number(event.screenY);
-  const useScreenCoordinate = (isLikelyIphoneDevice() || isLikelyIpadDevice())
-    && (event.pointerType || "") === "touch"
-    && Number.isFinite(startScreenY)
-    && startScreenY > 0;
-  const screenToClientOffset = useScreenCoordinate ? rawStartClientY - startScreenY : 0;
-  const startClientY = useScreenCoordinate ? startScreenY + screenToClientOffset : rawStartClientY;
+  const useTouchCoordinate = (isLikelyIphoneDevice() || isLikelyIpadDevice())
+    && (event.pointerType || "") === "touch";
+  const useScreenCoordinate = false;
+  const screenToClientOffset = 0;
+  const startClientY = rawStartClientY;
   const startRatio = Math.max(0, Math.min(1, (startClientY - trackRect.top) / trackRect.height));
   const startIndex = getBedIndexScrubStartIndex(anchors);
   uiState.bedIndexScrub = {
@@ -7096,6 +7111,7 @@ function startBedIndexScrub(rail, event) {
     anchors,
     pointerId: event.pointerId,
     pointerType: event.pointerType || "unknown",
+    useTouchCoordinate,
     useScreenCoordinate,
     screenToClientOffset,
     startRatio,
@@ -7124,10 +7140,12 @@ function startBedIndexScrub(rail, event) {
   };
   rail.classList.add("is-visible", "is-scrubbing");
   uiState.bedIndexVisible = true;
-  try {
-    rail.setPointerCapture?.(event.pointerId);
-  } catch {
-    // Pointer capture is optional on older iOS versions.
+  if (!useTouchCoordinate) {
+    try {
+      rail.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Pointer capture is optional on older browsers.
+    }
   }
   const railRect = rail.getBoundingClientRect();
   const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), startClientY - railRect.top));
@@ -7136,7 +7154,7 @@ function startBedIndexScrub(rail, event) {
     clientY: startClientY,
     rawClientY: rawStartClientY,
     screenY: startScreenY,
-    coordinateSource: useScreenCoordinate ? "screen-calibrated" : "client",
+    coordinateSource: useTouchCoordinate ? "touch-client" : "client",
     ratio: startRatio,
     position: startIndex,
     index: startIndex
@@ -7156,7 +7174,7 @@ function startBedIndexScrub(rail, event) {
       clientY: Math.round(startClientY || 0),
       rawClientY: Math.round(rawStartClientY || 0),
       screenY: Math.round(startScreenY || 0),
-      coordinateSource: useScreenCoordinate ? "screen-calibrated" : "client",
+      coordinateSource: useTouchCoordinate ? "touch-client" : "client",
       trackTop: Math.round(trackRect.top),
       trackBottom: Math.round(trackRect.bottom),
       startRatio: Number(startRatio.toFixed(4)),
@@ -7167,14 +7185,14 @@ function startBedIndexScrub(rail, event) {
   });
 }
 
-function updateBedIndexScrub(event) {
+function updateBedIndexScrub(event, coordinateOverride = null) {
   const scrub = uiState.bedIndexScrub;
   if (!scrub || (event.pointerId !== undefined && scrub.pointerId !== undefined && event.pointerId !== scrub.pointerId)) return;
   const track = scrub.rail.querySelector(".bed-index-track");
   const trackRect = track?.getBoundingClientRect();
   if (!trackRect?.height) return;
 
-  const pointerCoordinate = getBedIndexPointerCoordinate(scrub, event);
+  const pointerCoordinate = coordinateOverride || getBedIndexPointerCoordinate(scrub, event);
   const clientY = pointerCoordinate.clientY;
   const ratio = Math.max(0, Math.min(1, (clientY - trackRect.top) / trackRect.height));
   const position = getBedIndexScrubPosition(scrub, ratio);
@@ -7188,8 +7206,6 @@ function updateBedIndexScrub(event) {
   const coordinateOutsideTrack = clientY < trackRect.top - 32 || clientY > trackRect.bottom + 32;
   const rapidFirstBedJump = scrub.lastIndex >= 4 && index <= 1 && elapsedMs <= 250;
   const rawCoordinateReset = clientY <= 1 && trackRect.top > 8;
-  const rawCoordinateDrift = scrub.useScreenCoordinate
-    && Math.abs(pointerCoordinate.rawClientY - clientY) >= 96;
   const railRect = scrub.rail.getBoundingClientRect();
   const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), clientY - railRect.top));
   setBedIndexActiveState(scrub.rail, index, { bubbleY, labels: scrub.labels });
@@ -7206,22 +7222,10 @@ function updateBedIndexScrub(event) {
     rawClientYDelta,
     screenYDelta,
     indexDelta,
-    pointerId: event.pointerId
+    pointerId: pointerCoordinate.pointerId ?? event.pointerId
   }, {
     force: index !== scrub.lastIndex || now - scrub.lastTraceAt >= 80
   });
-  if (rawCoordinateDrift) {
-    flagBedIndexScrubAnomaly(scrub, "client-coordinate-scroll-drift", {
-      clientY,
-      rawClientY: pointerCoordinate.rawClientY,
-      screenY: pointerCoordinate.screenY,
-      rawDifference: pointerCoordinate.rawClientY - clientY,
-      currentScrollY: window.scrollY,
-      targetScrollY: scrub.lastTargetScrollY,
-      index,
-      previousIndex: scrub.lastIndex
-    });
-  }
   if (rawCoordinateReset) {
     flagBedIndexScrubAnomaly(scrub, "pointer-coordinate-reset", {
       clientY,
@@ -7260,6 +7264,31 @@ function updateBedIndexScrub(event) {
   scrub.lastPointerRawClientY = pointerCoordinate.rawClientY;
   scrub.lastPointerScreenY = pointerCoordinate.screenY;
   scheduleBedIndexScrubScroll(scrub, position);
+}
+
+function updateBedIndexScrubFromTouch(event) {
+  const scrub = uiState.bedIndexScrub;
+  if (!scrub) return;
+  const touch = Array.from(event.touches || [])[0];
+  if (!touch) return;
+  const clientY = Number(touch.clientY);
+  updateBedIndexScrub(event, {
+    rawClientY: clientY,
+    screenY: Number(touch.screenY),
+    clientY,
+    pointerId: `touch-${touch.identifier}`,
+    source: "touch-client"
+  });
+}
+
+function observeBedIndexCapturedPointer(event) {
+  const scrub = uiState.bedIndexScrub;
+  if (!scrub) return;
+  recordBedIndexScrubTrace(scrub, "captured-pointer-observation", {
+    rawClientY: Number(event.clientY),
+    screenY: Number(event.screenY),
+    pointerId: event.pointerId
+  });
 }
 
 function getBedIndexPointerCoordinate(scrub, event) {
@@ -7335,7 +7364,11 @@ function finishBedIndexScrub(event) {
       durationMs: Math.max(0, Date.now() - scrub.startedAt),
       anomalyCount: scrub.anomalies.length,
       anomalyReasons: scrub.anomalies.map((item) => item.reason),
-      coordinateSource: scrub.useScreenCoordinate ? "screen-calibrated" : "client",
+      coordinateSource: scrub.useTouchCoordinate
+        ? "touch-client"
+        : scrub.useScreenCoordinate
+          ? "screen-calibrated"
+          : "client",
       trace: scrub.trace
     }
   });
