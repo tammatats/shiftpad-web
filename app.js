@@ -32,9 +32,10 @@ const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
 const NOTE_DOCUMENT_MODEL_VERSION = 1;
 const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
-const SHORT_NOTE_SCROLL_RELEASE_DELAY_MS = 420;
-const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 320;
-const APP_BUILD = "2026-07-17-short-note-scroll-v9";
+const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
+const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
+const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
+const APP_BUILD = "2026-07-17-native-short-scroll-v10";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -135,7 +136,6 @@ const uiState = {
   editorTapScroll: null,
   shortNoteScrollGesture: null,
   shortNoteScrollSuppressUntil: 0,
-  shortNoteScrollSettleTimer: null,
   shortNoteScrollSettleRaf: 0,
   lastShortNoteScrollClampDebugAt: 0,
   suppressNextDeleteInput: false,
@@ -3850,6 +3850,7 @@ function clampCompactShortNoteScrollPosition() {
         scrollY: Math.round(scrollY),
         contentBottomAtPageTop: Math.round(metrics.contentBottomAtPageTop),
         viewportBottom: Math.round(metrics.viewportBottom),
+        documentMaxScrollY: Math.round(metrics.maxScrollY),
         gestureActive: Boolean(uiState.shortNoteScrollGesture?.active),
         suppressRemainingMs: Math.max(0, uiState.shortNoteScrollSuppressUntil - now)
       }
@@ -3887,7 +3888,7 @@ function beginShortNoteScrollGesture(event) {
     samples: []
   };
   uiState.shortNoteScrollGesture = gesture;
-  uiState.shortNoteScrollSuppressUntil = now + SHORT_NOTE_SCROLL_RELEASE_DELAY_MS;
+  uiState.shortNoteScrollSuppressUntil = now + SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS;
   sampleShortNoteScrollGesture(gesture, event, "touchstart", true);
 }
 
@@ -3905,12 +3906,15 @@ function finishShortNoteScrollGesture(event) {
   gesture.active = false;
   gesture.releasedAt = now;
   gesture.releaseScrollY = window.scrollY;
-  uiState.shortNoteScrollSuppressUntil = now + SHORT_NOTE_SCROLL_RELEASE_DELAY_MS;
+  gesture.releaseWatchStartedAt = performance.now();
+  gesture.lastObservedScrollY = Number(window.scrollY) || 0;
+  gesture.stableReleaseFrames = 0;
+  uiState.shortNoteScrollSuppressUntil =
+    now + SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS + SHORT_NOTE_SCROLL_SETTLE_DURATION_MS;
   sampleShortNoteScrollGesture(gesture, event, event.type || "touchend", true);
-  window.clearTimeout(uiState.shortNoteScrollSettleTimer);
-  uiState.shortNoteScrollSettleTimer = window.setTimeout(
-    () => settleCompactShortNoteScroll(gesture),
-    SHORT_NOTE_SCROLL_RELEASE_DELAY_MS
+  window.cancelAnimationFrame(uiState.shortNoteScrollSettleRaf);
+  uiState.shortNoteScrollSettleRaf = window.requestAnimationFrame((timestamp) =>
+    settleCompactShortNoteScroll(gesture, timestamp)
   );
 }
 
@@ -3964,25 +3968,66 @@ function getCompactShortNoteScrollMetrics() {
   }, editorRect.top + (Number.parseFloat(getComputedStyle(editor).lineHeight) || 28));
   const contentBottomAtPageTop = lineBottom + window.scrollY;
   const viewportBottom = window.innerHeight - 18;
+  const documentScrollHeight = document.documentElement.scrollHeight;
   return {
     editor,
     contentBottomAtPageTop,
     viewportBottom,
+    documentScrollHeight,
+    maxScrollY: Math.max(0, documentScrollHeight - window.innerHeight),
     isShort: contentBottomAtPageTop <= viewportBottom
   };
 }
 
-function settleCompactShortNoteScroll(gesture) {
-  uiState.shortNoteScrollSettleTimer = null;
+function settleCompactShortNoteScroll(gesture, timestamp) {
   if (!gesture || uiState.shortNoteScrollGesture !== gesture || gesture.active) return;
   const metrics = getCompactShortNoteScrollMetrics();
-  const settleStartY = Math.max(0, Number(window.scrollY) || 0);
-  if (!metrics?.isShort || settleStartY <= 1) {
-    logShortNoteScrollGesture(gesture, metrics?.isShort ? "native-settled" : "content-not-short", settleStartY);
+  const rawScrollY = Number(window.scrollY) || 0;
+  const currentScrollY = Math.max(0, rawScrollY);
+  const viewportOffsetTop = Math.abs(Number(window.visualViewport?.offsetTop) || 0);
+  const watchElapsedMs = Math.max(0, timestamp - gesture.releaseWatchStartedAt);
+  gesture.nativeWatchElapsedMs = watchElapsedMs;
+  sampleShortNoteScrollGesture(gesture, null, "native-release-watch");
+  if (!metrics?.isShort) {
+    uiState.shortNoteScrollSettleRaf = 0;
+    logShortNoteScrollGesture(gesture, "content-not-short", currentScrollY, metrics);
     uiState.shortNoteScrollGesture = null;
     return;
   }
 
+  if (currentScrollY <= 1) {
+    if ((rawScrollY < -1 || viewportOffsetTop > 1.5) && watchElapsedMs < SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS) {
+      uiState.shortNoteScrollSettleRaf = window.requestAnimationFrame((nextTimestamp) =>
+        settleCompactShortNoteScroll(gesture, nextTimestamp)
+      );
+      return;
+    }
+    uiState.shortNoteScrollSettleRaf = 0;
+    logShortNoteScrollGesture(gesture, "native-settled", currentScrollY, metrics);
+    uiState.shortNoteScrollGesture = null;
+    return;
+  }
+
+  const movement = Math.abs(currentScrollY - gesture.lastObservedScrollY);
+  gesture.lastObservedScrollY = currentScrollY;
+  gesture.stableReleaseFrames = viewportOffsetTop <= 1.5 && movement < 0.75
+    ? gesture.stableReleaseFrames + 1
+    : 0;
+  if (
+    gesture.stableReleaseFrames < SHORT_NOTE_SCROLL_STALL_FRAMES &&
+    watchElapsedMs < SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS
+  ) {
+    uiState.shortNoteScrollSettleRaf = window.requestAnimationFrame((nextTimestamp) =>
+      settleCompactShortNoteScroll(gesture, nextTimestamp)
+    );
+    return;
+  }
+
+  uiState.shortNoteScrollSettleRaf = 0;
+  animateCompactShortNoteScroll(gesture, currentScrollY, metrics);
+}
+
+function animateCompactShortNoteScroll(gesture, settleStartY, metrics) {
   const startedAt = performance.now();
   const duration = prefersReducedMotion() ? 0 : SHORT_NOTE_SCROLL_SETTLE_DURATION_MS;
   const animate = (timestamp) => {
@@ -3999,20 +4044,18 @@ function settleCompactShortNoteScroll(gesture) {
       return;
     }
     uiState.shortNoteScrollSettleRaf = 0;
-    logShortNoteScrollGesture(gesture, "smooth-settled", settleStartY);
+    logShortNoteScrollGesture(gesture, "smooth-settled", settleStartY, metrics);
     uiState.shortNoteScrollGesture = null;
   };
   uiState.shortNoteScrollSettleRaf = window.requestAnimationFrame(animate);
 }
 
 function cancelShortNoteScrollSettle() {
-  window.clearTimeout(uiState.shortNoteScrollSettleTimer);
-  uiState.shortNoteScrollSettleTimer = null;
   window.cancelAnimationFrame(uiState.shortNoteScrollSettleRaf);
   uiState.shortNoteScrollSettleRaf = 0;
 }
 
-function logShortNoteScrollGesture(gesture, result, settleStartY) {
+function logShortNoteScrollGesture(gesture, result, settleStartY, metrics = null) {
   sampleShortNoteScrollGesture(gesture, null, result, true);
   appendEditorDebugLog({
     action: "short-note-scroll-settle",
@@ -4030,6 +4073,9 @@ function logShortNoteScrollGesture(gesture, result, settleStartY) {
       settleEndY: Math.round(window.scrollY),
       minScrollY: Math.round(gesture.minScrollY),
       maxScrollY: Math.round(gesture.maxScrollY),
+      nativeWatchMs: Math.round(gesture.nativeWatchElapsedMs || 0),
+      stableReleaseFrames: gesture.stableReleaseFrames || 0,
+      documentMaxScrollY: Math.round(metrics?.maxScrollY || 0),
       suppressedClampCount: gesture.suppressedClampCount,
       samples: gesture.samples
     }
@@ -7000,6 +7046,8 @@ function captureLayoutDebugSnapshot() {
     innerHeight: window.innerHeight,
     scrollX: window.scrollX,
     scrollY: window.scrollY,
+    documentScrollHeight: document.documentElement.scrollHeight,
+    documentMaxScrollY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
     keyboardOffset: getVisualKeyboardOffset(),
     visualViewport: viewport
       ? {

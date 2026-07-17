@@ -3318,7 +3318,7 @@ select:focus {
   }
 
   .notepad-editor {
-    min-height: max(180px, calc(100dvh - var(--top-controls-height) - 96px));
+    min-height: max(180px, calc(100dvh - var(--top-controls-height) - 140px));
   }
 }
 
@@ -3540,7 +3540,7 @@ select:focus {
   }
 
   .view-panel {
-    min-height: calc(100dvh - 146px);
+    min-height: calc(100dvh - var(--top-controls-height) - 50px);
   }
 
   .scope-pill {
