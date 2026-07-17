@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-17-bed-index-relative-v3";
+const APP_BUILD = "2026-07-17-bed-index-trace-v4";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -253,6 +253,7 @@ function initMobileViewportDock() {
   };
 
   const requestViewportOffsetUpdate = () => {
+    traceBedIndexScrubViewportEvent();
     window.cancelAnimationFrame(rafId);
     rafId = window.requestAnimationFrame(() => {
       updateViewportOffset();
@@ -7021,6 +7022,7 @@ function formatTimeFromTimestamp(timestamp) {
 }
 
 function showBedIndexDuringScroll() {
+  traceBedIndexScrubScrollEvent();
   if (uiState.bedIndexScrollRaf) return;
   uiState.bedIndexScrollRaf = window.requestAnimationFrame(() => {
     uiState.bedIndexScrollRaf = 0;
@@ -7059,6 +7061,12 @@ function startBedIndexScrub(rail, event) {
   if (!rail || (event.button !== undefined && event.button !== 0)) return;
   if (uiState.bedIndexScrub) {
     event.preventDefault();
+    flagBedIndexScrubAnomaly(uiState.bedIndexScrub, "duplicate-pointer-start", {
+      activePointerId: uiState.bedIndexScrub.pointerId,
+      incomingPointerId: event.pointerId,
+      incomingPointerType: event.pointerType || "unknown",
+      clientY: Number(event.clientY)
+    });
     return;
   }
   const labels = getBedIndexLabels(rail);
@@ -7088,6 +7096,17 @@ function startBedIndexScrub(rail, event) {
     scrollFrame: 0,
     startScrollY: window.scrollY,
     lastTargetScrollY: window.scrollY,
+    lastObservedScrollY: window.scrollY,
+    lastCommandedAt: 0,
+    lastPointerAt: performance.now(),
+    lastPointerClientY: Number(event.clientY),
+    lastViewportTop: Number(window.visualViewport?.offsetTop) || 0,
+    lastViewportHeight: Number(window.visualViewport?.height || window.innerHeight) || 0,
+    lastCommandIndex: startIndex,
+    lastRecordedCommandTarget: window.scrollY,
+    trace: [],
+    anomalyKeys: new Set(),
+    anomalies: [],
     startedAt: Date.now()
   };
   rail.classList.add("is-visible", "is-scrubbing");
@@ -7100,6 +7119,12 @@ function startBedIndexScrub(rail, event) {
   const railRect = rail.getBoundingClientRect();
   const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), Number(event.clientY) - railRect.top));
   setBedIndexActiveState(rail, startIndex, { bubbleY, labels });
+  recordBedIndexScrubTrace(uiState.bedIndexScrub, "start", {
+    clientY: Number(event.clientY),
+    ratio: startRatio,
+    position: startIndex,
+    index: startIndex
+  }, { force: true });
   appendEditorDebugLog({
     action: "bed-index-scrub-start",
     source: "pointer",
@@ -7133,18 +7158,85 @@ function updateBedIndexScrub(event) {
   const ratio = Math.max(0, Math.min(1, (Number(event.clientY) - trackRect.top) / trackRect.height));
   const position = getBedIndexScrubPosition(scrub, ratio);
   const index = Math.min(scrub.labels.length - 1, Math.round(position));
+  const now = performance.now();
+  const elapsedMs = Math.max(0, now - scrub.lastPointerAt);
+  const clientY = Number(event.clientY);
+  const clientYDelta = clientY - scrub.lastPointerClientY;
+  const indexDelta = index - scrub.lastIndex;
+  const coordinateOutsideTrack = clientY < trackRect.top - 32 || clientY > trackRect.bottom + 32;
+  const rapidFirstBedJump = scrub.lastIndex >= 4 && index <= 1 && elapsedMs <= 250;
+  const rawCoordinateReset = clientY <= 1 && trackRect.top > 8;
   const railRect = scrub.rail.getBoundingClientRect();
-  const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), Number(event.clientY) - railRect.top));
+  const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), clientY - railRect.top));
   setBedIndexActiveState(scrub.rail, index, { bubbleY, labels: scrub.labels });
+  recordBedIndexScrubTrace(scrub, "pointer", {
+    clientY,
+    ratio,
+    position,
+    index,
+    elapsedMs,
+    clientYDelta,
+    indexDelta,
+    pointerId: event.pointerId
+  }, {
+    force: index !== scrub.lastIndex || now - scrub.lastTraceAt >= 80
+  });
+  if (rawCoordinateReset) {
+    flagBedIndexScrubAnomaly(scrub, "pointer-coordinate-reset", {
+      clientY,
+      trackTop: trackRect.top,
+      trackBottom: trackRect.bottom,
+      ratio,
+      index,
+      previousIndex: scrub.lastIndex,
+      elapsedMs
+    });
+  } else if (coordinateOutsideTrack) {
+    flagBedIndexScrubAnomaly(scrub, "pointer-outside-track", {
+      clientY,
+      trackTop: trackRect.top,
+      trackBottom: trackRect.bottom,
+      ratio,
+      index,
+      previousIndex: scrub.lastIndex,
+      elapsedMs
+    });
+  }
+  if (rapidFirstBedJump) {
+    flagBedIndexScrubAnomaly(scrub, "rapid-return-to-first-bed", {
+      clientY,
+      clientYDelta,
+      ratio,
+      index,
+      previousIndex: scrub.lastIndex,
+      elapsedMs
+    });
+  }
   scrub.lastIndex = index;
   scrub.lastPosition = position;
+  scrub.lastPointerAt = now;
+  scrub.lastPointerClientY = clientY;
   scheduleBedIndexScrubScroll(scrub, position);
 }
 
 function finishBedIndexScrub(event) {
   const scrub = uiState.bedIndexScrub;
-  if (!scrub || (event.pointerId !== undefined && scrub.pointerId !== undefined && event.pointerId !== scrub.pointerId)) return false;
+  if (!scrub) return false;
+  if (event.pointerId !== undefined && scrub.pointerId !== undefined && event.pointerId !== scrub.pointerId) {
+    flagBedIndexScrubAnomaly(scrub, "pointer-finish-mismatch", {
+      activePointerId: scrub.pointerId,
+      incomingPointerId: event.pointerId,
+      eventType: event.type || ""
+    });
+    return false;
+  }
   flushBedIndexScrubScroll(scrub);
+  recordBedIndexScrubTrace(scrub, "end", {
+    clientY: Number(event?.clientY),
+    position: scrub.lastPosition,
+    index: scrub.lastIndex,
+    eventType: event?.type || ""
+  }, { force: true });
   uiState.bedIndexScrub = null;
   scrub.rail.classList.remove("is-scrubbing");
   safelyReleasePointerCapture(scrub.rail, scrub.pointerId);
@@ -7175,7 +7267,10 @@ function finishBedIndexScrub(event) {
       startScrollY: Math.round(scrub.startScrollY),
       targetScrollY: Math.round(scrub.lastTargetScrollY),
       endScrollY: Math.round(window.scrollY),
-      durationMs: Math.max(0, Date.now() - scrub.startedAt)
+      durationMs: Math.max(0, Date.now() - scrub.startedAt),
+      anomalyCount: scrub.anomalies.length,
+      anomalyReasons: scrub.anomalies.map((item) => item.reason),
+      trace: scrub.trace
     }
   });
   return true;
@@ -7265,7 +7360,149 @@ function flushBedIndexScrubScroll(scrub) {
     scrub.startScrollY + documentTop - startAnchorDocumentTop
   ));
   scrub.lastTargetScrollY = targetScrollY;
+  scrub.lastCommandedAt = performance.now();
+  const commandIndex = Math.round(position);
+  const forceCommandTrace = commandIndex !== scrub.lastCommandIndex
+    || Math.abs(targetScrollY - scrub.lastRecordedCommandTarget) >= 96;
+  recordBedIndexScrubTrace(scrub, "scroll-command", {
+    position,
+    index: commandIndex,
+    targetScrollY
+  }, { force: forceCommandTrace });
+  scrub.lastCommandIndex = commandIndex;
+  scrub.lastRecordedCommandTarget = targetScrollY;
   window.scrollTo({ left: window.scrollX, top: targetScrollY, behavior: "auto" });
+}
+
+function traceBedIndexScrubViewportEvent() {
+  const scrub = uiState.bedIndexScrub;
+  if (!scrub) return;
+  const viewport = window.visualViewport;
+  const viewportTop = Number(viewport?.offsetTop) || 0;
+  const viewportHeight = Number(viewport?.height || window.innerHeight) || 0;
+  const topDelta = viewportTop - scrub.lastViewportTop;
+  const heightDelta = viewportHeight - scrub.lastViewportHeight;
+  const shifted = Math.abs(topDelta) >= 32 || Math.abs(heightDelta) >= 80;
+  recordBedIndexScrubTrace(scrub, "viewport-event", {
+    viewportTop,
+    viewportHeight,
+    topDelta,
+    heightDelta
+  }, { force: shifted });
+  if (shifted) {
+    flagBedIndexScrubAnomaly(scrub, "visual-viewport-shift", {
+      viewportTop,
+      viewportHeight,
+      topDelta,
+      heightDelta,
+      currentScrollY: window.scrollY,
+      targetScrollY: scrub.lastTargetScrollY
+    });
+  }
+  scrub.lastViewportTop = viewportTop;
+  scrub.lastViewportHeight = viewportHeight;
+}
+
+function traceBedIndexScrubScrollEvent() {
+  const scrub = uiState.bedIndexScrub;
+  if (!scrub) return;
+  const now = performance.now();
+  const scrollY = window.scrollY;
+  const scrollDelta = scrollY - scrub.lastObservedScrollY;
+  const targetDelta = scrollY - scrub.lastTargetScrollY;
+  const viewportHeight = window.visualViewport?.height || window.innerHeight;
+  const unexpectedScroll = Math.abs(targetDelta) > Math.max(96, viewportHeight * 0.12)
+    && now - scrub.lastCommandedAt > 32;
+  const visibleIndex = getBedIndexScrubStartIndex(scrub.anchors);
+  const unexpectedFirstBed = visibleIndex <= 1
+    && scrub.lastPosition >= 4
+    && Math.abs(targetDelta) > 96;
+
+  recordBedIndexScrubTrace(scrub, "scroll-event", {
+    scrollY,
+    scrollDelta,
+    targetDelta,
+    visibleIndex
+  }, {
+    force: unexpectedScroll || unexpectedFirstBed || now - scrub.lastTraceAt >= 80
+  });
+
+  if (unexpectedFirstBed) {
+    flagBedIndexScrubAnomaly(scrub, "visible-first-bed-without-command", {
+      scrollY,
+      targetScrollY: scrub.lastTargetScrollY,
+      targetDelta,
+      visibleIndex,
+      requestedIndex: Math.round(scrub.lastPosition)
+    });
+  } else if (unexpectedScroll) {
+    flagBedIndexScrubAnomaly(scrub, "scroll-diverged-from-command", {
+      scrollY,
+      targetScrollY: scrub.lastTargetScrollY,
+      targetDelta,
+      visibleIndex,
+      requestedIndex: Math.round(scrub.lastPosition),
+      sinceCommandMs: Math.round(now - scrub.lastCommandedAt)
+    });
+  }
+  scrub.lastObservedScrollY = scrollY;
+}
+
+function recordBedIndexScrubTrace(scrub, kind, details = {}, { force = false } = {}) {
+  if (!scrub?.trace) return;
+  const now = performance.now();
+  if (!force && now - (scrub.lastTraceAt || 0) < 80) return;
+  scrub.lastTraceAt = now;
+  const viewport = window.visualViewport;
+  const entry = {
+    t: Math.max(0, Math.round(Date.now() - scrub.startedAt)),
+    kind,
+    scrollY: Math.round(Number(details.scrollY ?? window.scrollY) || 0),
+    targetScrollY: Math.round(Number(details.targetScrollY ?? scrub.lastTargetScrollY) || 0),
+    viewportTop: Math.round(Number(viewport?.offsetTop) || 0),
+    viewportHeight: Math.round(Number(viewport?.height || window.innerHeight) || 0)
+  };
+  Object.entries(details).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) return;
+      entry[key] = Number(value.toFixed(3));
+      return;
+    }
+    entry[key] = value;
+  });
+  scrub.trace.push(entry);
+  if (scrub.trace.length > 96) scrub.trace.shift();
+}
+
+function flagBedIndexScrubAnomaly(scrub, reason, details = {}) {
+  if (!scrub || !reason || scrub.anomalyKeys?.has(reason) || scrub.anomalies.length >= 6) return;
+  scrub.anomalyKeys.add(reason);
+  const anomaly = {
+    reason,
+    t: Math.max(0, Math.round(Date.now() - scrub.startedAt)),
+    ...details
+  };
+  scrub.anomalies.push(anomaly);
+  appendEditorDebugLog({
+    action: "bed-index-scrub-anomaly",
+    source: "pointer",
+    success: false,
+    handledBy: "flagBedIndexScrubAnomaly",
+    before: null,
+    after: null,
+    scrub: {
+      startIndex: scrub.startIndex,
+      startBed: scrub.labels[scrub.startIndex] || "",
+      currentIndex: scrub.lastIndex,
+      currentBed: scrub.labels[scrub.lastIndex] || "",
+      startScrollY: Math.round(scrub.startScrollY),
+      currentScrollY: Math.round(window.scrollY),
+      targetScrollY: Math.round(scrub.lastTargetScrollY),
+      anomaly,
+      traceTail: scrub.trace.slice(-16)
+    }
+  });
 }
 
 function getBedIndexLabels(rail) {
