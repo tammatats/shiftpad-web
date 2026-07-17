@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-17-bed-index-trace-v4";
+const APP_BUILD = "2026-07-17-bed-index-screen-coordinate-v5";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -7065,7 +7065,8 @@ function startBedIndexScrub(rail, event) {
       activePointerId: uiState.bedIndexScrub.pointerId,
       incomingPointerId: event.pointerId,
       incomingPointerType: event.pointerType || "unknown",
-      clientY: Number(event.clientY)
+      clientY: Number(event.clientY),
+      screenY: Number(event.screenY)
     });
     return;
   }
@@ -7079,7 +7080,15 @@ function startBedIndexScrub(rail, event) {
   cancelBedLongPress();
   window.clearTimeout(uiState.bedIndexTimer);
   const anchors = getBedIndexScrubAnchors(labels);
-  const startRatio = Math.max(0, Math.min(1, (Number(event.clientY) - trackRect.top) / trackRect.height));
+  const rawStartClientY = Number(event.clientY);
+  const startScreenY = Number(event.screenY);
+  const useScreenCoordinate = (isLikelyIphoneDevice() || isLikelyIpadDevice())
+    && (event.pointerType || "") === "touch"
+    && Number.isFinite(startScreenY)
+    && startScreenY > 0;
+  const screenToClientOffset = useScreenCoordinate ? rawStartClientY - startScreenY : 0;
+  const startClientY = useScreenCoordinate ? startScreenY + screenToClientOffset : rawStartClientY;
+  const startRatio = Math.max(0, Math.min(1, (startClientY - trackRect.top) / trackRect.height));
   const startIndex = getBedIndexScrubStartIndex(anchors);
   uiState.bedIndexScrub = {
     rail,
@@ -7087,6 +7096,8 @@ function startBedIndexScrub(rail, event) {
     anchors,
     pointerId: event.pointerId,
     pointerType: event.pointerType || "unknown",
+    useScreenCoordinate,
+    screenToClientOffset,
     startRatio,
     startIndex,
     startAnchorDocumentTop: anchors.find((anchor) => anchor.index === startIndex)?.documentTop ?? null,
@@ -7099,7 +7110,9 @@ function startBedIndexScrub(rail, event) {
     lastObservedScrollY: window.scrollY,
     lastCommandedAt: 0,
     lastPointerAt: performance.now(),
-    lastPointerClientY: Number(event.clientY),
+    lastPointerClientY: startClientY,
+    lastPointerRawClientY: rawStartClientY,
+    lastPointerScreenY: startScreenY,
     lastViewportTop: Number(window.visualViewport?.offsetTop) || 0,
     lastViewportHeight: Number(window.visualViewport?.height || window.innerHeight) || 0,
     lastCommandIndex: startIndex,
@@ -7117,10 +7130,13 @@ function startBedIndexScrub(rail, event) {
     // Pointer capture is optional on older iOS versions.
   }
   const railRect = rail.getBoundingClientRect();
-  const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), Number(event.clientY) - railRect.top));
+  const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), startClientY - railRect.top));
   setBedIndexActiveState(rail, startIndex, { bubbleY, labels });
   recordBedIndexScrubTrace(uiState.bedIndexScrub, "start", {
-    clientY: Number(event.clientY),
+    clientY: startClientY,
+    rawClientY: rawStartClientY,
+    screenY: startScreenY,
+    coordinateSource: useScreenCoordinate ? "screen-calibrated" : "client",
     ratio: startRatio,
     position: startIndex,
     index: startIndex
@@ -7137,7 +7153,10 @@ function startBedIndexScrub(rail, event) {
       anchorCount: uiState.bedIndexScrub.anchors.length,
       pointerId: uiState.bedIndexScrub.pointerId,
       pointerType: uiState.bedIndexScrub.pointerType,
-      clientY: Math.round(Number(event.clientY) || 0),
+      clientY: Math.round(startClientY || 0),
+      rawClientY: Math.round(rawStartClientY || 0),
+      screenY: Math.round(startScreenY || 0),
+      coordinateSource: useScreenCoordinate ? "screen-calibrated" : "client",
       trackTop: Math.round(trackRect.top),
       trackBottom: Math.round(trackRect.bottom),
       startRatio: Number(startRatio.toFixed(4)),
@@ -7155,32 +7174,54 @@ function updateBedIndexScrub(event) {
   const trackRect = track?.getBoundingClientRect();
   if (!trackRect?.height) return;
 
-  const ratio = Math.max(0, Math.min(1, (Number(event.clientY) - trackRect.top) / trackRect.height));
+  const pointerCoordinate = getBedIndexPointerCoordinate(scrub, event);
+  const clientY = pointerCoordinate.clientY;
+  const ratio = Math.max(0, Math.min(1, (clientY - trackRect.top) / trackRect.height));
   const position = getBedIndexScrubPosition(scrub, ratio);
   const index = Math.min(scrub.labels.length - 1, Math.round(position));
   const now = performance.now();
   const elapsedMs = Math.max(0, now - scrub.lastPointerAt);
-  const clientY = Number(event.clientY);
   const clientYDelta = clientY - scrub.lastPointerClientY;
+  const rawClientYDelta = pointerCoordinate.rawClientY - scrub.lastPointerRawClientY;
+  const screenYDelta = pointerCoordinate.screenY - scrub.lastPointerScreenY;
   const indexDelta = index - scrub.lastIndex;
   const coordinateOutsideTrack = clientY < trackRect.top - 32 || clientY > trackRect.bottom + 32;
   const rapidFirstBedJump = scrub.lastIndex >= 4 && index <= 1 && elapsedMs <= 250;
   const rawCoordinateReset = clientY <= 1 && trackRect.top > 8;
+  const rawCoordinateDrift = scrub.useScreenCoordinate
+    && Math.abs(pointerCoordinate.rawClientY - clientY) >= 96;
   const railRect = scrub.rail.getBoundingClientRect();
   const bubbleY = Math.max(18, Math.min(Math.max(18, railRect.height - 18), clientY - railRect.top));
   setBedIndexActiveState(scrub.rail, index, { bubbleY, labels: scrub.labels });
   recordBedIndexScrubTrace(scrub, "pointer", {
     clientY,
+    rawClientY: pointerCoordinate.rawClientY,
+    screenY: pointerCoordinate.screenY,
+    coordinateSource: pointerCoordinate.source,
     ratio,
     position,
     index,
     elapsedMs,
     clientYDelta,
+    rawClientYDelta,
+    screenYDelta,
     indexDelta,
     pointerId: event.pointerId
   }, {
     force: index !== scrub.lastIndex || now - scrub.lastTraceAt >= 80
   });
+  if (rawCoordinateDrift) {
+    flagBedIndexScrubAnomaly(scrub, "client-coordinate-scroll-drift", {
+      clientY,
+      rawClientY: pointerCoordinate.rawClientY,
+      screenY: pointerCoordinate.screenY,
+      rawDifference: pointerCoordinate.rawClientY - clientY,
+      currentScrollY: window.scrollY,
+      targetScrollY: scrub.lastTargetScrollY,
+      index,
+      previousIndex: scrub.lastIndex
+    });
+  }
   if (rawCoordinateReset) {
     flagBedIndexScrubAnomaly(scrub, "pointer-coordinate-reset", {
       clientY,
@@ -7216,7 +7257,27 @@ function updateBedIndexScrub(event) {
   scrub.lastPosition = position;
   scrub.lastPointerAt = now;
   scrub.lastPointerClientY = clientY;
+  scrub.lastPointerRawClientY = pointerCoordinate.rawClientY;
+  scrub.lastPointerScreenY = pointerCoordinate.screenY;
   scheduleBedIndexScrubScroll(scrub, position);
+}
+
+function getBedIndexPointerCoordinate(scrub, event) {
+  const rawClientY = Number(event.clientY);
+  const screenY = Number(event.screenY);
+  const canUseScreenCoordinate = Boolean(
+    scrub?.useScreenCoordinate
+      && Number.isFinite(screenY)
+      && screenY > 0
+  );
+  return {
+    rawClientY,
+    screenY,
+    clientY: canUseScreenCoordinate
+      ? screenY + scrub.screenToClientOffset
+      : rawClientY,
+    source: canUseScreenCoordinate ? "screen-calibrated" : "client"
+  };
 }
 
 function finishBedIndexScrub(event) {
@@ -7231,8 +7292,12 @@ function finishBedIndexScrub(event) {
     return false;
   }
   flushBedIndexScrubScroll(scrub);
+  const pointerCoordinate = getBedIndexPointerCoordinate(scrub, event);
   recordBedIndexScrubTrace(scrub, "end", {
-    clientY: Number(event?.clientY),
+    clientY: pointerCoordinate.clientY,
+    rawClientY: pointerCoordinate.rawClientY,
+    screenY: pointerCoordinate.screenY,
+    coordinateSource: pointerCoordinate.source,
     position: scrub.lastPosition,
     index: scrub.lastIndex,
     eventType: event?.type || ""
@@ -7270,6 +7335,7 @@ function finishBedIndexScrub(event) {
       durationMs: Math.max(0, Date.now() - scrub.startedAt),
       anomalyCount: scrub.anomalies.length,
       anomalyReasons: scrub.anomalies.map((item) => item.reason),
+      coordinateSource: scrub.useScreenCoordinate ? "screen-calibrated" : "client",
       trace: scrub.trace
     }
   });
