@@ -32,7 +32,9 @@ const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
 const NOTE_DOCUMENT_MODEL_VERSION = 1;
 const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
-const APP_BUILD = "2026-07-17-structured-lines-v8";
+const SHORT_NOTE_SCROLL_RELEASE_DELAY_MS = 420;
+const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 320;
+const APP_BUILD = "2026-07-17-short-note-scroll-v9";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -131,6 +133,11 @@ const uiState = {
   bedIndexClickSuppressTimer: null,
   bedFinalizeTimer: null,
   editorTapScroll: null,
+  shortNoteScrollGesture: null,
+  shortNoteScrollSuppressUntil: 0,
+  shortNoteScrollSettleTimer: null,
+  shortNoteScrollSettleRaf: 0,
+  lastShortNoteScrollClampDebugAt: 0,
   suppressNextDeleteInput: false,
   suppressNextParagraphInput: false,
   drawerOpen: false,
@@ -280,6 +287,7 @@ function initMobileViewportDock() {
     const staleIpadPan = Boolean(
       viewport &&
         isLikelyIpadDevice() &&
+        !shouldDeferCompactShortNoteScrollClamp() &&
         viewport.height >= stableIpadViewportHeight - 24 &&
         (viewport.offsetTop || 0) > 2
     );
@@ -330,6 +338,7 @@ function initMobileViewportDock() {
   window.visualViewport?.addEventListener("resize", requestViewportOffsetUpdate);
   window.visualViewport?.addEventListener("scroll", requestViewportOffsetUpdate);
   window.addEventListener("scroll", requestViewportOffsetUpdate, { passive: true });
+  bindShortNoteScrollGestures();
   window.addEventListener(
     "resize",
     () => {
@@ -3814,21 +3823,217 @@ function clampCompactShortNoteScrollPosition() {
     return false;
   }
 
-  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
-  if (!editor) return false;
+  if (shouldDeferCompactShortNoteScrollClamp()) {
+    const gesture = uiState.shortNoteScrollGesture;
+    if (gesture) {
+      gesture.suppressedClampCount += 1;
+      sampleShortNoteScrollGesture(gesture, null, "clamp-suppressed");
+    }
+    return false;
+  }
 
+  const metrics = getCompactShortNoteScrollMetrics();
+  if (!metrics?.isShort) return false;
+
+  const scrollY = Number(window.scrollY) || 0;
+  const now = Date.now();
+  if (now - uiState.lastShortNoteScrollClampDebugAt >= 1200) {
+    uiState.lastShortNoteScrollClampDebugAt = now;
+    appendEditorDebugLog({
+      action: "short-note-scroll-forced-clamp",
+      source: "viewport",
+      success: true,
+      handledBy: "clampCompactShortNoteScrollPosition",
+      before: null,
+      after: null,
+      shortNoteScroll: {
+        scrollY: Math.round(scrollY),
+        contentBottomAtPageTop: Math.round(metrics.contentBottomAtPageTop),
+        viewportBottom: Math.round(metrics.viewportBottom),
+        gestureActive: Boolean(uiState.shortNoteScrollGesture?.active),
+        suppressRemainingMs: Math.max(0, uiState.shortNoteScrollSuppressUntil - now)
+      }
+    });
+  }
+  window.scrollTo({ top: 0, left: window.scrollX, behavior: "auto" });
+  return true;
+}
+
+function bindShortNoteScrollGestures() {
+  window.addEventListener("touchstart", beginShortNoteScrollGesture, { passive: true, capture: true });
+  window.addEventListener("touchmove", updateShortNoteScrollGesture, { passive: true, capture: true });
+  window.addEventListener("touchend", finishShortNoteScrollGesture, { passive: true, capture: true });
+  window.addEventListener("touchcancel", finishShortNoteScrollGesture, { passive: true, capture: true });
+}
+
+function beginShortNoteScrollGesture(event) {
+  const editor = getEditorFromEventTarget(event.target);
+  if (!editor || getVisualKeyboardOffset() >= 24) return;
+  const metrics = getCompactShortNoteScrollMetrics();
+  if (!metrics?.isShort) return;
+
+  cancelShortNoteScrollSettle();
+  const now = Date.now();
+  const gesture = {
+    active: true,
+    startedAt: now,
+    releasedAt: 0,
+    startScrollY: window.scrollY,
+    releaseScrollY: window.scrollY,
+    minScrollY: window.scrollY,
+    maxScrollY: window.scrollY,
+    suppressedClampCount: 0,
+    lastSampleAt: 0,
+    samples: []
+  };
+  uiState.shortNoteScrollGesture = gesture;
+  uiState.shortNoteScrollSuppressUntil = now + SHORT_NOTE_SCROLL_RELEASE_DELAY_MS;
+  sampleShortNoteScrollGesture(gesture, event, "touchstart", true);
+}
+
+function updateShortNoteScrollGesture(event) {
+  const gesture = uiState.shortNoteScrollGesture;
+  if (!gesture?.active) return;
+  sampleShortNoteScrollGesture(gesture, event, "touchmove");
+}
+
+function finishShortNoteScrollGesture(event) {
+  const gesture = uiState.shortNoteScrollGesture;
+  if (!gesture?.active) return;
+  if (event?.touches?.length) return;
+  const now = Date.now();
+  gesture.active = false;
+  gesture.releasedAt = now;
+  gesture.releaseScrollY = window.scrollY;
+  uiState.shortNoteScrollSuppressUntil = now + SHORT_NOTE_SCROLL_RELEASE_DELAY_MS;
+  sampleShortNoteScrollGesture(gesture, event, event.type || "touchend", true);
+  window.clearTimeout(uiState.shortNoteScrollSettleTimer);
+  uiState.shortNoteScrollSettleTimer = window.setTimeout(
+    () => settleCompactShortNoteScroll(gesture),
+    SHORT_NOTE_SCROLL_RELEASE_DELAY_MS
+  );
+}
+
+function sampleShortNoteScrollGesture(gesture, event, kind, force = false) {
+  if (!gesture) return;
+  const now = Date.now();
+  const scrollY = Number(window.scrollY) || 0;
+  gesture.minScrollY = Math.min(gesture.minScrollY, scrollY);
+  gesture.maxScrollY = Math.max(gesture.maxScrollY, scrollY);
+  if (!force && now - gesture.lastSampleAt < 70) return;
+  gesture.lastSampleAt = now;
+  const touch = event?.touches?.[0] || event?.changedTouches?.[0];
+  const viewport = window.visualViewport;
+  gesture.samples.push({
+    t: now - gesture.startedAt,
+    kind,
+    scrollY: Math.round(scrollY),
+    pageTop: Math.round(Number(viewport?.pageTop) || 0),
+    offsetTop: Math.round(Number(viewport?.offsetTop) || 0),
+    touchY: Number.isFinite(touch?.clientY) ? Math.round(touch.clientY) : null
+  });
+  if (gesture.samples.length > 24) gesture.samples.shift();
+}
+
+function shouldDeferCompactShortNoteScrollClamp() {
+  return Boolean(
+    uiState.shortNoteScrollGesture?.active ||
+      uiState.shortNoteScrollSettleRaf ||
+      Date.now() < uiState.shortNoteScrollSuppressUntil
+  );
+}
+
+function getCompactShortNoteScrollMetrics() {
+  if (
+    !isCompactMobileLayout() ||
+    state.activeView !== "notes" ||
+    getVisualKeyboardOffset() >= 24 ||
+    uiState.drawerOpen ||
+    uiState.wardOptionsOpen ||
+    uiState.searchOpen
+  ) {
+    return null;
+  }
+
+  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  if (!editor) return null;
   const editorRect = editor.getBoundingClientRect();
   const lineBottom = Array.from(editor.children).reduce((bottom, line) => {
     const rect = line.getBoundingClientRect();
     return Math.max(bottom, rect.bottom);
   }, editorRect.top + (Number.parseFloat(getComputedStyle(editor).lineHeight) || 28));
   const contentBottomAtPageTop = lineBottom + window.scrollY;
-  const viewportBottomAllowance = 18;
+  const viewportBottom = window.innerHeight - 18;
+  return {
+    editor,
+    contentBottomAtPageTop,
+    viewportBottom,
+    isShort: contentBottomAtPageTop <= viewportBottom
+  };
+}
 
-  if (contentBottomAtPageTop > window.innerHeight - viewportBottomAllowance) return false;
+function settleCompactShortNoteScroll(gesture) {
+  uiState.shortNoteScrollSettleTimer = null;
+  if (!gesture || uiState.shortNoteScrollGesture !== gesture || gesture.active) return;
+  const metrics = getCompactShortNoteScrollMetrics();
+  const settleStartY = Math.max(0, Number(window.scrollY) || 0);
+  if (!metrics?.isShort || settleStartY <= 1) {
+    logShortNoteScrollGesture(gesture, metrics?.isShort ? "native-settled" : "content-not-short", settleStartY);
+    uiState.shortNoteScrollGesture = null;
+    return;
+  }
 
-  window.scrollTo({ top: 0, left: window.scrollX, behavior: "auto" });
-  return true;
+  const startedAt = performance.now();
+  const duration = prefersReducedMotion() ? 0 : SHORT_NOTE_SCROLL_SETTLE_DURATION_MS;
+  const animate = (timestamp) => {
+    if (uiState.shortNoteScrollGesture !== gesture || gesture.active) {
+      uiState.shortNoteScrollSettleRaf = 0;
+      return;
+    }
+    const progress = duration ? Math.min(1, (timestamp - startedAt) / duration) : 1;
+    const eased = 1 - Math.pow(1 - progress, 3);
+    window.scrollTo({ left: window.scrollX, top: settleStartY * (1 - eased), behavior: "auto" });
+    sampleShortNoteScrollGesture(gesture, null, "smooth-settle");
+    if (progress < 1) {
+      uiState.shortNoteScrollSettleRaf = window.requestAnimationFrame(animate);
+      return;
+    }
+    uiState.shortNoteScrollSettleRaf = 0;
+    logShortNoteScrollGesture(gesture, "smooth-settled", settleStartY);
+    uiState.shortNoteScrollGesture = null;
+  };
+  uiState.shortNoteScrollSettleRaf = window.requestAnimationFrame(animate);
+}
+
+function cancelShortNoteScrollSettle() {
+  window.clearTimeout(uiState.shortNoteScrollSettleTimer);
+  uiState.shortNoteScrollSettleTimer = null;
+  window.cancelAnimationFrame(uiState.shortNoteScrollSettleRaf);
+  uiState.shortNoteScrollSettleRaf = 0;
+}
+
+function logShortNoteScrollGesture(gesture, result, settleStartY) {
+  sampleShortNoteScrollGesture(gesture, null, result, true);
+  appendEditorDebugLog({
+    action: "short-note-scroll-settle",
+    source: "touch",
+    success: true,
+    handledBy: "settleCompactShortNoteScroll",
+    before: null,
+    after: null,
+    shortNoteScroll: {
+      result,
+      durationMs: Math.max(0, Date.now() - gesture.startedAt),
+      startScrollY: Math.round(gesture.startScrollY),
+      releaseScrollY: Math.round(gesture.releaseScrollY),
+      settleStartY: Math.round(settleStartY),
+      settleEndY: Math.round(window.scrollY),
+      minScrollY: Math.round(gesture.minScrollY),
+      maxScrollY: Math.round(gesture.maxScrollY),
+      suppressedClampCount: gesture.suppressedClampCount,
+      samples: gesture.samples
+    }
+  });
 }
 
 function restoreEditorFocusAndSelection() {
@@ -6174,6 +6379,9 @@ function resetEditorUiForWorkspaceSwitch() {
   uiState.editingWardId = "";
   uiState.bedAction = null;
   uiState.editorTapScroll = null;
+  cancelShortNoteScrollSettle();
+  uiState.shortNoteScrollGesture = null;
+  uiState.shortNoteScrollSuppressUntil = 0;
   uiState.suppressNextDeleteInput = false;
   uiState.suppressNextParagraphInput = false;
   uiState.pendingTagInsertions.clear();
