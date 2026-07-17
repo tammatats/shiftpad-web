@@ -30,7 +30,7 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-17-bed-index-touch-coordinate-v6";
+const APP_BUILD = "2026-07-17-ward-drawer-close-v7";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -503,6 +503,7 @@ function bindEvents() {
     const wardScope = event.target.closest("[data-ward-scope]");
     if (wardScope) {
       selectWardScope(wardScope.dataset.wardScope);
+      closeDrawersWithAnimation();
       return;
     }
 
@@ -531,6 +532,7 @@ function bindEvents() {
     const wardButton = event.target.closest("[data-ward-id]");
     if (wardButton) {
       selectWardFromDrawer(wardButton.dataset.wardId);
+      closeDrawersWithAnimation();
       return;
     }
 
