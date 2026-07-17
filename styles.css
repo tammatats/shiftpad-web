@@ -226,6 +226,18 @@
 .history-row > div:first-child strong,
 .history-row > div:first-child small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-row > div:first-child small { color: var(--muted); font-size: 0.76rem; }
+.history-recovery-row { align-items: center; }
+.history-copy { min-width: 0; }
+.history-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 .history-actions { gap: 5px; }
 .history-delete-btn { width: 34px; height: 34px; color: #a45243; }
 
@@ -1682,10 +1694,14 @@ button:disabled {
 }
 
 .timeline-empty {
-  display: grid;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  justify-items: start;
-  border-style: dashed;
+  flex-wrap: wrap;
+  border-style: solid;
+  background: rgba(255, 252, 248, 0.72);
 }
 
 .timeline-empty h3 {
@@ -1746,6 +1762,12 @@ button:disabled {
 .sticky-ward-actions small {
   color: var(--muted);
   white-space: nowrap;
+}
+
+html.editor-is-active .sticky-ward-actions > * {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .sort-beds-btn {
@@ -2213,6 +2235,20 @@ select:focus {
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-anchor: none;
+}
+
+.notepad-editor.is-empty-document {
+  position: relative;
+}
+
+.notepad-editor.is-empty-document::before {
+  position: absolute;
+  inset: 0 auto auto 0;
+  color: rgba(112, 96, 80, 0.62);
+  content: attr(data-placeholder);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  pointer-events: none;
 }
 
 .notepad-editor:focus,

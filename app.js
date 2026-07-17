@@ -30,7 +30,9 @@ const SHIFT_ARCHIVE_LIMIT = 6;
 const RECOVERY_SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const RECOVERY_SNAPSHOT_MAX_HTML = 160000;
 const NOTE_PARSE_CACHE_LIMIT = 180;
-const APP_BUILD = "2026-07-17-ward-drawer-close-v7";
+const NOTE_DOCUMENT_MODEL_VERSION = 1;
+const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
+const APP_BUILD = "2026-07-17-structured-lines-v8";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -120,6 +122,7 @@ const uiState = {
   editorFocused: false,
   mobileTagsOpen: false,
   savedSelection: null,
+  savedSelectionBookmark: null,
   bedIndexVisible: false,
   bedIndexTimer: null,
   bedIndexScrollRaf: 0,
@@ -168,6 +171,7 @@ const uiState = {
   recoveryBaselines: new Map(),
   recoveryLastSavedAt: new Map()
 };
+const noteDocumentModelTimers = new Map();
 const noteParseCache = new Map();
 applyUrlOverrides();
 
@@ -670,10 +674,12 @@ function bindEvents() {
   }, { passive: false });
 
   refs.editorRoot.addEventListener("pointerup", (event) => {
+    if (uiState.bedIndexScrub?.useTouchCoordinate) return;
     if (finishBedIndexScrub(event)) return;
     cancelBedLongPress(event);
   }, { passive: true });
   refs.editorRoot.addEventListener("pointercancel", (event) => {
+    if (uiState.bedIndexScrub?.useTouchCoordinate) return;
     if (finishBedIndexScrub(event)) return;
     cancelBedLongPress(event);
   }, { passive: true });
@@ -850,6 +856,7 @@ function bindEvents() {
     const note = getCurrentNote();
     if (!note) return;
     clearEditorTapScrollForInput();
+    syncEditorEmptyState(editor);
 
     if ((event.inputType || "").startsWith("deleteContent")) {
       repairCaretAtEditorLineBoundary(editor);
@@ -874,6 +881,7 @@ function bindEvents() {
     if ((event.inputType || "") === "insertText") {
       removeBrowserTrailingEmptyLineAfterInput(editor);
     }
+    ensureEditorLineIdentities(editor, note.id);
     updateSortBedsButtonFromEditor(editor);
     const nextHtml = sanitizeEditorHtml(editor.innerHTML);
     if (nextHtml === note.documentHtml) {
@@ -883,8 +891,7 @@ function bindEvents() {
       finishDeferredEditorInputDebug(editor, event, { handledBy: "browser-input-unchanged", changed: false });
       return;
     }
-    note.documentHtml = nextHtml;
-    note.updatedAt = Date.now();
+    setNoteDocumentHtml(note, nextHtml, { deferModel: true });
     rememberEditorSelection(editor);
     saveState();
     refreshWardDrawerMetricsIfOpen();
@@ -900,13 +907,13 @@ function bindEvents() {
     const note = getCurrentNote();
     if (!note) return;
 
+    ensureEditorLineIdentities(editor, note.id);
     const nextHtml = sanitizeEditorHtml(editor.innerHTML);
     if (nextHtml === note.documentHtml) {
       rememberEditorSelection(editor);
       return;
     }
-    note.documentHtml = nextHtml;
-    note.updatedAt = Date.now();
+    setNoteDocumentHtml(note, nextHtml);
     rememberEditorSelection(editor);
     saveState();
   }, true);
@@ -920,13 +927,13 @@ function bindEvents() {
     if (event.key === "Backspace" || event.key === "Delete") {
       repairCaretAtEditorLineBoundary(editor);
     }
+    ensureEditorLineIdentities(editor, note.id);
     const nextHtml = sanitizeEditorHtml(editor.innerHTML);
     if (nextHtml === note.documentHtml) {
       rememberEditorSelection(editor);
       return;
     }
-    note.documentHtml = nextHtml;
-    note.updatedAt = Date.now();
+    setNoteDocumentHtml(note, nextHtml);
     rememberEditorSelection(editor);
     saveState();
   });
@@ -937,13 +944,13 @@ function bindEvents() {
       const note = getCurrentNote();
       if (!note) return;
 
+      ensureEditorLineIdentities(editor, note.id);
       const nextHtml = sanitizeEditorHtml(editor.innerHTML);
       if (nextHtml === note.documentHtml) {
         rememberEditorSelection(editor);
         return;
       }
-      note.documentHtml = nextHtml;
-      note.updatedAt = Date.now();
+      setNoteDocumentHtml(note, nextHtml);
       rememberEditorSelection(editor);
       saveState();
     }
@@ -1089,7 +1096,8 @@ function bindEvents() {
         summaryEditor.dataset.noteId,
         Number(summaryEditor.dataset.lineIndex),
         summaryEditor.value,
-        parseOptionalIndex(summaryEditor.dataset.sourceIndex)
+        parseOptionalIndex(summaryEditor.dataset.sourceIndex),
+        summaryEditor.dataset.lineId || ""
       );
       appendSummaryEditorDebugLog(summaryEditor, "change", debugResult);
       return;
@@ -1130,7 +1138,8 @@ function bindEvents() {
       summaryEditor.dataset.noteId,
       Number(summaryEditor.dataset.lineIndex),
       summaryEditor.value,
-      parseOptionalIndex(summaryEditor.dataset.sourceIndex)
+      parseOptionalIndex(summaryEditor.dataset.sourceIndex),
+      summaryEditor.dataset.lineId || ""
     );
     appendSummaryEditorDebugLog(summaryEditor, "input", debugResult);
   });
@@ -1344,6 +1353,7 @@ function renderWorkspaceSearchResults() {
           data-search-ward="${escapeAttribute(result.wardId)}"
           data-search-note="${escapeAttribute(result.noteId)}"
           data-search-source-line="${result.sourceLineIndex}"
+          data-search-line-id="${escapeAttribute(result.lineId || "")}"
         >
           <span class="search-result-meta">${escapeHtml(result.wardName)}${result.bedLabel ? ` · Bed ${escapeHtml(result.bedLabel)}` : ""}</span>
           <strong>${escapeHtml(result.text)}</strong>
@@ -1369,6 +1379,7 @@ function buildWorkspaceSearchResults(query) {
           wardName: ward.name,
           noteId: note.id,
           bedLabel: line.bedLabel || "",
+          lineId: line.lineId || "",
           sourceLineIndex: Number.isInteger(line.sourceLineIndex) ? line.sourceLineIndex : line.lineIndex,
           text: text.length > 140 ? `${text.slice(0, 137)}...` : text
         });
@@ -1390,10 +1401,13 @@ function openWorkspaceSearchResult(button) {
   uiState.searchReturnFocus = null;
   saveState();
   render();
+  const lineId = String(button.dataset.searchLineId || "");
   const sourceLineIndex = Number(button.dataset.searchSourceLine);
   window.requestAnimationFrame(() => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
-    const line = Number.isInteger(sourceLineIndex) ? editor?.children?.[sourceLineIndex] : null;
+    const line = lineId
+      ? editor?.querySelector?.(`[data-line-id="${cssEscape(lineId)}"]`)
+      : Number.isInteger(sourceLineIndex) ? editor?.children?.[sourceLineIndex] : null;
     line?.scrollIntoView?.({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
     line?.classList?.add("search-result-flash");
     window.setTimeout(() => line?.classList?.remove("search-result-flash"), 1100);
@@ -1621,12 +1635,15 @@ function renderWorkspaceHistory() {
   return `
     <div class="history-block">
       <div class="history-block-head"><strong>Recent note versions</strong><small>${state.recoveryHistory.length}/${RECOVERY_HISTORY_LIMIT}</small></div>
-      ${recoveries.length ? recoveries.map((entry) => `
-        <div class="history-row">
-          <div><strong>${escapeHtml(entry.wardName || "Recovered ward")}</strong><small>${escapeHtml(formatHistoryTimestamp(entry.createdAt))} · ${escapeHtml(entry.reason || "Auto recovery")}</small></div>
+      ${recoveries.length ? recoveries.map((entry) => {
+        const preview = getRecoveryHistoryPreview(entry.documentHtml);
+        return `
+        <div class="history-row history-recovery-row">
+          <div class="history-copy"><strong>${escapeHtml(entry.wardName || "Recovered ward")}</strong><small>${escapeHtml(formatHistoryTimestamp(entry.createdAt))} · ${escapeHtml(entry.reason || "Auto recovery")}</small><span class="history-preview">${escapeHtml(preview)}</span></div>
           <button class="tiny-btn" type="button" data-drawer-action="restore-recovery" data-history-id="${escapeAttribute(entry.id)}" aria-label="Restore version from ${escapeAttribute(formatHistoryTimestamp(entry.createdAt))}">Restore</button>
         </div>
-      `).join("") : `<p class="drawer-help">Earlier note versions appear here automatically while you edit.</p>`}
+      `;
+      }).join("") : `<p class="drawer-help">Earlier note versions appear here automatically while you edit.</p>`}
     </div>
     <div class="history-block">
       <div class="history-block-head"><strong>Shift archive</strong><small>${archives.length}/${SHIFT_ARCHIVE_LIMIT}</small></div>
@@ -1646,6 +1663,23 @@ function renderWorkspaceHistory() {
 function formatHistoryTimestamp(value) {
   const date = new Date(Number(value) || Date.now());
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function getRecoveryHistoryPreview(html) {
+  const root = parseHtmlRoot(String(html || ""));
+  normalizeEditorBlocks(root);
+  const parts = Array.from(root.children)
+    .filter((line) => !isEditorLineEmpty(line))
+    .slice(0, 3)
+    .map((line) => {
+      const parsed = parseLineNode(line);
+      return parsed.visibleText || parsed.text;
+    })
+    .map((text) => String(text || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const preview = parts.join(" · ");
+  if (!preview) return "Blank version";
+  return preview.length > 118 ? `${preview.slice(0, 115)}...` : preview;
 }
 
 function renderWardOptionsMenu() {
@@ -1956,6 +1990,7 @@ function renderEditor() {
     return;
   }
   const documentHtml = getNoteDocumentHtml(note);
+  const noteIsEmpty = !hasMeaningfulNoteHtml(documentHtml);
   rememberRecoveryBaseline(note);
 
   refs.editorRoot.innerHTML = `
@@ -1968,11 +2003,12 @@ function renderEditor() {
         <div class="smart-pad-surface document-pad">
           <div
             id="notepad-editor"
-            class="notepad-editor"
+            class="notepad-editor ${noteIsEmpty ? "is-empty-document" : ""}"
             contenteditable="true"
             spellcheck="true"
             aria-label="Main notepad"
             autocapitalize="sentences"
+            data-placeholder="Tap to start this ward note"
           >${documentHtml}</div>
           ${renderBedIndexRail(bedIndex)}
         </div>
@@ -2323,9 +2359,8 @@ function renameSelectedBed(value) {
   if (!context || !label) return;
 
   context.token.textContent = `Bed ${label}`;
-  context.note.documentHtml = sanitizeEditorHtml(context.root.innerHTML);
-  context.note.updatedAt = Date.now();
-  uiState.savedSelection = null;
+  setNoteDocumentHtml(context.note, context.root.innerHTML);
+  clearSavedEditorSelection();
   uiState.bedAction = null;
   saveState();
   render();
@@ -2358,9 +2393,8 @@ function deleteSelectedBedSection() {
   sectionLines.forEach((line) => line.remove());
   normalizeBedSectionSeparators(context.root);
 
-  context.note.documentHtml = sanitizeEditorHtml(context.root.innerHTML);
-  context.note.updatedAt = Date.now();
-  uiState.savedSelection = null;
+  setNoteDocumentHtml(context.note, context.root.innerHTML);
+  clearSavedEditorSelection();
   uiState.bedAction = null;
   saveState({ skipRecovery: true });
   render();
@@ -2399,11 +2433,9 @@ function moveBedSectionToWard(targetWardId) {
   normalizeBedSectionSeparators(targetRoot);
 
   const now = Date.now();
-  context.note.documentHtml = sanitizeEditorHtml(context.root.innerHTML);
-  context.note.updatedAt = now;
-  targetNote.documentHtml = sanitizeEditorHtml(targetRoot.innerHTML);
-  targetNote.updatedAt = now;
-  uiState.savedSelection = null;
+  setNoteDocumentHtml(context.note, context.root.innerHTML, { updatedAt: now });
+  setNoteDocumentHtml(targetNote, targetRoot.innerHTML, { updatedAt: now });
+  clearSavedEditorSelection();
   uiState.bedAction = null;
   saveState();
   render();
@@ -2493,8 +2525,7 @@ function sortCurrentWardBedSections() {
   const nextHtml = sanitizeEditorHtml(editor.innerHTML);
   if (nextHtml === previousHtml) return;
 
-  note.documentHtml = nextHtml;
-  note.updatedAt = Date.now();
+  setNoteDocumentHtml(note, nextHtml);
   saveState();
   applyEditorCompletionClasses(editor);
   refreshEditorBedIndex(note);
@@ -3229,6 +3260,7 @@ function renderTimelineItem(item) {
             data-note-id="${escapeHtml(note.id)}"
             data-line-index="${item.lineIndex}"
             data-source-index="${Number.isInteger(item.sourceLineIndex) ? item.sourceLineIndex : ""}"
+            data-line-id="${escapeAttribute(item.lineId || "")}"
             rows="1"
             aria-label="Reminder text"
           >${escapeHtml(reminderText)}</textarea>
@@ -3512,7 +3544,7 @@ function resetCurrentWardNote() {
   state.selectedNoteId = note.id;
   state.activeView = "notes";
   state.timelineScope = "active";
-  uiState.savedSelection = null;
+  clearSavedEditorSelection();
   uiState.editorFocused = false;
   uiState.mobileTagsOpen = false;
   saveState({ skipRecovery: true });
@@ -3653,8 +3685,8 @@ function handleQuickTag(tag) {
   restoreSavedEditorSelection(editor);
   insertTagIntoEditor(editor, tag);
 
-  note.documentHtml = sanitizeEditorHtml(editor.innerHTML);
-  note.updatedAt = Date.now();
+  ensureEditorLineIdentities(editor, note.id);
+  setNoteDocumentHtml(note, editor.innerHTML);
   saveState();
   updateSortBedsButtonFromEditor(editor);
   rememberEditorSelection(editor);
@@ -3673,6 +3705,8 @@ function isCompactMobileLayout() {
 }
 
 function syncMobileTagDock() {
+  const editorChromeActive = state.activeView === "notes" && uiState.editorFocused;
+  document.documentElement.classList.toggle("editor-is-active", editorChromeActive);
   const dock = refs.mobileTagRoot?.querySelector("[data-mobile-tag-dock]");
   if (!dock) return;
 
@@ -3814,7 +3848,9 @@ function rememberEditorSelection(editor, options = {}) {
   const selection = window.getSelection();
   if (!editor || !selection || !selection.rangeCount) return false;
   if (!isNodeInsideEditor(editor, selection.anchorNode) || !isNodeInsideEditor(editor, selection.focusNode)) return false;
-  uiState.savedSelection = selection.getRangeAt(0).cloneRange();
+  const range = selection.getRangeAt(0);
+  uiState.savedSelection = range.cloneRange();
+  uiState.savedSelectionBookmark = createEditorSelectionBookmark(editor, range);
   return true;
 }
 
@@ -3850,7 +3886,9 @@ function freezeEditorSelectionForScreenSwitch(reason = "screen-switch") {
   }
 
   uiState.selectionMemoryFrozenUntil = Date.now() + SCREEN_SWITCH_SELECTION_FREEZE_MS;
-  uiState.restoreSelectionAfterScreenSwitch = Boolean(editorWasActive && uiState.savedSelection);
+  uiState.restoreSelectionAfterScreenSwitch = Boolean(
+    editorWasActive && (uiState.savedSelection || uiState.savedSelectionBookmark)
+  );
   uiState.restoreEditorFocusAfterScreenSwitch = Boolean(
     editorWasActive && (uiState.editorFocused || editor.contains(document.activeElement))
   );
@@ -3871,7 +3909,7 @@ function scheduleScreenSwitchSelectionRestore(reason = "screen-return") {
 function restoreEditorSelectionAfterScreenSwitch(reason = "screen-return", options = {}) {
   if (!uiState.restoreSelectionAfterScreenSwitch) return false;
   const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
-  if (!editor || !uiState.savedSelection) {
+  if (!editor || (!uiState.savedSelection && !uiState.savedSelectionBookmark)) {
     clearScreenSwitchSelectionRestore();
     return false;
   }
@@ -4063,13 +4101,22 @@ function restoreEditorSelection(editor) {
   if (!editor || !selection) return false;
 
   if (selection.rangeCount && isNodeInsideEditor(editor, selection.anchorNode)) {
-    uiState.savedSelection = selection.getRangeAt(0).cloneRange();
+    const range = selection.getRangeAt(0);
+    uiState.savedSelection = range.cloneRange();
+    uiState.savedSelectionBookmark = createEditorSelectionBookmark(editor, range);
     return true;
   }
 
   if (uiState.savedSelection) {
-    selection.removeAllRanges();
-    selection.addRange(uiState.savedSelection.cloneRange());
+    if (isSavedSelectionUsable(editor, uiState.savedSelection)) {
+      selection.removeAllRanges();
+      selection.addRange(uiState.savedSelection.cloneRange());
+      return true;
+    }
+    uiState.savedSelection = null;
+  }
+
+  if (restoreEditorSelectionBookmark(editor)) {
     return true;
   }
 
@@ -4079,6 +4126,7 @@ function restoreEditorSelection(editor) {
   selection.removeAllRanges();
   selection.addRange(range);
   uiState.savedSelection = range.cloneRange();
+  uiState.savedSelectionBookmark = createEditorSelectionBookmark(editor, range);
   return true;
 }
 
@@ -4089,6 +4137,7 @@ function restoreSavedEditorSelection(editor, options = {}) {
   if (uiState.savedSelection) {
     if (!isSavedSelectionUsable(editor, uiState.savedSelection)) {
       uiState.savedSelection = null;
+      if (restoreEditorSelectionBookmark(editor)) return true;
       if (options.forceSavedRange) return false;
       return restoreEditorSelection(editor);
     }
@@ -4098,12 +4147,140 @@ function restoreSavedEditorSelection(editor, options = {}) {
       return true;
     } catch {
       uiState.savedSelection = null;
+      if (restoreEditorSelectionBookmark(editor)) return true;
       if (options.forceSavedRange) return false;
       return restoreEditorSelection(editor);
     }
   }
 
+  if (restoreEditorSelectionBookmark(editor)) return true;
+
   return restoreEditorSelection(editor);
+}
+
+function createEditorSelectionBookmark(editor, range) {
+  if (!editor || !range) return null;
+  const noteId = getCurrentNote()?.id || "";
+  const start = createEditorSelectionBoundary(editor, range.startContainer, range.startOffset);
+  const end = createEditorSelectionBoundary(editor, range.endContainer, range.endOffset);
+  if (!start || !end) return null;
+  return { noteId, collapsed: range.collapsed, start, end };
+}
+
+function createEditorSelectionBoundary(editor, container, offset) {
+  if (container === editor) {
+    const safeOffset = Math.max(0, Math.min(Number(offset) || 0, editor.childNodes.length));
+    const nextLine = editor.childNodes[safeOffset];
+    const previousLine = editor.childNodes[safeOffset - 1];
+    const line = nextLine?.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(nextLine.tagName)
+      ? nextLine
+      : previousLine?.nodeType === Node.ELEMENT_NODE && ["DIV", "P"].includes(previousLine.tagName)
+        ? previousLine
+        : null;
+    if (!line?.dataset?.lineId) return null;
+    const atLineStart = line === nextLine;
+    return {
+      lineId: line.dataset.lineId,
+      path: [],
+      offset: atLineStart ? 0 : line.childNodes.length,
+      textOffset: atLineStart ? 0 : String(line.textContent || "").length
+    };
+  }
+  const line = findEditorLine(container);
+  if (!line?.dataset?.lineId) return null;
+  return {
+    lineId: line.dataset.lineId,
+    path: getNodePathWithinLine(line, container),
+    offset: Math.max(0, Number(offset) || 0),
+    textOffset: getTextOffsetForSelectionBoundary(line, container, offset)
+  };
+}
+
+function getNodePathWithinLine(line, node) {
+  if (!line || !node || node === line) return [];
+  const path = [];
+  let current = node;
+  while (current && current !== line) {
+    const parent = current.parentNode;
+    if (!parent) return null;
+    const index = Array.prototype.indexOf.call(parent.childNodes, current);
+    if (index < 0) return null;
+    path.unshift(index);
+    current = parent;
+  }
+  return current === line ? path : null;
+}
+
+function getTextOffsetForSelectionBoundary(line, container, offset) {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(line);
+    range.setEnd(container, Math.max(0, Number(offset) || 0));
+    return range.toString().length;
+  } catch {
+    return 0;
+  }
+}
+
+function restoreEditorSelectionBookmark(editor) {
+  const bookmark = uiState.savedSelectionBookmark;
+  const noteId = getCurrentNote()?.id || "";
+  if (!editor || !bookmark || (bookmark.noteId && bookmark.noteId !== noteId)) return false;
+  const start = resolveEditorSelectionBoundary(editor, bookmark.start);
+  const end = bookmark.collapsed ? start : resolveEditorSelectionBoundary(editor, bookmark.end);
+  if (!start || !end) return false;
+
+  try {
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    const selection = window.getSelection();
+    if (!selection) return false;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    uiState.savedSelection = range.cloneRange();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveEditorSelectionBoundary(editor, boundary) {
+  if (!boundary?.lineId) return null;
+  const line = editor.querySelector(`[data-line-id="${cssEscape(boundary.lineId)}"]`);
+  if (!line) return null;
+  let node = line;
+  if (Array.isArray(boundary.path)) {
+    for (const index of boundary.path) {
+      if (!node?.childNodes?.[index]) {
+        node = null;
+        break;
+      }
+      node = node.childNodes[index];
+    }
+  }
+  if (node) {
+    const maxOffset = node.nodeType === Node.TEXT_NODE ? node.textContent.length : node.childNodes.length;
+    return { node, offset: Math.max(0, Math.min(boundary.offset, maxOffset)) };
+  }
+  return getTextBoundaryWithinLine(line, boundary.textOffset);
+}
+
+function getTextBoundaryWithinLine(line, targetOffset) {
+  let remaining = Math.max(0, Number(targetOffset) || 0);
+  const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    if (remaining <= node.textContent.length) return { node, offset: remaining };
+    remaining -= node.textContent.length;
+    node = walker.nextNode();
+  }
+  return { node: line, offset: line.childNodes.length };
+}
+
+function clearSavedEditorSelection() {
+  uiState.savedSelection = null;
+  uiState.savedSelectionBookmark = null;
 }
 
 function isSavedSelectionUsable(editor, range) {
@@ -4238,8 +4415,7 @@ function applyDoneToggleToState(targetState, toggle) {
       target.setAttribute("aria-checked", toggle.done ? "true" : "false");
     }
   }
-  note.documentHtml = sanitizeEditorHtml(root.innerHTML);
-  note.updatedAt = Date.now();
+  setNoteDocumentHtml(note, root.innerHTML);
   return true;
 }
 
@@ -4297,7 +4473,7 @@ function findNoteById(noteId) {
   return null;
 }
 
-function updateSummaryLineText(noteId, lineIndex, nextText, sourceLineIndex = NaN) {
+function updateSummaryLineText(noteId, lineIndex, nextText, sourceLineIndex = NaN, lineId = "") {
   const note = findNoteById(noteId);
   if (!note || !Number.isInteger(lineIndex) || lineIndex < 0) {
     return {
@@ -4306,14 +4482,17 @@ function updateSummaryLineText(noteId, lineIndex, nextText, sourceLineIndex = Na
       noteId,
       lineIndex,
       sourceLineIndex,
+      lineId,
       nextText: String(nextText || "")
     };
   }
 
   const { root, targets } = getEditableLineTargets(note);
-  const target = Number.isInteger(sourceLineIndex)
-    ? targets.find((item) => item.sourceLineIndex === sourceLineIndex)
-    : targets[lineIndex];
+  const target = lineId
+    ? targets.find((item) => item.lineId === lineId)
+    : Number.isInteger(sourceLineIndex)
+      ? targets.find((item) => item.sourceLineIndex === sourceLineIndex)
+      : targets[lineIndex];
   if (!target) {
     return {
       success: false,
@@ -4321,6 +4500,7 @@ function updateSummaryLineText(noteId, lineIndex, nextText, sourceLineIndex = Na
       noteId,
       lineIndex,
       sourceLineIndex,
+      lineId,
       nextText: String(nextText || ""),
       before: captureNoteDebugSnapshot(note)
     };
@@ -4329,14 +4509,14 @@ function updateSummaryLineText(noteId, lineIndex, nextText, sourceLineIndex = Na
   const beforeLine = captureSummaryTargetDebug(target);
   const before = captureNoteDebugSnapshot(note);
   writeLineText(target.element, nextText);
-  note.documentHtml = sanitizeEditorHtml(root.innerHTML);
-  note.updatedAt = Date.now();
+  setNoteDocumentHtml(note, root.innerHTML);
   saveState();
   return {
     success: true,
     noteId,
     lineIndex,
     sourceLineIndex,
+    lineId: target.lineId || lineId,
     targetSourceLineIndex: target.sourceLineIndex,
     nextText: String(nextText || ""),
     before,
@@ -4360,6 +4540,7 @@ function captureSummaryTargetDebug(target) {
   const parsed = target.parsed || parseLineNode(target.element);
   return {
     sourceLineIndex: Number.isInteger(target.sourceLineIndex) ? target.sourceLineIndex : NaN,
+    lineId: target.lineId || "",
     text: parsed.text || "",
     visibleText: parsed.visibleText || "",
     html: target.element.innerHTML || "",
@@ -4383,6 +4564,7 @@ function appendSummaryEditorDebugLog(summaryEditor, phase, result) {
     noteId: summaryEditor?.dataset?.noteId || result?.noteId || "",
     lineIndex: parseOptionalIndex(summaryEditor?.dataset?.lineIndex),
     sourceLineIndex: parseOptionalIndex(summaryEditor?.dataset?.sourceIndex),
+    lineId: summaryEditor?.dataset?.lineId || "",
     valueLength: String(summaryEditor?.value || "").length,
     result
   });
@@ -4413,8 +4595,7 @@ function updateBedGroupText(bedKey, nextText) {
       writeLineText(target.element, replacement);
     });
 
-    note.documentHtml = sanitizeEditorHtml(root.innerHTML);
-    note.updatedAt = Date.now();
+    setNoteDocumentHtml(note, root.innerHTML);
   });
 
   saveState();
@@ -4439,7 +4620,7 @@ function getEditableLineTargets(note) {
     const visibleText = parsed.visibleText.trim();
     if (!cleanedText && !timeTag && !primaryTag && !visibleText) return;
 
-    targets.push({ element: node, parsed, sourceLineIndex });
+    targets.push({ element: node, parsed, sourceLineIndex, lineId: parsed.lineId || node.dataset.lineId || "" });
   });
 
   return { root, targets };
@@ -4929,7 +5110,7 @@ function resetAllNotes() {
   setActiveWorkspaceState(nextState);
   uiState.recoveryBaselines.clear();
   uiState.recoveryLastSavedAt.clear();
-  uiState.savedSelection = null;
+  clearSavedEditorSelection();
   uiState.mobileTagsOpen = false;
   uiState.drawerOpen = false;
   uiState.wardOptionsOpen = false;
@@ -4970,6 +5151,11 @@ function captureAutomaticRecoverySnapshot() {
 
 function hasMeaningfulNoteHtml(html) {
   return String(html || "").replace(/<br\s*\/?\s*>/gi, "").replace(/<[^>]+>/g, "").trim().length > 0;
+}
+
+function syncEditorEmptyState(editor) {
+  if (!editor) return;
+  editor.classList.toggle("is-empty-document", !hasMeaningfulNoteHtml(editor.innerHTML));
 }
 
 function hasMeaningfulWorkspaceData(workspace) {
@@ -5051,8 +5237,7 @@ function restoreRecoverySnapshot(historyId) {
   } else {
     addRecoverySnapshot({ note, ward, documentHtml: note.documentHtml, reason: "Before restore" });
   }
-  note.documentHtml = sanitizeEditorHtml(snapshot.documentHtml);
-  note.updatedAt = Date.now();
+  setNoteDocumentHtml(note, snapshot.documentHtml);
   state.selectedWardId = ward.id;
   state.selectedNoteId = note.id;
   state.activeView = "notes";
@@ -5501,6 +5686,7 @@ function buildSummaryGroups(scope) {
           note,
           lineIndex: line.lineIndex,
           sourceLineIndex: line.sourceLineIndex,
+          lineId: line.lineId || "",
           tokenId: line.reminderTokenId || line.primaryTokenId || "",
           entry: {
             done: line.done,
@@ -5696,8 +5882,10 @@ function createWard(name, color) {
 
 function createNote(title, patientFocus) {
   const now = Date.now();
+  const id = createId("note");
+  const lineId = createId("line");
   return {
-    id: createId("note"),
+    id,
     title,
     patientFocus,
     shiftLabel: getShiftLabel(now),
@@ -5705,7 +5893,12 @@ function createNote(title, patientFocus) {
     createdAt: now,
     updatedAt: now,
     entries: [],
-    documentHtml: ""
+    documentHtml: `<div data-line-id="${escapeAttribute(lineId)}"><br></div>`,
+    documentModel: {
+      version: NOTE_DOCUMENT_MODEL_VERSION,
+      updatedAt: now,
+      lines: [{ id: lineId, block: "div", html: "<br>", text: "", tags: [] }]
+    }
   };
 }
 
@@ -5789,31 +5982,8 @@ function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
 
   const wards = input.wards.map((ward, index) => {
     const notes = Array.isArray(ward.notes)
-      ? ward.notes.map((note) => ({
-          id: note.id || createId("note"),
-          title: typeof note.title === "string" ? note.title : "",
-          patientFocus: typeof note.patientFocus === "string" ? note.patientFocus : "",
-          shiftLabel: typeof note.shiftLabel === "string" ? note.shiftLabel : getShiftLabel(Date.now()),
-          summary: typeof note.summary === "string" ? note.summary : "",
-          createdAt: Number(note.createdAt) || Date.now(),
-          updatedAt: Number(note.updatedAt) || Number(note.createdAt) || Date.now(),
-          documentHtml:
-            typeof note.documentHtml === "string" && note.documentHtml.trim()
-              ? note.documentHtml
-              : convertEntriesToDocumentHtml(
-                  Array.isArray(note.entries)
-                    ? note.entries.map((entry) => ({
-                        id: entry.id || createId("entry"),
-                        bedTag: typeof entry.bedTag === "string" ? entry.bedTag : "",
-                        timeTag: typeof entry.timeTag === "string" ? entry.timeTag : "",
-                        kind: getKindMeta(entry.kind) ? entry.kind : "general",
-                        text: typeof entry.text === "string" ? entry.text : "",
-                        done: Boolean(entry.done),
-                        createdAt: Number(entry.createdAt) || Date.now()
-                      }))
-                    : []
-                ),
-          entries: Array.isArray(note.entries)
+      ? ward.notes.map((note) => {
+          const entries = Array.isArray(note.entries)
             ? note.entries.map((entry) => ({
                 id: entry.id || createId("entry"),
                 bedTag: typeof entry.bedTag === "string" ? entry.bedTag : "",
@@ -5823,8 +5993,23 @@ function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
                 done: Boolean(entry.done),
                 createdAt: Number(entry.createdAt) || Date.now()
               }))
-            : []
-        }))
+            : [];
+          return {
+            id: note.id || createId("note"),
+            title: typeof note.title === "string" ? note.title : "",
+            patientFocus: typeof note.patientFocus === "string" ? note.patientFocus : "",
+            shiftLabel: typeof note.shiftLabel === "string" ? note.shiftLabel : getShiftLabel(Date.now()),
+            summary: typeof note.summary === "string" ? note.summary : "",
+            createdAt: Number(note.createdAt) || Date.now(),
+            updatedAt: Number(note.updatedAt) || Number(note.createdAt) || Date.now(),
+            documentHtml:
+              typeof note.documentHtml === "string" && note.documentHtml.trim()
+                ? note.documentHtml
+                : convertEntriesToDocumentHtml(entries),
+            documentModel: normalizeStoredDocumentModel(note.documentModel),
+            entries
+          };
+        })
       : [];
 
     return {
@@ -5975,7 +6160,7 @@ function resetEditorUiForWorkspaceSwitch() {
   window.clearTimeout(uiState.bedIndexTimer);
   window.clearTimeout(uiState.bedIndexClickSuppressTimer);
   window.cancelAnimationFrame(uiState.bedIndexScrub?.scrollFrame || 0);
-  uiState.savedSelection = null;
+  clearSavedEditorSelection();
   uiState.editorFocused = false;
   uiState.mobileTagsOpen = false;
   uiState.bedIndexVisible = false;
@@ -6568,6 +6753,7 @@ function captureNoteDebugSnapshot(note) {
     const parsed = parseLineNode(node);
     lines.push({
       sourceLineIndex,
+      lineId: parsed.lineId || node.dataset.lineId || "",
       text: parsed.text || "",
       visibleText: parsed.visibleText || "",
       html: node.innerHTML || "",
@@ -7113,6 +7299,7 @@ function startBedIndexScrub(rail, event) {
     anchors,
     pointerId: event.pointerId,
     pointerType: event.pointerType || "unknown",
+    touchIdentifier: null,
     useTouchCoordinate,
     useScreenCoordinate,
     screenToClientOffset,
@@ -7271,8 +7458,12 @@ function updateBedIndexScrub(event, coordinateOverride = null) {
 function updateBedIndexScrubFromTouch(event) {
   const scrub = uiState.bedIndexScrub;
   if (!scrub) return;
-  const touch = Array.from(event.touches || [])[0];
+  const touches = Array.from(event.touches || []);
+  const touch = scrub.touchIdentifier === null
+    ? touches[0]
+    : touches.find((candidate) => candidate.identifier === scrub.touchIdentifier);
   if (!touch) return;
+  if (scrub.touchIdentifier === null) scrub.touchIdentifier = touch.identifier;
   const clientY = Number(touch.clientY);
   updateBedIndexScrub(event, {
     rawClientY: clientY,
@@ -7323,7 +7514,14 @@ function finishBedIndexScrub(event) {
     return false;
   }
   flushBedIndexScrubScroll(scrub);
-  const pointerCoordinate = getBedIndexPointerCoordinate(scrub, event);
+  const pointerCoordinate = scrub.useTouchCoordinate
+    ? {
+        clientY: scrub.lastPointerClientY,
+        rawClientY: scrub.lastPointerRawClientY,
+        screenY: scrub.lastPointerScreenY,
+        source: "touch-client"
+      }
+    : getBedIndexPointerCoordinate(scrub, event);
   recordBedIndexScrubTrace(scrub, "end", {
     clientY: pointerCoordinate.clientY,
     rawClientY: pointerCoordinate.rawClientY,
@@ -7417,11 +7615,12 @@ function getBedIndexScrubPosition(scrub, ratio) {
   const startRatio = Math.max(0, Math.min(1, scrub.startRatio));
   if (ratio <= startRatio) {
     if (startRatio <= 0.001) return scrub.startIndex;
-    return Math.max(0, scrub.startIndex * (ratio / startRatio));
+    const progress = Math.max(0, Math.min(1, (startRatio - ratio) / startRatio));
+    return Math.max(0, scrub.startIndex * (1 - Math.pow(progress, 1.45)));
   }
   if (startRatio >= 0.999) return scrub.startIndex;
   const progress = (ratio - startRatio) / (1 - startRatio);
-  return Math.min(lastIndex, scrub.startIndex + (lastIndex - scrub.startIndex) * progress);
+  return Math.min(lastIndex, scrub.startIndex + (lastIndex - scrub.startIndex) * Math.pow(progress, 1.45));
 }
 
 function scheduleBedIndexScrubScroll(scrub, position) {
@@ -7708,12 +7907,169 @@ function createId(prefix) {
 }
 
 function getNoteDocumentHtml(note) {
-  if (typeof note.documentHtml === "string" && note.documentHtml.trim()) {
+  if (!note) return "<div><br></div>";
+  const noteUpdatedAt = Number(note.updatedAt) || Number(note.createdAt) || Date.now();
+  const storedModel = normalizeStoredDocumentModel(note.documentModel);
+
+  if (storedModel && Number(storedModel.updatedAt) >= noteUpdatedAt) {
+    if (typeof note.documentHtml === "string" && note.documentHtml.trim()) {
+      note.documentModel = storedModel;
+      return note.documentHtml;
+    }
+    const fromModel = renderNoteDocumentModel(storedModel);
+    const documentState = buildNoteDocumentState(note, fromModel, Number(storedModel.updatedAt) || noteUpdatedAt);
+    note.documentHtml = documentState.html;
+    note.documentModel = documentState.model;
     return note.documentHtml;
   }
 
-  note.documentHtml = convertEntriesToDocumentHtml(Array.isArray(note.entries) ? note.entries : []);
+  const sourceHtml = typeof note.documentHtml === "string" && note.documentHtml.trim()
+    ? note.documentHtml
+    : convertEntriesToDocumentHtml(Array.isArray(note.entries) ? note.entries : []);
+  const documentState = buildNoteDocumentState(note, sourceHtml, noteUpdatedAt);
+  note.documentHtml = documentState.html;
+  note.documentModel = documentState.model;
   return note.documentHtml;
+}
+
+function setNoteDocumentHtml(note, html, { updatedAt = Date.now(), deferModel = false } = {}) {
+  if (!note) return "<div><br></div>";
+  const nextUpdatedAt = Number(updatedAt) || Date.now();
+  if (deferModel) {
+    note.documentHtml = String(html || "").trim() || "<div><br></div>";
+    note.updatedAt = nextUpdatedAt;
+    noteParseCache.delete(note.id);
+    scheduleNoteDocumentModelSync(note);
+    return note.documentHtml;
+  }
+  cancelNoteDocumentModelSync(note.id);
+  const documentState = buildNoteDocumentState(note, html, updatedAt);
+  note.documentHtml = documentState.html;
+  note.documentModel = documentState.model;
+  note.updatedAt = nextUpdatedAt;
+  noteParseCache.delete(note.id);
+  return note.documentHtml;
+}
+
+function scheduleNoteDocumentModelSync(note) {
+  if (!note?.id) return;
+  cancelNoteDocumentModelSync(note.id);
+  const timer = window.setTimeout(() => {
+    noteDocumentModelTimers.delete(note.id);
+    const documentState = buildNoteDocumentState(note, note.documentHtml, note.updatedAt);
+    note.documentHtml = documentState.html;
+    note.documentModel = documentState.model;
+    noteParseCache.delete(note.id);
+  }, NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS);
+  noteDocumentModelTimers.set(note.id, timer);
+}
+
+function cancelNoteDocumentModelSync(noteId) {
+  const timer = noteDocumentModelTimers.get(noteId);
+  if (timer) window.clearTimeout(timer);
+  noteDocumentModelTimers.delete(noteId);
+}
+
+function buildNoteDocumentState(note, html, updatedAt) {
+  const root = parseHtmlRoot(typeof html === "string" ? html : "");
+  normalizeEditorBlocks(root);
+  ensureEditorLineIdentities(root, note?.id || "note");
+  const lines = Array.from(root.children)
+    .filter((line) => ["DIV", "P"].includes(line.tagName))
+    .map((line) => {
+      const parsed = parseLineNode(line);
+      return {
+        id: line.dataset.lineId,
+        block: line.tagName.toLowerCase(),
+        html: line.innerHTML,
+        text: parsed.text || "",
+        tags: parsed.tags.map((tag) => ({
+          id: tag.id || "",
+          type: tag.type || "general",
+          text: tag.text || "",
+          done: Boolean(tag.done),
+          createdAt: Number(tag.createdAt) || 0,
+          done14: Boolean(tag.done14),
+          done22: Boolean(tag.done22)
+        }))
+      };
+    });
+  const normalizedLines = lines.length ? lines : [{
+    id: createId("line"),
+    block: "div",
+    html: "<br>",
+    text: "",
+    tags: []
+  }];
+  const model = {
+    version: NOTE_DOCUMENT_MODEL_VERSION,
+    updatedAt: Number(updatedAt) || Date.now(),
+    lines: normalizedLines
+  };
+  return {
+    html: renderNoteDocumentModel(model),
+    model
+  };
+}
+
+function normalizeStoredDocumentModel(input) {
+  if (!input || Number(input.version) !== NOTE_DOCUMENT_MODEL_VERSION || !Array.isArray(input.lines)) return null;
+  const lines = input.lines
+    .filter((line) => line && typeof line.html === "string")
+    .slice(0, 5000)
+    .map((line) => ({
+      id: typeof line.id === "string" && line.id ? line.id.slice(0, 120) : createId("line"),
+      block: String(line.block || "div").toLowerCase() === "p" ? "p" : "div",
+      html: line.html.slice(0, RECOVERY_SNAPSHOT_MAX_HTML),
+      text: typeof line.text === "string" ? line.text.slice(0, RECOVERY_SNAPSHOT_MAX_HTML) : "",
+      tags: Array.isArray(line.tags) ? line.tags.slice(0, 12).map((tag) => ({
+        id: typeof tag?.id === "string" ? tag.id.slice(0, 120) : "",
+        type: typeof tag?.type === "string" ? tag.type.slice(0, 80) : "general",
+        text: typeof tag?.text === "string" ? tag.text.slice(0, 120) : "",
+        done: Boolean(tag?.done),
+        createdAt: Number(tag?.createdAt) || 0,
+        done14: Boolean(tag?.done14),
+        done22: Boolean(tag?.done22)
+      })) : []
+    }));
+  if (!lines.length) return null;
+  return {
+    version: NOTE_DOCUMENT_MODEL_VERSION,
+    updatedAt: Number(input.updatedAt) || 0,
+    lines
+  };
+}
+
+function renderNoteDocumentModel(model) {
+  const root = parseHtmlRoot("");
+  const usedIds = new Set();
+  (model?.lines || []).forEach((line, index) => {
+    const element = root.ownerDocument.createElement(line.block === "p" ? "p" : "div");
+    let lineId = String(line.id || "");
+    if (!lineId || usedIds.has(lineId)) lineId = createId(`line-${index + 1}`);
+    usedIds.add(lineId);
+    element.dataset.lineId = lineId;
+    element.innerHTML = typeof line.html === "string" && line.html ? line.html : "<br>";
+    root.appendChild(element);
+  });
+  normalizeEditorBlocks(root);
+  ensureEditorLineIdentities(root, "note");
+  return root.innerHTML.trim() || '<div data-line-id="line-empty"><br></div>';
+}
+
+function ensureEditorLineIdentities(root, noteId = "note") {
+  if (!root) return;
+  const usedIds = new Set();
+  Array.from(root.children || []).forEach((line, index) => {
+    if (!line || !["DIV", "P"].includes(line.tagName)) return;
+    let lineId = String(line.dataset.lineId || "").trim();
+    if (!lineId || usedIds.has(lineId)) {
+      const prefix = String(noteId || "note").replace(/[^a-zA-Z0-9_-]/g, "").slice(-36) || "note";
+      lineId = `${prefix}-line-${index + 1}-${createId("id").slice(-8)}`;
+    }
+    usedIds.add(lineId);
+    line.dataset.lineId = lineId;
+  });
 }
 
 function convertEntriesToDocumentHtml(entries) {
@@ -10281,6 +10637,7 @@ function extractTaggedLines(note) {
       lines.push(createParsedLine({
         lineIndex: lines.length,
         sourceLineIndex: line.sourceLineIndex,
+        lineId: line.lineId,
         text: "",
         visibleText: "",
         bedLabel: currentBed,
@@ -10298,6 +10655,7 @@ function extractTaggedLines(note) {
         lines.push(createParsedLine({
           lineIndex: lines.length,
           sourceLineIndex: line.sourceLineIndex,
+          lineId: line.lineId,
           text: "",
           visibleText: "",
           bedLabel: currentBed,
@@ -10311,6 +10669,7 @@ function extractTaggedLines(note) {
     lines.push(createParsedLine({
       lineIndex: lines.length,
       sourceLineIndex: line.sourceLineIndex,
+      lineId: line.lineId,
       text: cleanedText,
       visibleText,
       bedLabel: currentBed,
@@ -10338,6 +10697,7 @@ function extractTaggedLines(note) {
 function createParsedLine({
   lineIndex,
   sourceLineIndex = NaN,
+  lineId = "",
   text,
   visibleText,
   bedLabel,
@@ -10361,6 +10721,7 @@ function createParsedLine({
   return {
     lineIndex,
     sourceLineIndex,
+    lineId,
     text,
     visibleText,
     bedLabel,
@@ -10453,6 +10814,7 @@ function parseLineNode(node) {
   const firstMeaningful = meaningfulParts[0];
 
   return {
+    lineId: String(node?.dataset?.lineId || ""),
     text: plainText,
     visibleText,
     timeAtStart: Boolean(firstMeaningful && firstMeaningful.type === "tag" && ["time", "lab"].includes(firstMeaningful.tagType)),
@@ -10614,11 +10976,12 @@ function syncEditorDocument() {
 
   const marker = insertSelectionMarker(editor);
   normalizeEditorBlocks(editor);
+  ensureEditorLineIdentities(editor, note.id);
+  syncEditorEmptyState(editor);
   restoreSelectionMarker(marker, editor);
   const nextHtml = sanitizeEditorHtml(editor.innerHTML);
   if (nextHtml !== note.documentHtml) {
-    note.documentHtml = nextHtml;
-    note.updatedAt = Date.now();
+    setNoteDocumentHtml(note, nextHtml);
     saveState();
     refreshWardDrawerMetricsIfOpen();
   }
