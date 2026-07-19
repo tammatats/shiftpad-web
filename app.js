@@ -35,7 +35,7 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-07-17-native-short-scroll-v10";
+const APP_BUILD = "2026-07-19-screen-selection-v11";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -3692,6 +3692,7 @@ function handleQuickTag(tag) {
 
   editor.focus({ preventScroll: true });
   restoreSavedEditorSelection(editor);
+  clearScreenSwitchSelectionRestore();
   insertTagIntoEditor(editor, tag);
 
   ensureEditorLineIdentities(editor, note.id);
@@ -4087,6 +4088,7 @@ function restoreEditorFocusAndSelection() {
   if (!editor) return null;
   editor.focus({ preventScroll: true });
   restoreSavedEditorSelection(editor);
+  clearScreenSwitchSelectionRestore();
   uiState.editorFocused = true;
   rememberEditorSelection(editor);
   return editor;
@@ -4153,11 +4155,11 @@ function scheduleScreenSwitchSelectionRestore(reason = "screen-return") {
   if (!uiState.restoreSelectionAfterScreenSwitch) return;
   uiState.selectionMemoryFrozenUntil = Date.now() + SCREEN_SWITCH_SELECTION_FREEZE_MS;
   window.requestAnimationFrame(() => {
-    restoreEditorSelectionAfterScreenSwitch(reason, { keepArmed: true });
+    restoreEditorSelectionAfterScreenSwitch(reason);
   });
 }
 
-function restoreEditorSelectionAfterScreenSwitch(reason = "screen-return", options = {}) {
+function restoreEditorSelectionAfterScreenSwitch(reason = "screen-return") {
   if (!uiState.restoreSelectionAfterScreenSwitch) return false;
   const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
   if (!editor || (!uiState.savedSelection && !uiState.savedSelectionBookmark)) {
@@ -4166,6 +4168,29 @@ function restoreEditorSelectionAfterScreenSwitch(reason = "screen-return", optio
   }
 
   const before = captureEditorDebugSnapshot(editor);
+  const selection = window.getSelection();
+  const hasLiveEditorSelection = Boolean(
+    selection &&
+      selection.rangeCount &&
+      isNodeInsideEditor(editor, selection.anchorNode) &&
+      isNodeInsideEditor(editor, selection.focusNode)
+  );
+  const isInputEvent = reason === "keydown" || reason === "beforeinput";
+
+  if (isInputEvent && hasLiveEditorSelection) {
+    clearScreenSwitchSelectionRestore();
+    rememberEditorSelection(editor, { force: true });
+    appendEditorDebugLog({
+      action: "selection-restore-screen-switch",
+      source: reason,
+      success: true,
+      handledBy: "preserveLiveEditorSelection",
+      before,
+      after: captureEditorDebugSnapshot(editor)
+    });
+    return false;
+  }
+
   if (uiState.restoreEditorFocusAfterScreenSwitch && document.visibilityState === "visible") {
     editor.focus({ preventScroll: true });
   }
@@ -4174,12 +4199,8 @@ function restoreEditorSelectionAfterScreenSwitch(reason = "screen-return", optio
     uiState.editorFocused = Boolean(editor.contains(document.activeElement) || uiState.editorFocused);
     rememberEditorSelection(editor, { force: true });
   }
-  if (options.keepArmed) {
-    uiState.selectionMemoryFrozenUntil = Date.now() + SCREEN_SWITCH_SELECTION_FREEZE_MS;
-  } else {
-    clearScreenSwitchSelectionRestore();
-    uiState.selectionMemoryFrozenUntil = Date.now() + 250;
-  }
+  clearScreenSwitchSelectionRestore();
+  uiState.selectionMemoryFrozenUntil = Date.now() + 250;
 
   appendEditorDebugLog({
     action: "selection-restore-screen-switch",
