@@ -35,7 +35,7 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-07-20-ward-rename-v12";
+const APP_BUILD = "2026-07-20-entity-sync-v13";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -3058,7 +3058,7 @@ function applyRemoteCloudState(record, { force = false } = {}) {
   const remoteUpdatedAt = parseCloudUpdatedAt(record.updated_at) || Date.now();
   if (!record?.state_json || (!force && remoteUpdatedAt <= authState.lastCloudUpdatedAt)) return;
 
-  const remoteState = mergeRemoteStatePreservingLocalView(record.state_json);
+  const { state: remoteState, preservedEntities } = mergeRemoteStatePreservingNewerLocalEntities(record.state_json);
   if (authState.pendingDoneToggles.size) {
     authState.pendingDoneToggles.forEach((toggle) => {
       applyDoneToggleToState(remoteState, toggle);
@@ -3073,6 +3073,19 @@ function applyRemoteCloudState(record, { force = false } = {}) {
   saveState({ skipCloud: true, markDirty: false });
   authState.suppressCloudSave = false;
   render();
+
+  if (preservedEntities.length) {
+    appendEditorDebugLog({
+      action: "cloud-stale-entity-blocked",
+      source: "cloud-sync",
+      success: true,
+      handledBy: "mergeRemoteStatePreservingNewerLocalEntities",
+      remoteRecordUpdatedAt: String(record.updated_at || ""),
+      preservedEntities
+    });
+    setAuthMessage("ShiftPad blocked an older cloud copy and is repairing live sync.");
+    scheduleCloudSave();
+  }
 }
 
 function rememberCloudVersion(updatedAtValue) {
@@ -3100,6 +3113,61 @@ function mergeRemoteStatePreservingLocalView(remoteInput) {
     preserveWorkspaceView(nextAppState.workspaces[workspaceKey], appState.workspaces?.[workspaceKey]);
   });
   return nextAppState;
+}
+
+function mergeRemoteStatePreservingNewerLocalEntities(remoteInput) {
+  const nextAppState = mergeRemoteStatePreservingLocalView(remoteInput);
+  const localAppState = normalizeAppState(appState);
+  const preservedEntities = [];
+
+  WORKSPACE_KEYS.forEach((workspaceKey) => {
+    const nextWorkspace = nextAppState.workspaces[workspaceKey];
+    const localWorkspace = localAppState.workspaces[workspaceKey];
+    if (!nextWorkspace || !localWorkspace) return;
+
+    const localWards = new Map(localWorkspace.wards.map((ward) => [ward.id, ward]));
+    nextWorkspace.wards.forEach((nextWard) => {
+      const localWard = localWards.get(nextWard.id);
+      if (!localWard) return;
+
+      const localWardUpdatedAt = Number(localWard.updatedAt) || 0;
+      const remoteWardUpdatedAt = Number(nextWard.updatedAt) || 0;
+      if (localWardUpdatedAt > remoteWardUpdatedAt) {
+        preservedEntities.push({
+          type: "ward",
+          workspace: workspaceKey,
+          wardId: nextWard.id,
+          localUpdatedAt: localWardUpdatedAt,
+          remoteUpdatedAt: remoteWardUpdatedAt
+        });
+        nextWard.name = localWard.name;
+        nextWard.color = localWard.color;
+        nextWard.updatedAt = localWardUpdatedAt;
+      }
+
+      const localNotes = new Map(localWard.notes.map((note) => [note.id, note]));
+      nextWard.notes = nextWard.notes.map((remoteNote) => {
+        const localNote = localNotes.get(remoteNote.id);
+        if (!localNote) return remoteNote;
+
+        const localUpdatedAt = getNoteUpdatedAt(localNote);
+        const remoteNoteUpdatedAt = getNoteUpdatedAt(remoteNote);
+        if (localUpdatedAt <= remoteNoteUpdatedAt) return remoteNote;
+
+        preservedEntities.push({
+          type: "note",
+          workspace: workspaceKey,
+          wardId: nextWard.id,
+          noteId: remoteNote.id,
+          localUpdatedAt,
+          remoteUpdatedAt: remoteNoteUpdatedAt
+        });
+        return localNote;
+      });
+    });
+  });
+
+  return { state: nextAppState, preservedEntities };
 }
 
 function preserveWorkspaceView(nextState, currentState) {
@@ -3184,10 +3252,17 @@ function mergeWorkspaceStateForSave(localInput, remoteInput) {
         })
         .filter(Boolean);
 
+      const localWardUpdatedAt = Number(localWard.updatedAt) || 0;
+      const remoteWardUpdatedAt = Number(remoteWard.updatedAt) || 0;
+      const keepLocalWardMetadata =
+        localWardUpdatedAt > remoteWardUpdatedAt ||
+        (localWardUpdatedAt === remoteWardUpdatedAt && localWardHasNewestNote);
+
       return {
         ...remoteWard,
-        name: localWardHasNewestNote ? localWard.name : remoteWard.name,
-        color: localWardHasNewestNote ? localWard.color : remoteWard.color,
+        name: keepLocalWardMetadata ? localWard.name : remoteWard.name,
+        color: keepLocalWardMetadata ? localWard.color : remoteWard.color,
+        updatedAt: Math.max(localWardUpdatedAt, remoteWardUpdatedAt),
         notes
       };
     })
@@ -5732,6 +5807,7 @@ function renameWardFromDrawer(wardId, value) {
   }
 
   ward.name = nextName;
+  ward.updatedAt = Date.now();
   ward.notes.forEach((note) => {
     if (!note.title || /^Ward\s+\w+\s+handover/i.test(note.title)) {
       note.title = `${nextName} handover`;
@@ -6242,6 +6318,7 @@ function createWard(name, color) {
     id: createId("ward"),
     name,
     color,
+    updatedAt: Date.now(),
     notes: []
   };
 }
@@ -6382,6 +6459,7 @@ function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
       id: ward.id || createId("ward"),
       name: typeof ward.name === "string" && ward.name.trim() ? ward.name : `Ward ${index + 1}`,
       color: typeof ward.color === "string" && ward.color ? ward.color : WARD_COLORS[index % WARD_COLORS.length],
+      updatedAt: Number(ward.updatedAt) || 0,
       notes
     };
   }).filter((ward) => !isBuiltInDemoWard(ward));
