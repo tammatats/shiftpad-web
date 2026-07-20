@@ -35,7 +35,7 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-07-19-screen-selection-v11";
+const APP_BUILD = "2026-07-20-ward-rename-v12";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -150,12 +150,17 @@ const uiState = {
   drawerSections: new Set(),
   animateWardAdd: false,
   editingWardId: "",
+  wardNameCompositionActive: false,
+  drawerRenderPending: false,
   pendingTagInsertions: new Map(),
   lastInsertedTagTokenId: "",
   notificationStatus: "",
   notificationEnabled: null,
   notificationBusy: false,
   notificationLastSyncAt: 0,
+  serviceWorkerUpdateListenerBound: false,
+  serviceWorkerReloadPending: false,
+  serviceWorkerReloadTimer: null,
   bedAction: null,
   bedLongPress: null,
   suppressNextBedClick: false,
@@ -616,6 +621,7 @@ function bindEvents() {
     if (!wardNameInput) return;
 
     if (event.key === "Enter") {
+      if (event.isComposing || uiState.wardNameCompositionActive) return;
       event.preventDefault();
       renameWardFromDrawer(wardNameInput.dataset.wardNameInput, wardNameInput.value);
       return;
@@ -624,8 +630,19 @@ function bindEvents() {
     if (event.key === "Escape") {
       event.preventDefault();
       uiState.editingWardId = "";
+      uiState.wardNameCompositionActive = false;
       renderDrawer();
     }
+  });
+
+  refs.drawerRoot?.addEventListener("compositionstart", (event) => {
+    if (!event.target.closest("[data-ward-name-input]")) return;
+    uiState.wardNameCompositionActive = true;
+  });
+
+  refs.drawerRoot?.addEventListener("compositionend", (event) => {
+    if (!event.target.closest("[data-ward-name-input]")) return;
+    uiState.wardNameCompositionActive = false;
   });
 
   refs.drawerRoot?.addEventListener("input", (event) => {
@@ -1427,8 +1444,22 @@ function prefersReducedMotion() {
   return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
 }
 
-function renderDrawer({ animateSide = "" } = {}) {
+function renderDrawer({ animateSide = "", force = false } = {}) {
   if (!refs.drawerRoot) return;
+  if (!force && getActiveWardNameInput()) {
+    if (!uiState.drawerRenderPending) {
+      appendEditorDebugLog({
+        action: "ward-name-render-deferred",
+        source: "drawer-render",
+        success: true,
+        handledBy: "renderDrawer",
+        targetWardId: uiState.editingWardId
+      });
+    }
+    uiState.drawerRenderPending = true;
+    return;
+  }
+  uiState.drawerRenderPending = false;
   clearDrawerCloseTimer();
   syncDrawerControlPositions();
   captureDrawerScrollPositions();
@@ -1506,6 +1537,13 @@ function restoreDrawerScrollPositions() {
   const rightDrawer = refs.drawerRoot?.querySelector('[data-drawer-side="right"] .side-drawer');
   if (leftDrawer) leftDrawer.scrollTop = uiState.drawerScrollTop.left || 0;
   if (rightDrawer) rightDrawer.scrollTop = uiState.drawerScrollTop.right || 0;
+}
+
+function getActiveWardNameInput() {
+  if (!uiState.editingWardId) return null;
+  return refs.drawerRoot?.querySelector(
+    `[data-ward-name-input="${cssEscape(uiState.editingWardId)}"]`
+  ) || null;
 }
 
 function clearDrawerCloseTimer() {
@@ -2975,7 +3013,7 @@ function handleRemoteCloudRecord(record) {
 
 function shouldDeferRemoteStateApply() {
   if (authState.saveTimer || authState.isSaving) return true;
-  if (isEditorActivelyFocused()) return true;
+  if (isEditorActivelyFocused() || getActiveWardNameInput()) return true;
   return hasRecentLocalMutation(CLOUD_REMOTE_APPLY_IDLE_MS);
 }
 
@@ -2983,7 +3021,9 @@ function schedulePendingRemoteStateApply() {
   if (authState.remoteApplyTimer) {
     window.clearTimeout(authState.remoteApplyTimer);
   }
-  const delay = isEditorActivelyFocused() ? CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS : CLOUD_REMOTE_APPLY_IDLE_MS;
+  const delay = (isEditorActivelyFocused() || getActiveWardNameInput())
+    ? CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS
+    : CLOUD_REMOTE_APPLY_IDLE_MS;
   authState.remoteApplyTimer = window.setTimeout(() => {
     authState.remoteApplyTimer = null;
     applyPendingRemoteStateIfReady();
@@ -3011,7 +3051,7 @@ function hasRecentLocalMutation(windowMs = CLOUD_LOCAL_EDIT_PROTECTION_MS) {
 }
 
 function shouldProtectLocalStateFromCloudConflict() {
-  return authState.saveTimer || isEditorActivelyFocused() || hasRecentLocalMutation(CLOUD_LOCAL_EDIT_PROTECTION_MS);
+  return authState.saveTimer || isEditorActivelyFocused() || getActiveWardNameInput() || hasRecentLocalMutation(CLOUD_LOCAL_EDIT_PROTECTION_MS);
 }
 
 function applyRemoteCloudState(record, { force = false } = {}) {
@@ -5079,6 +5119,7 @@ function getNotificationSetupIssue({ support, configured }) {
 async function registerShiftPadServiceWorker() {
   if (!("serviceWorker" in navigator)) return null;
   try {
+    bindServiceWorkerUpdateReload();
     const registration = await navigator.serviceWorker.register("/sw.js");
     registration?.update?.().catch(() => undefined);
     return registration || null;
@@ -5087,6 +5128,38 @@ async function registerShiftPadServiceWorker() {
     uiState.notificationStatus = "Notification setup failed while registering the app worker.";
     return null;
   }
+}
+
+function bindServiceWorkerUpdateReload() {
+  if (uiState.serviceWorkerUpdateListenerBound) return;
+  uiState.serviceWorkerUpdateListenerBound = true;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    uiState.serviceWorkerReloadPending = true;
+    scheduleSafeServiceWorkerReload();
+  });
+}
+
+function scheduleSafeServiceWorkerReload() {
+  if (!uiState.serviceWorkerReloadPending) return;
+  if (uiState.serviceWorkerReloadTimer) {
+    window.clearTimeout(uiState.serviceWorkerReloadTimer);
+  }
+  uiState.serviceWorkerReloadTimer = window.setTimeout(() => {
+    uiState.serviceWorkerReloadTimer = null;
+    const editingIsActive =
+      document.visibilityState !== "visible" ||
+      isEditorActivelyFocused() ||
+      Boolean(getActiveWardNameInput()) ||
+      authState.isSaving ||
+      Boolean(authState.saveTimer) ||
+      hasRecentLocalMutation(CLOUD_LOCAL_EDIT_PROTECTION_MS);
+    if (editingIsActive) {
+      scheduleSafeServiceWorkerReload();
+      return;
+    }
+    uiState.serviceWorkerReloadPending = false;
+    window.location.reload();
+  }, 1200);
 }
 
 async function getReadyServiceWorkerRegistration() {
@@ -5619,7 +5692,16 @@ function editWardNameFromDrawer(wardId) {
     renameWardFromDrawer(wardId, input?.value ?? ward.name);
     return;
   }
+  uiState.wardNameCompositionActive = false;
   uiState.editingWardId = wardId;
+  appendEditorDebugLog({
+    action: "ward-name-edit-start",
+    source: "ward-edit-button",
+    success: true,
+    handledBy: "editWardNameFromDrawer",
+    targetWardId: ward.id,
+    targetWardName: ward.name
+  });
   renderDrawer();
 }
 
@@ -5627,7 +5709,19 @@ function renameWardFromDrawer(wardId, value) {
   const ward = state.wards.find((item) => item.id === wardId);
   const nextName = String(value || "").trim();
   if (!ward) return;
+  const previousName = ward.name;
   uiState.editingWardId = "";
+  uiState.wardNameCompositionActive = false;
+  appendEditorDebugLog({
+    action: "ward-name-edit-commit",
+    source: "ward-name-input",
+    success: Boolean(nextName),
+    handledBy: "renameWardFromDrawer",
+    targetWardId: ward.id,
+    previousWardName: previousName,
+    nextWardName: nextName,
+    changed: Boolean(nextName && previousName !== nextName)
+  });
   if (!nextName) {
     render();
     return;
