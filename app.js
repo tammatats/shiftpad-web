@@ -35,7 +35,7 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-07-20-entity-sync-v13";
+const APP_BUILD = "2026-07-22-auth-sync-v14";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -118,6 +118,8 @@ const authState = {
   realtimeStatus: "off",
   isSaving: false,
   isHydrating: false,
+  hydratingUserId: "",
+  hydratedUserId: "",
   suppressCloudSave: false,
   pendingDoneToggles: new Map()
 };
@@ -2703,17 +2705,19 @@ async function initAuth() {
     const {
       data: { session }
     } = await authState.client.auth.getSession();
-    await applySession(session);
+    await applySession(session, { event: "GET_SESSION" });
   } catch (error) {
     authState.ready = true;
     setAuthMessage(formatSupabaseError(error, "Session load failed."));
     renderAuthUi();
   }
 
-  authState.client.auth.onAuthStateChange((_event, sessionUpdate) => {
-    applySession(sessionUpdate).catch((error) => {
-      setAuthMessage(formatSupabaseError(error, "Auth update failed."));
-    });
+  authState.client.auth.onAuthStateChange((event, sessionUpdate) => {
+    window.setTimeout(() => {
+      applySession(sessionUpdate, { event }).catch((error) => {
+        setAuthMessage(formatSupabaseError(error, "Auth update failed."));
+      });
+    }, 0);
   });
 }
 
@@ -2741,15 +2745,17 @@ function loadSupabaseClient() {
   return window.__shiftpadSupabaseLoading;
 }
 
-async function applySession(session) {
-  stopCloudLiveSync();
+async function applySession(session, { event = "UNKNOWN" } = {}) {
+  const previousUserId = authState.user?.id || "";
+  const nextUserId = session?.user?.id || "";
   authState.session = session || null;
   authState.user = session?.user || null;
   authState.ready = true;
-  authState.lastCloudUpdatedAt = 0;
-  authState.lastCloudUpdatedAtValue = "";
 
   if (!authState.user) {
+    stopCloudLiveSync();
+    authState.hydratingUserId = "";
+    authState.hydratedUserId = "";
     uiState.bedAction = null;
     appState = loadAppState();
     state = getActiveWorkspaceState(appState);
@@ -2758,10 +2764,45 @@ async function applySession(session) {
     return;
   }
 
+  if (authState.hydratedUserId === nextUserId) {
+    authState.client?.realtime?.setAuth?.(authState.session?.access_token);
+    if (!authState.realtimeChannel) {
+      startCloudLiveSync();
+    }
+    appendEditorDebugLog({
+      action: "auth-session-refresh-without-hydration",
+      source: "auth",
+      success: true,
+      handledBy: "applySession",
+      authEvent: event,
+      sameUser: previousUserId === nextUserId
+    });
+    renderAuthUi();
+    return;
+  }
+
+  if (authState.hydratingUserId === nextUserId) {
+    renderAuthUi();
+    return;
+  }
+
+  stopCloudLiveSync();
+  authState.lastCloudUpdatedAt = 0;
+  authState.lastCloudUpdatedAtValue = "";
+  authState.hydratingUserId = nextUserId;
   migrateAnonymousEditorDebugLogsToUser();
-  await hydrateStateFromCloud();
-  startCloudLiveSync();
-  queueEditorDebugCloudUpload();
+  try {
+    await hydrateStateFromCloud({ authEvent: event });
+    if (authState.user?.id === nextUserId) {
+      authState.hydratedUserId = nextUserId;
+      startCloudLiveSync();
+      queueEditorDebugCloudUpload();
+    }
+  } finally {
+    if (authState.hydratingUserId === nextUserId) {
+      authState.hydratingUserId = "";
+    }
+  }
 }
 
 async function signInWithPassword() {
@@ -2807,7 +2848,7 @@ async function signUpWithPassword() {
     }
     if (data?.session) {
       setAuthMessage("Account created. Loading your notes...");
-      await applySession(data.session);
+      await applySession(data.session, { event: "SIGN_UP_SESSION" });
       return;
     }
     if (data?.user?.identities && data.user.identities.length === 0) {
@@ -2851,7 +2892,7 @@ async function signOutCurrentUser() {
   setAuthMessage("");
 }
 
-async function hydrateStateFromCloud() {
+async function hydrateStateFromCloud({ authEvent = "UNKNOWN" } = {}) {
   if (!authState.client || !authState.user) return;
 
   authState.isHydrating = true;
@@ -2863,6 +2904,7 @@ async function hydrateStateFromCloud() {
 
   let data = null;
   let error = null;
+  let preservedEntities = [];
   try {
     const response = await fetchCloudStateRecord();
     data = response.data;
@@ -2885,7 +2927,9 @@ async function hydrateStateFromCloud() {
 
   if (data?.state_json) {
     needsCloudWorkspaceMigration = !data.state_json.workspaces;
-    appState = mergeHydratedCloudState(data.state_json, fallback);
+    const hydrated = mergeHydratedCloudState(data.state_json, fallback);
+    appState = hydrated.state;
+    preservedEntities = hydrated.preservedEntities;
     state = getActiveWorkspaceState(appState);
     rememberCloudVersion(data.updated_at);
   } else {
@@ -2900,7 +2944,16 @@ async function hydrateStateFromCloud() {
   authState.suppressCloudSave = false;
   applyUrlOverrides();
   saveLocalState();
-  if (needsCloudWorkspaceMigration) {
+  appendEditorDebugLog({
+    action: preservedEntities.length ? "cloud-hydration-stale-entity-blocked" : "cloud-hydration-applied",
+    source: "auth",
+    success: true,
+    handledBy: "hydrateStateFromCloud",
+    authEvent,
+    remoteRecordUpdatedAt: String(data?.updated_at || ""),
+    preservedEntities
+  });
+  if (needsCloudWorkspaceMigration || preservedEntities.length) {
     scheduleCloudSave();
   }
   render();
@@ -3095,29 +3148,30 @@ function rememberCloudVersion(updatedAtValue) {
 
 function mergeHydratedCloudState(remoteInput, fallbackInput) {
   const remote = normalizeAppState(remoteInput);
+  const fallback = normalizeAppState(fallbackInput);
   if (!remoteInput?.workspaces && fallbackInput?.workspaces) {
-    const fallback = normalizeAppState(fallbackInput);
     remote.workspaces.day = fallback.workspaces.day;
   }
-  return remote;
+  return mergeRemoteStatePreservingNewerLocalEntities(remote, fallback);
 }
 
-function mergeRemoteStatePreservingLocalView(remoteInput) {
+function mergeRemoteStatePreservingLocalView(remoteInput, localViewInput = appState) {
   const nextAppState = normalizeAppState(remoteInput);
-  if (!remoteInput?.workspaces && appState?.workspaces?.day) {
-    nextAppState.workspaces.day = appState.workspaces.day;
+  const localViewState = normalizeAppState(localViewInput);
+  if (!remoteInput?.workspaces && localViewInput?.workspaces?.day) {
+    nextAppState.workspaces.day = localViewState.workspaces.day;
   }
-  nextAppState.activeWorkspace = getActiveWorkspaceKey(appState);
+  nextAppState.activeWorkspace = getActiveWorkspaceKey(localViewState);
 
   WORKSPACE_KEYS.forEach((workspaceKey) => {
-    preserveWorkspaceView(nextAppState.workspaces[workspaceKey], appState.workspaces?.[workspaceKey]);
+    preserveWorkspaceView(nextAppState.workspaces[workspaceKey], localViewState.workspaces?.[workspaceKey]);
   });
   return nextAppState;
 }
 
-function mergeRemoteStatePreservingNewerLocalEntities(remoteInput) {
-  const nextAppState = mergeRemoteStatePreservingLocalView(remoteInput);
-  const localAppState = normalizeAppState(appState);
+function mergeRemoteStatePreservingNewerLocalEntities(remoteInput, localInput = appState) {
+  const localAppState = normalizeAppState(localInput);
+  const nextAppState = mergeRemoteStatePreservingLocalView(remoteInput, localAppState);
   const preservedEntities = [];
 
   WORKSPACE_KEYS.forEach((workspaceKey) => {
