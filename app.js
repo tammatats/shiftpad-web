@@ -35,7 +35,7 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-07-22-auth-sync-v14";
+const APP_BUILD = "2026-07-26-todo-focus-v15";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -165,6 +165,9 @@ const uiState = {
   serviceWorkerReloadTimer: null,
   bedAction: null,
   bedLongPress: null,
+  todoTogglePointer: null,
+  suppressTodoClickTokenId: "",
+  suppressTodoClickTimer: null,
   suppressNextBedClick: false,
   pointerTracking: null,
   wardDrag: null,
@@ -663,6 +666,10 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("mousedown", (event) => {
+    if (event.target.closest('.tag-token[data-tag="todo"]')) {
+      event.preventDefault();
+      return;
+    }
     const quickButton = event.target.closest("[data-quick-tag]");
     if (quickButton) {
       rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
@@ -674,6 +681,10 @@ function bindEvents() {
     const bedIndexRail = event.target.closest?.(".bed-index-rail");
     if (bedIndexRail) {
       startBedIndexScrub(bedIndexRail, event);
+      return;
+    }
+    const todoToken = event.target.closest?.('.tag-token[data-tag="todo"]');
+    if (todoToken && beginTodoTogglePointer(todoToken, event)) {
       return;
     }
     const bedToken = event.target.closest?.('.tag-token[data-tag="bed"]');
@@ -697,16 +708,19 @@ function bindEvents() {
       updateBedIndexScrub(event);
       return;
     }
+    updateTodoTogglePointer(event);
     updateBedLongPress(event);
     markEditorPointerMoved(event);
   }, { passive: false });
 
   refs.editorRoot.addEventListener("pointerup", (event) => {
+    if (finishTodoTogglePointer(event)) return;
     if (uiState.bedIndexScrub?.useTouchCoordinate) return;
     if (finishBedIndexScrub(event)) return;
     cancelBedLongPress(event);
-  }, { passive: true });
+  }, { passive: false });
   refs.editorRoot.addEventListener("pointercancel", (event) => {
+    if (cancelTodoTogglePointer(event)) return;
     if (uiState.bedIndexScrub?.useTouchCoordinate) return;
     if (finishBedIndexScrub(event)) return;
     cancelBedLongPress(event);
@@ -721,12 +735,16 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("touchstart", (event) => {
+    if (event.target.closest?.('.tag-token[data-tag="todo"]')) {
+      event.preventDefault();
+      return;
+    }
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     clearScreenSwitchSelectionRestore();
     beginEditorTapDebug(editor, event);
     rememberEditorTapScroll(event);
-  }, { passive: true });
+  }, { passive: false });
 
   refs.editorRoot.addEventListener("touchmove", (event) => {
     if (uiState.bedIndexScrub?.useTouchCoordinate) {
@@ -831,6 +849,8 @@ function bindEvents() {
 
     const todoToken = event.target.closest('.tag-token[data-tag="todo"]');
     if (todoToken) {
+      event.preventDefault();
+      if (consumeSuppressedTodoClick(todoToken)) return;
       toggleTodoTokenInEditor(todoToken);
       return;
     }
@@ -4823,6 +4843,73 @@ function toggleTodoTokenInEditor(token) {
   refreshLineTagClasses(line);
   rememberPendingDoneToggle(note?.id || "", tokenId, done, "");
   syncEditorDocument();
+}
+
+function beginTodoTogglePointer(token, event) {
+  if (!token || (event.button !== undefined && event.button !== 0)) return false;
+  event.preventDefault();
+  uiState.pendingEditorTapDebug = null;
+  uiState.todoTogglePointer = {
+    pointerId: event.pointerId,
+    token,
+    tokenId: token.dataset.tokenId || "",
+    startX: Number(event.clientX) || 0,
+    startY: Number(event.clientY) || 0,
+    moved: false
+  };
+  try {
+    token.setPointerCapture?.(event.pointerId);
+  } catch {
+    // Pointer capture is optional; the delegated pointer handlers still finish the tap.
+  }
+  return true;
+}
+
+function updateTodoTogglePointer(event) {
+  const pointer = uiState.todoTogglePointer;
+  if (!pointer || pointer.pointerId !== event.pointerId) return;
+  const distance = Math.hypot(
+    (Number(event.clientX) || 0) - pointer.startX,
+    (Number(event.clientY) || 0) - pointer.startY
+  );
+  if (distance > 10) pointer.moved = true;
+}
+
+function finishTodoTogglePointer(event) {
+  const pointer = uiState.todoTogglePointer;
+  if (!pointer || pointer.pointerId !== event.pointerId) return false;
+  event.preventDefault();
+  uiState.todoTogglePointer = null;
+  if (!pointer.moved && pointer.token?.isConnected) {
+    toggleTodoTokenInEditor(pointer.token);
+    suppressNextTodoClick(pointer.tokenId);
+  }
+  return true;
+}
+
+function cancelTodoTogglePointer(event) {
+  const pointer = uiState.todoTogglePointer;
+  if (!pointer || pointer.pointerId !== event.pointerId) return false;
+  uiState.todoTogglePointer = null;
+  return true;
+}
+
+function suppressNextTodoClick(tokenId) {
+  window.clearTimeout(uiState.suppressTodoClickTimer);
+  uiState.suppressTodoClickTokenId = tokenId || "__untagged__";
+  uiState.suppressTodoClickTimer = window.setTimeout(() => {
+    uiState.suppressTodoClickTokenId = "";
+    uiState.suppressTodoClickTimer = null;
+  }, 600);
+}
+
+function consumeSuppressedTodoClick(token) {
+  const tokenId = token?.dataset.tokenId || "__untagged__";
+  if (!uiState.suppressTodoClickTokenId || uiState.suppressTodoClickTokenId !== tokenId) return false;
+  window.clearTimeout(uiState.suppressTodoClickTimer);
+  uiState.suppressTodoClickTokenId = "";
+  uiState.suppressTodoClickTimer = null;
+  return true;
 }
 
 function rememberPendingDoneToggle(noteId, tokenId, done, reminderKey = "") {
