@@ -5,6 +5,7 @@ const WARD_COLORS = ["#f28b67", "#6ea8fe", "#6fc48d", "#b490ff", "#f0b95c", "#ff
 const CUSTOM_TAG_COLORS = ["#9b8cff", "#2bb3c0", "#f27b8a", "#63b56b", "#f0a64f", "#5f9cff", "#c86dd7", "#b6a54a"];
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
+const CLOUD_ARCHIVE_TABLE = "shiftpad_archives";
 const EDITOR_DEBUG_CLOUD_TABLE = "shiftpad_editor_debug_logs";
 const CLOUD_SAVE_DEBOUNCE_MS = 300;
 const CLOUD_SYNC_POLL_MS = 1500;
@@ -35,9 +36,10 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-07-26-todo-focus-v15";
+const APP_BUILD = "2026-08-01-archived-pad-v1";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
+const PAD_MODE_KEYS = ["shift", "day", "archive"];
 const SUMMARY_TABS = ["reminders", "todo"];
 const WORKSPACE_META = {
   shift: {
@@ -49,6 +51,11 @@ const WORKSPACE_META = {
     title: "DayPad",
     eyebrow: "Regular Hours Workspace",
     tagline: "Daytime ward notes, tasks, and reminders."
+  },
+  archive: {
+    title: "ArchivedPad",
+    eyebrow: "Saved Pad Versions",
+    tagline: "Inspect complete ShiftPad and DayPad versions safely."
   }
 };
 const KIND_META = {
@@ -90,6 +97,7 @@ const refs = {
   editorRoot: document.getElementById("editor-root"),
   drawerRoot: document.getElementById("drawer-root"),
   bedActionRoot: document.getElementById("bed-action-root"),
+  archiveActionRoot: document.getElementById("archive-action-root"),
   searchRoot: document.getElementById("search-root"),
   mobileTagRoot: document.getElementById("mobile-tag-root"),
   timelineRoot: document.getElementById("timeline-root"),
@@ -186,7 +194,18 @@ const uiState = {
   searchQuery: "",
   searchReturnFocus: null,
   recoveryBaselines: new Map(),
-  recoveryLastSavedAt: new Map()
+  recoveryLastSavedAt: new Map(),
+  archiveOpen: false,
+  archiveFilter: "all",
+  inspectedArchiveId: "",
+  archiveSelectedWardId: "",
+  archiveSelectedNoteId: "",
+  archiveActiveView: "notes",
+  archiveSummaryTab: "reminders",
+  archiveTimelineScope: "all",
+  archiveDialog: null,
+  archiveBusy: false,
+  archiveStatus: ""
 };
 const noteDocumentModelTimers = new Map();
 const noteParseCache = new Map();
@@ -523,6 +542,13 @@ function bindEvents() {
       return;
     }
 
+    const archiveWard = event.target.closest("[data-archive-ward-id]");
+    if (archiveWard) {
+      selectArchivedWard(archiveWard.dataset.archiveWardId);
+      closeDrawersWithAnimation();
+      return;
+    }
+
     const wardScope = event.target.closest("[data-ward-scope]");
     if (wardScope) {
       selectWardScope(wardScope.dataset.wardScope);
@@ -665,6 +691,28 @@ function bindEvents() {
     addCustomTagFromForm(form);
   });
 
+  refs.archiveActionRoot?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-archive-dialog-close]")) {
+      closeArchiveDialog();
+      return;
+    }
+    const destination = event.target.closest("[data-archive-destination]");
+    if (destination) {
+      retrieveArchiveToWorkspace(uiState.archiveDialog?.archiveId, destination.dataset.archiveDestination);
+    }
+  });
+
+  refs.archiveActionRoot?.addEventListener("submit", (event) => {
+    const form = event.target.closest("[data-archive-details-form]");
+    if (!form) return;
+    event.preventDefault();
+    const data = new FormData(form);
+    updateArchiveDetails(uiState.archiveDialog?.archiveId, {
+      title: data.get("title"),
+      archivedFor: data.get("archivedFor")
+    });
+  });
+
   refs.editorRoot.addEventListener("mousedown", (event) => {
     if (event.target.closest('.tag-token[data-tag="todo"]')) {
       event.preventDefault();
@@ -683,6 +731,7 @@ function bindEvents() {
       startBedIndexScrub(bedIndexRail, event);
       return;
     }
+    if (isArchivedPadMode()) return;
     const todoToken = event.target.closest?.('.tag-token[data-tag="todo"]');
     if (todoToken && beginTodoTogglePointer(todoToken, event)) {
       return;
@@ -727,6 +776,7 @@ function bindEvents() {
   }, { passive: true });
 
   refs.editorRoot.addEventListener("contextmenu", (event) => {
+    if (isArchivedPadMode()) return;
     const bedToken = event.target.closest?.('.tag-token[data-tag="bed"]');
     if (!bedToken || bedToken.dataset.editing === "true") return;
     event.preventDefault();
@@ -763,6 +813,11 @@ function bindEvents() {
   }, { passive: true });
 
   refs.notesTabBtn.addEventListener("click", () => {
+    if (isArchivedPadMode()) {
+      uiState.archiveActiveView = "notes";
+      render();
+      return;
+    }
     state.activeView = "notes";
     uiState.editorFocused = false;
     uiState.mobileTagsOpen = false;
@@ -770,6 +825,12 @@ function bindEvents() {
   });
 
   refs.timelineTabBtn.addEventListener("click", () => {
+    if (isArchivedPadMode()) {
+      if (!getInspectedArchive()) return;
+      uiState.archiveActiveView = "timeline";
+      render();
+      return;
+    }
     state.activeView = "timeline";
     uiState.editorFocused = false;
     uiState.mobileTagsOpen = false;
@@ -777,6 +838,10 @@ function bindEvents() {
   });
 
   refs.stickyWardRoot?.addEventListener("click", (event) => {
+    if (isArchivedPadMode()) {
+      handleArchivedPadClick(event);
+      return;
+    }
     const wardSwitch = event.target.closest?.("[data-ward-switch]");
     if (wardSwitch) {
       switchWardFromEditor(wardSwitch.dataset.wardSwitch);
@@ -796,6 +861,15 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
+    if (isArchivedPadMode()) {
+      const bedJump = event.target.closest?.("[data-bed-jump]");
+      if (bedJump) {
+        jumpToBedInEditor(bedJump.dataset.bedJump);
+        return;
+      }
+      handleArchivedPadClick(event);
+      return;
+    }
     const clickedBedToken = event.target.closest?.('.tag-token[data-tag="bed"]');
     if (clickedBedToken && uiState.suppressNextBedClick) {
       uiState.suppressNextBedClick = false;
@@ -1132,6 +1206,7 @@ function bindEvents() {
   });
 
   refs.timelineRoot.addEventListener("change", (event) => {
+    if (isArchivedPadMode()) return;
     const bedEditor = event.target.closest("[data-bed-editor]");
     if (bedEditor) {
       updateBedGroupText(bedEditor.dataset.bedKey, getEditorPlainText(bedEditor));
@@ -1171,6 +1246,7 @@ function bindEvents() {
   });
 
   refs.timelineRoot.addEventListener("input", (event) => {
+    if (isArchivedPadMode()) return;
     const bedEditor = event.target.closest("[data-bed-editor]");
     if (bedEditor) {
       autoSizeTextarea(bedEditor);
@@ -1193,6 +1269,21 @@ function bindEvents() {
   });
 
   refs.timelineRoot.addEventListener("click", (event) => {
+    if (isArchivedPadMode()) {
+      const tab = event.target.closest("[data-archive-summary-tab]");
+      if (tab) {
+        uiState.archiveSummaryTab = SUMMARY_TABS.includes(tab.dataset.archiveSummaryTab)
+          ? tab.dataset.archiveSummaryTab
+          : "reminders";
+        renderArchivedPad();
+        return;
+      }
+      if (event.target.closest("[data-archive-scope-toggle]")) {
+        uiState.archiveTimelineScope = uiState.archiveTimelineScope === "active" ? "all" : "active";
+        renderArchivedPad();
+      }
+      return;
+    }
     const tab = event.target.closest("[data-summary-tab]");
     if (tab) {
       state.summaryTab = SUMMARY_TABS.includes(tab.dataset.summaryTab) ? tab.dataset.summaryTab : "reminders";
@@ -1288,6 +1379,17 @@ function render() {
   ensureSelection();
   renderWorkspaceIdentity();
   renderAuthUi();
+  if (isArchivedPadMode()) {
+    renderArchivedPad();
+    renderDrawer();
+    renderBedActionSheet();
+    renderArchiveDialog();
+    renderWorkspaceSearch();
+    refs.mobileTagRoot.innerHTML = "";
+    requestAnimationFrame(updateDesktopTagBarOffset);
+    return;
+  }
+  renderLivePadLabels();
   refs.workspace.classList.toggle("single-ward", Boolean(state.preferences.singleWardMode));
   refs.timelineView.classList.toggle("single-ward-summary", state.timelineScope === "active");
 
@@ -1303,9 +1405,466 @@ function render() {
   renderTimeline();
   renderDrawer();
   renderBedActionSheet();
+  renderArchiveDialog();
   renderWorkspaceSearch();
   refreshMobileTagDock();
   requestAnimationFrame(updateDesktopTagBarOffset);
+}
+
+function renderLivePadLabels() {
+  refs.workspace.classList.remove("archived-workspace");
+  refs.notesTabBtn.textContent = "Notes";
+  refs.timelineTabBtn.textContent = "Summary";
+  refs.timelineTabBtn.disabled = false;
+  refs.searchBtn.classList.remove("hidden");
+  const kicker = refs.timelineView?.querySelector(".stack-head .section-kicker");
+  const heading = refs.timelineView?.querySelector(".stack-head h2");
+  if (kicker) kicker.textContent = "Summary";
+  if (heading) heading.textContent = "Bed information and reminders";
+}
+
+function renderArchivedPad() {
+  const archive = getInspectedArchive();
+  if (uiState.inspectedArchiveId && !archive) {
+    uiState.inspectedArchiveId = "";
+  }
+  const inspected = getInspectedArchive();
+  const activeView = inspected ? uiState.archiveActiveView : "notes";
+  refs.workspace.classList.add("single-ward", "archived-workspace");
+  refs.timelineView.classList.remove("single-ward-summary");
+  refs.notesTabBtn.textContent = inspected ? "Notes" : "Archives";
+  refs.timelineTabBtn.textContent = "Summary";
+  refs.timelineTabBtn.disabled = !inspected;
+  refs.searchBtn.classList.add("hidden");
+  refs.notesTabBtn.classList.toggle("is-active", activeView === "notes");
+  refs.timelineTabBtn.classList.toggle("is-active", activeView === "timeline");
+  refs.notesTabBtn.setAttribute("aria-selected", String(activeView === "notes"));
+  refs.timelineTabBtn.setAttribute("aria-selected", String(activeView === "timeline"));
+  refs.notesView.classList.toggle("hidden", activeView !== "notes");
+  refs.timelineView.classList.toggle("hidden", activeView !== "timeline");
+
+  const kicker = refs.timelineView?.querySelector(".stack-head .section-kicker");
+  const heading = refs.timelineView?.querySelector(".stack-head h2");
+  if (kicker) kicker.textContent = "Archived version";
+  if (heading) heading.textContent = inspected?.title || "Saved pad summary";
+
+  if (!inspected) {
+    renderArchiveLibrary();
+    refs.timelineRoot.innerHTML = "";
+    refs.stickyWardRoot.classList.remove("is-empty");
+    refs.stickyWardRoot.innerHTML = `
+      <div class="archive-overview-bar">
+        <div>
+          <p class="section-kicker">Version library</p>
+          <h2>ShiftPad and DayPad archives</h2>
+        </div>
+        <span>${appState.archives.length} saved</span>
+      </div>
+    `;
+    return;
+  }
+
+  const archiveState = getArchivedViewState(inspected);
+  renderArchivedStickyWardBar(inspected, archiveState);
+  renderArchivedNote(inspected, archiveState);
+  renderArchivedTimeline(inspected, archiveState);
+}
+
+function renderArchiveLibrary() {
+  const archives = getVisibleArchives();
+  const status = uiState.archiveStatus
+    ? `<p class="archive-status" aria-live="polite">${escapeHtml(uiState.archiveStatus)}</p>`
+    : "";
+  refs.editorRoot.innerHTML = `
+    <section class="archive-library" aria-label="Archived pad versions">
+      <header class="archive-library-head">
+        <div>
+          <p class="section-kicker">ArchivedPad</p>
+          <h2>Saved versions</h2>
+          <p>Each version contains every ward from one complete pad.</p>
+        </div>
+        <div class="archive-filter" role="group" aria-label="Filter archived versions">
+          ${renderArchiveFilterButton("all", "All")}
+          ${renderArchiveFilterButton("shift", "ShiftPad")}
+          ${renderArchiveFilterButton("day", "DayPad")}
+        </div>
+      </header>
+      ${status}
+      <div class="archive-version-list">
+        ${archives.length ? archives.map(renderArchiveVersionCard).join("") : renderArchiveEmptyState()}
+      </div>
+    </section>
+  `;
+}
+
+function renderArchiveFilterButton(key, label) {
+  return `<button class="archive-filter-btn ${uiState.archiveFilter === key ? "is-active" : ""}" type="button" data-archive-filter="${key}">${label}</button>`;
+}
+
+function renderArchiveVersionCard(archive) {
+  const stats = normalizeArchiveStats(archive.stats, archive.snapshot);
+  const sourceTitle = WORKSPACE_META[archive.sourceWorkspace]?.title || "ShiftPad";
+  return `
+    <article class="archive-version-card">
+      <button class="archive-card-main" type="button" data-archive-inspect="${escapeAttribute(archive.id)}">
+        <span class="archive-source-badge is-${escapeAttribute(archive.sourceWorkspace)}">${escapeHtml(sourceTitle)}</span>
+        <strong>${escapeHtml(archive.title)}</strong>
+        <time datetime="${escapeAttribute(archive.archivedFor)}">${escapeHtml(formatArchiveDisplayDate(archive.archivedFor))}</time>
+        <span class="archive-card-stats">${stats.wardCount} ward${stats.wardCount === 1 ? "" : "s"} · ${stats.bedCount} bed${stats.bedCount === 1 ? "" : "s"} · ${stats.reminderCount} open reminder${stats.reminderCount === 1 ? "" : "s"}</span>
+      </button>
+      <div class="archive-card-actions">
+        <button class="ghost-btn tiny-btn" type="button" data-archive-inspect="${escapeAttribute(archive.id)}">Inspect</button>
+        <button class="accent-btn tiny-btn" type="button" data-archive-retrieve="${escapeAttribute(archive.id)}">Retrieve</button>
+        <button class="archive-icon-btn" type="button" data-archive-edit="${escapeAttribute(archive.id)}" aria-label="Edit archive details" title="Edit archive details">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.7-10.7-3.2-3.2L5 15.8 4 20Z"></path><path d="m13.8 7 3.2 3.2"></path></svg>
+        </button>
+        <button class="archive-icon-btn is-danger" type="button" data-archive-delete="${escapeAttribute(archive.id)}" aria-label="Delete archive" title="Delete archive">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M9 7V4h6v3"></path><path d="m7 7 1 13h8l1-13"></path></svg>
+        </button>
+      </div>
+    </article>
+  `;
+}
+
+function renderArchiveEmptyState() {
+  const label = uiState.archiveFilter === "all" ? "ShiftPad or DayPad" : WORKSPACE_META[uiState.archiveFilter]?.title;
+  return `
+    <div class="archive-empty-state">
+      <h3>No ${escapeHtml(label || "pad")} versions yet</h3>
+      <p>Archive and reset from a live pad to save its complete ward set here.</p>
+    </div>
+  `;
+}
+
+function renderArchivedStickyWardBar(archive, archiveState) {
+  const ward = getArchiveCurrentWard(archiveState);
+  const sourceTitle = WORKSPACE_META[archive.sourceWorkspace]?.title || "ShiftPad";
+  refs.stickyWardRoot.classList.remove("is-empty");
+  refs.stickyWardRoot.innerHTML = `
+    <div class="sticky-ward-bar archive-sticky-bar">
+      <button class="archive-back-btn" type="button" data-archive-back="true" aria-label="Back to archived versions" title="Back to archived versions">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
+      </button>
+      ${renderArchiveWardTitle(archiveState, ward)}
+      <div class="sticky-ward-actions archive-sticky-actions">
+        <small>${escapeHtml(sourceTitle)} · ${escapeHtml(formatArchiveDisplayDate(archive.archivedFor))}</small>
+        <button class="accent-btn tiny-btn" type="button" data-archive-retrieve="${escapeAttribute(archive.id)}">Retrieve</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderArchiveWardTitle(archiveState, ward) {
+  const showSwitcher = archiveState.wards.length > 1;
+  if (!showSwitcher) return `<h2>${escapeHtml(ward?.name || "Archived ward")}</h2>`;
+  return `
+    <div class="notepad-ward-title" aria-label="Archived ward switcher">
+      <button class="ward-switch-btn" type="button" data-archive-ward-switch="previous" aria-label="Previous archived ward">
+        <svg class="ward-switch-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+      </button>
+      <h2>${escapeHtml(ward?.name || "Archived ward")}</h2>
+      <button class="ward-switch-btn" type="button" data-archive-ward-switch="next" aria-label="Next archived ward">
+        <svg class="ward-switch-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+      </button>
+    </div>
+  `;
+}
+
+function renderArchivedNote(archive, archiveState) {
+  const ward = getArchiveCurrentWard(archiveState);
+  const note = getArchiveCurrentNote(archiveState);
+  if (!ward || !note) {
+    refs.editorRoot.innerHTML = `<div class="archive-empty-state"><h3>This archived ward has no note</h3></div>`;
+    return;
+  }
+  const bedIndex = getBedIndexForNote(note);
+  refs.editorRoot.innerHTML = `
+    <div class="editor-shell archived-editor-shell">
+      <section class="note-pad-card archived-note-card">
+        <div class="archive-readonly-banner">
+          <span>Read-only version</span>
+          <strong>${escapeHtml(archive.title)}</strong>
+        </div>
+        <div class="smart-pad-surface document-pad archived-document-pad">
+          <div id="notepad-editor" class="notepad-editor archived-notepad" aria-label="Archived notepad">${getNoteDocumentHtml(note)}</div>
+          ${renderBedIndexRail(bedIndex)}
+        </div>
+      </section>
+    </div>
+  `;
+  applyCustomTagColors(refs.editorRoot);
+  applyEditorCompletionClasses(refs.editorRoot.querySelector("#notepad-editor"));
+}
+
+function renderArchivedTimeline(archive, archiveState) {
+  const summaryTab = SUMMARY_TABS.includes(uiState.archiveSummaryTab) ? uiState.archiveSummaryTab : "reminders";
+  const scope = uiState.archiveTimelineScope === "active" ? "active" : "all";
+  const summary = buildSummaryGroups(scope, archiveState);
+  const openReminderCount = summary.timed.filter((item) => !item.entry.done).length;
+  const openTodoCount = summary.todo.filter((item) => !item.entry.done).length;
+  const ward = getArchiveCurrentWard(archiveState);
+  const scopeLabel = scope === "active" ? ward?.name || "Selected ward" : "All wards";
+  refs.timelineRoot.innerHTML = `
+    <div class="archive-summary-banner">
+      <span>Read-only</span>
+      <strong>${escapeHtml(archive.title)}</strong>
+    </div>
+    <div class="summary-controls-row">
+      <div class="summary-switcher" role="tablist" aria-label="Archived summary sections">
+        <button class="summary-tab ${summaryTab === "reminders" ? "is-active" : ""}" type="button" data-archive-summary-tab="reminders">Reminders</button>
+        <button class="summary-tab ${summaryTab === "todo" ? "is-active" : ""}" type="button" data-archive-summary-tab="todo">To-do list</button>
+      </div>
+      <div class="summary-scope-actions">
+        <button class="summary-scope-btn" type="button" data-archive-scope-toggle="true">${scope === "active" ? "Show all wards" : `Show ${escapeHtml(ward?.name || "active ward")}`}</button>
+        <strong class="summary-count">${escapeHtml(scopeLabel)} · ${openReminderCount} reminder${openReminderCount === 1 ? "" : "s"} · ${openTodoCount} to-do</strong>
+      </div>
+    </div>
+    <div class="archived-summary-content">
+      ${summaryTab === "reminders" ? renderSummaryTimedSection(summary.timed) : renderSummaryTodoSection(summary.todo)}
+    </div>
+  `;
+  refs.timelineRoot.querySelectorAll("textarea, input, [data-empty-action]").forEach((control) => {
+    control.disabled = true;
+    control.tabIndex = -1;
+  });
+  refs.timelineRoot.querySelectorAll("textarea").forEach(autoSizeTextarea);
+}
+
+function getVisibleArchives() {
+  const archives = normalizeArchiveLibrary(appState.archives);
+  return uiState.archiveFilter === "all"
+    ? archives
+    : archives.filter((archive) => archive.sourceWorkspace === uiState.archiveFilter);
+}
+
+function getInspectedArchive() {
+  return appState.archives.find((archive) => archive.id === uiState.inspectedArchiveId) || null;
+}
+
+function getArchivedViewState(archive) {
+  const snapshot = archive?.snapshot;
+  if (!snapshot?.wards?.length) return createBlankState();
+  const ward = snapshot.wards.find((item) => item.id === uiState.archiveSelectedWardId)
+    || snapshot.wards.find((item) => item.id === snapshot.selectedWardId)
+    || snapshot.wards[0];
+  const note = ward.notes?.find((item) => item.id === uiState.archiveSelectedNoteId)
+    || ward.notes?.find((item) => item.id === snapshot.selectedNoteId)
+    || ward.notes?.[0];
+  uiState.archiveSelectedWardId = ward.id;
+  uiState.archiveSelectedNoteId = note?.id || "";
+  return {
+    ...snapshot,
+    selectedWardId: ward.id,
+    selectedNoteId: note?.id || "",
+    timelineScope: uiState.archiveTimelineScope,
+    summaryTab: uiState.archiveSummaryTab
+  };
+}
+
+function getArchiveCurrentWard(archiveState) {
+  return archiveState?.wards?.find((ward) => ward.id === archiveState.selectedWardId) || null;
+}
+
+function getArchiveCurrentNote(archiveState) {
+  const ward = getArchiveCurrentWard(archiveState);
+  return ward?.notes?.find((note) => note.id === archiveState.selectedNoteId) || null;
+}
+
+function getArchiveSnapshotStats(snapshot) {
+  const wards = Array.isArray(snapshot?.wards) ? snapshot.wards : [];
+  const beds = new Set();
+  wards.forEach((ward) => {
+    (ward.notes || []).forEach((note) => {
+      getBedIndexForNote(note).forEach((bed) => beds.add(`${ward.id}:${String(bed).toUpperCase()}`));
+    });
+  });
+  const summary = wards.length ? buildSummaryGroups("all", snapshot) : { timed: [], todo: [] };
+  return {
+    wardCount: wards.length,
+    bedCount: beds.size,
+    reminderCount: summary.timed.filter((item) => !item.entry.done).length,
+    todoCount: summary.todo.filter((item) => !item.entry.done).length,
+    noteCount: wards.reduce((count, ward) => count + (ward.notes?.length || 0), 0)
+  };
+}
+
+function formatArchiveDisplayDate(value) {
+  const parts = String(value || "").split("-").map(Number);
+  const date = parts.length === 3 ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date();
+  return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" }).format(date);
+}
+
+function handleArchivedPadClick(event) {
+  const filter = event.target.closest?.("[data-archive-filter]");
+  if (filter) {
+    uiState.archiveFilter = ["all", ...WORKSPACE_KEYS].includes(filter.dataset.archiveFilter)
+      ? filter.dataset.archiveFilter
+      : "all";
+    renderArchiveLibrary();
+    return;
+  }
+
+  const inspect = event.target.closest?.("[data-archive-inspect]");
+  if (inspect) {
+    inspectArchive(inspect.dataset.archiveInspect);
+    return;
+  }
+
+  const retrieve = event.target.closest?.("[data-archive-retrieve]");
+  if (retrieve) {
+    openArchiveDialog("retrieve", retrieve.dataset.archiveRetrieve);
+    return;
+  }
+
+  const edit = event.target.closest?.("[data-archive-edit]");
+  if (edit) {
+    openArchiveDialog("edit", edit.dataset.archiveEdit);
+    return;
+  }
+
+  const remove = event.target.closest?.("[data-archive-delete]");
+  if (remove) {
+    deleteArchiveRecord(remove.dataset.archiveDelete);
+    return;
+  }
+
+  if (event.target.closest?.("[data-archive-back]")) {
+    closeArchiveInspection();
+    return;
+  }
+
+  const wardSwitch = event.target.closest?.("[data-archive-ward-switch]");
+  if (wardSwitch) {
+    switchArchivedWard(wardSwitch.dataset.archiveWardSwitch);
+  }
+}
+
+function inspectArchive(archiveId) {
+  const archive = appState.archives.find((entry) => entry.id === archiveId);
+  if (!archive) return;
+  uiState.inspectedArchiveId = archive.id;
+  uiState.archiveSelectedWardId = archive.snapshot.selectedWardId || archive.snapshot.wards[0]?.id || "";
+  const ward = archive.snapshot.wards.find((entry) => entry.id === uiState.archiveSelectedWardId) || archive.snapshot.wards[0];
+  uiState.archiveSelectedNoteId = ward?.notes?.find((note) => note.id === archive.snapshot.selectedNoteId)?.id || ward?.notes?.[0]?.id || "";
+  uiState.archiveActiveView = "notes";
+  uiState.archiveSummaryTab = SUMMARY_TABS.includes(archive.snapshot.summaryTab) ? archive.snapshot.summaryTab : "reminders";
+  uiState.archiveTimelineScope = "all";
+  updateArchiveUrl(archive.id);
+  render();
+}
+
+function closeArchiveInspection() {
+  uiState.inspectedArchiveId = "";
+  uiState.archiveSelectedWardId = "";
+  uiState.archiveSelectedNoteId = "";
+  uiState.archiveActiveView = "notes";
+  updateArchiveUrl("");
+  render();
+}
+
+function selectArchivedWard(wardId) {
+  const archive = getInspectedArchive();
+  const ward = archive?.snapshot?.wards?.find((entry) => entry.id === wardId);
+  if (!ward) return;
+  uiState.archiveSelectedWardId = ward.id;
+  uiState.archiveSelectedNoteId = ward.notes?.[0]?.id || "";
+  render();
+}
+
+function switchArchivedWard(direction) {
+  const archive = getInspectedArchive();
+  const wards = archive?.snapshot?.wards || [];
+  if (wards.length < 2) return;
+  const currentIndex = Math.max(0, wards.findIndex((ward) => ward.id === uiState.archiveSelectedWardId));
+  const step = direction === "previous" ? -1 : 1;
+  const next = wards[(currentIndex + step + wards.length) % wards.length];
+  selectArchivedWard(next.id);
+}
+
+function updateArchiveUrl(archiveId) {
+  try {
+    const url = new URL(window.location.href);
+    if (archiveId) url.searchParams.set("archive", archiveId);
+    else url.searchParams.delete("archive");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // Archive inspection still works when history APIs are unavailable.
+  }
+}
+
+function openArchiveDialog(type, archiveId) {
+  const archive = appState.archives.find((entry) => entry.id === archiveId);
+  if (!archive || !["retrieve", "edit"].includes(type)) return;
+  uiState.archiveDialog = { type, archiveId };
+  uiState.archiveStatus = "";
+  renderArchiveDialog();
+}
+
+function closeArchiveDialog() {
+  if (uiState.archiveBusy) return;
+  uiState.archiveDialog = null;
+  renderArchiveDialog();
+}
+
+function renderArchiveDialog() {
+  if (!refs.archiveActionRoot) return;
+  const dialog = uiState.archiveDialog;
+  const archive = appState.archives.find((entry) => entry.id === dialog?.archiveId);
+  if (!dialog || !archive) {
+    refs.archiveActionRoot.innerHTML = "";
+    return;
+  }
+  const sourceTitle = WORKSPACE_META[archive.sourceWorkspace]?.title || "ShiftPad";
+  const busy = uiState.archiveBusy ? "disabled" : "";
+  const body = dialog.type === "edit"
+    ? `
+      <form class="archive-details-form" data-archive-details-form="true">
+        <label><span>Version name</span><input name="title" type="text" maxlength="100" required value="${escapeAttribute(archive.title)}" /></label>
+        <label><span>Archive date</span><input name="archivedFor" type="date" required value="${escapeAttribute(archive.archivedFor)}" /></label>
+        <div class="archive-dialog-actions">
+          <button class="ghost-btn" type="button" data-archive-dialog-close="true" ${busy}>Cancel</button>
+          <button class="accent-btn" type="submit" ${busy}>Save</button>
+        </div>
+      </form>
+    `
+    : `
+      <p>Choose where to retrieve this version. The destination's current content will be archived first.</p>
+      <div class="archive-destination-list">
+        ${WORKSPACE_KEYS.map((key) => {
+          const destination = appState.workspaces[key];
+          const stats = getArchiveSnapshotStats(destination);
+          return `
+            <button type="button" data-archive-destination="${key}" ${busy}>
+              <strong>${WORKSPACE_META[key].title}</strong>
+              <span>Currently ${stats.wardCount} ward${stats.wardCount === 1 ? "" : "s"} · ${stats.bedCount} bed${stats.bedCount === 1 ? "" : "s"}</span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+      <div class="archive-dialog-actions">
+        <button class="ghost-btn" type="button" data-archive-dialog-close="true" ${busy}>Cancel</button>
+      </div>
+    `;
+  refs.archiveActionRoot.innerHTML = `
+    <div class="archive-dialog-layer" role="dialog" aria-modal="true" aria-labelledby="archive-dialog-title">
+      <button class="archive-dialog-scrim" type="button" data-archive-dialog-close="true" aria-label="Close"></button>
+      <section class="archive-dialog">
+        <header>
+          <div>
+            <p class="section-kicker">${dialog.type === "edit" ? "Version details" : "Retrieve version"}</p>
+            <h2 id="archive-dialog-title">${escapeHtml(archive.title)}</h2>
+            <span>${escapeHtml(sourceTitle)} · ${escapeHtml(formatArchiveDisplayDate(archive.archivedFor))}</span>
+          </div>
+          <button class="archive-dialog-close" type="button" data-archive-dialog-close="true" aria-label="Close" ${busy}>×</button>
+        </header>
+        ${body}
+        ${uiState.archiveStatus ? `<p class="archive-status" aria-live="polite">${escapeHtml(uiState.archiveStatus)}</p>` : ""}
+      </section>
+    </div>
+  `;
+  if (dialog.type === "edit") {
+    window.requestAnimationFrame(() => refs.archiveActionRoot.querySelector('input[name="title"]')?.focus({ preventScroll: true }));
+  }
 }
 
 function openWorkspaceSearch() {
@@ -1511,7 +2070,7 @@ function renderDrawer({ animateSide = "", force = false } = {}) {
           </div>
         </div>
         ${renderAccountMenu()}
-        ${renderSettingsMenu()}
+        ${isArchivedPadMode() ? renderArchivedPadDrawerMenu() : renderSettingsMenu()}
       </aside>
     </div>
     <div class="drawer-layer drawer-layer-right ${wardOptionsOpen && animateSide !== "right" ? "is-open" : ""}" data-drawer-side="right" aria-hidden="${wardOptionsOpen ? "false" : "true"}">
@@ -1521,14 +2080,14 @@ function renderDrawer({ animateSide = "", force = false } = {}) {
         <span></span>
         <span></span>
       </button>
-      <aside class="side-drawer side-drawer-right" aria-label="Ward options">
+      <aside class="side-drawer side-drawer-right" aria-label="${isArchivedPadMode() ? "Archived wards" : "Ward options"}">
         <div class="drawer-head drawer-head-right">
           <div>
             <p class="section-kicker">Wards</p>
-            <h2>Ward options</h2>
+            <h2>${isArchivedPadMode() ? "Archived wards" : "Ward options"}</h2>
           </div>
         </div>
-        ${renderWardOptionsMenu()}
+        ${isArchivedPadMode() ? renderArchivedWardOptionsMenu() : renderWardOptionsMenu()}
       </aside>
     </div>
   `;
@@ -1545,6 +2104,44 @@ function renderDrawer({ animateSide = "", force = false } = {}) {
   }
   restoreDrawerScrollPositions();
   focusEditingWardInput();
+}
+
+function renderArchivedPadDrawerMenu() {
+  const archive = getInspectedArchive();
+  return `
+    <section class="drawer-section is-open">
+      <div class="drawer-section-title"><span>ArchivedPad</span></div>
+      <div class="drawer-panel archive-drawer-panel">
+        <p class="drawer-help">Saved versions are read-only. Retrieving copies one into ShiftPad or DayPad and archives the destination first.</p>
+        ${archive ? `<button class="accent-btn" type="button" data-drawer-action="retrieve-open-archive" data-history-id="${escapeAttribute(archive.id)}">Retrieve this version</button>` : ""}
+      </div>
+    </section>
+  `;
+}
+
+function renderArchivedWardOptionsMenu() {
+  const archive = getInspectedArchive();
+  if (!archive) {
+    return `<section class="drawer-section"><p class="drawer-help">Inspect a saved version to see its ward list.</p></section>`;
+  }
+  const archiveState = getArchivedViewState(archive);
+  return `
+    <section class="drawer-section drawer-ward-list-section">
+      <div class="drawer-section-title"><span>${escapeHtml(archive.title)}</span></div>
+      <div class="ward-list drawer-ward-list archive-ward-list">
+        ${archiveState.wards.map((ward) => {
+          const stats = getArchiveSnapshotStats({ ...archiveState, wards: [ward] });
+          return `
+            <button class="archive-ward-row ${ward.id === archiveState.selectedWardId ? "is-active" : ""}" type="button" data-archive-ward-id="${escapeAttribute(ward.id)}">
+              <span class="ward-dot" style="--ward:${escapeAttribute(ward.color || "#9a79c9")}"></span>
+              <strong>${escapeHtml(ward.name)}</strong>
+              <small>${stats.bedCount} bed${stats.bedCount === 1 ? "" : "s"}</small>
+            </button>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function captureDrawerScrollPositions() {
@@ -1634,6 +2231,7 @@ function renderDrawerSectionToggle(key, label, open) {
 
 function renderSettingsMenu() {
   const preferences = getPreferences();
+  const padTitle = getActiveWorkspaceMeta().title;
   const customTags = getCustomTagDefinitions();
   const tagDelaysOpen = isDrawerSectionOpen("tag-delays");
   const notificationsOpen = isDrawerSectionOpen("notifications");
@@ -1691,8 +2289,8 @@ function renderSettingsMenu() {
     <section class="drawer-section danger-zone ${resetOpen ? "is-open" : ""}">
       ${renderDrawerSectionToggle("reset", "Reset", resetOpen)}
       <div class="drawer-panel">
-        <p class="drawer-help">The current shift is archived before the workspace is cleared.</p>
-        <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Archive and reset</button>
+        <p class="drawer-help">The complete current ${escapeHtml(padTitle)} is saved in ArchivedPad before it is cleared.</p>
+        <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Archive ${escapeHtml(padTitle)} and reset</button>
       </div>
     </section>
   `;
@@ -1700,7 +2298,8 @@ function renderSettingsMenu() {
 
 function renderWorkspaceHistory() {
   const recoveries = Array.isArray(state.recoveryHistory) ? state.recoveryHistory.slice(0, 6) : [];
-  const archives = Array.isArray(state.shiftArchives) ? state.shiftArchives : [];
+  const workspaceKey = getActiveWorkspaceKey();
+  const archives = appState.archives.filter((entry) => entry.sourceWorkspace === workspaceKey);
   return `
     <div class="history-block">
       <div class="history-block-head"><strong>Recent note versions</strong><small>${state.recoveryHistory.length}/${RECOVERY_HISTORY_LIMIT}</small></div>
@@ -1715,16 +2314,9 @@ function renderWorkspaceHistory() {
       }).join("") : `<p class="drawer-help">Earlier note versions appear here automatically while you edit.</p>`}
     </div>
     <div class="history-block">
-      <div class="history-block-head"><strong>Shift archive</strong><small>${archives.length}/${SHIFT_ARCHIVE_LIMIT}</small></div>
-      ${archives.length ? archives.map((entry) => `
-        <div class="history-row">
-          <div><strong>${escapeHtml(entry.label || "Archived shift")}</strong><small>${escapeHtml(formatHistoryTimestamp(entry.createdAt))}</small></div>
-          <div class="history-actions">
-            <button class="tiny-btn" type="button" data-drawer-action="restore-archive" data-history-id="${escapeAttribute(entry.id)}">Restore</button>
-            <button class="history-delete-btn" type="button" data-drawer-action="delete-archive" data-history-id="${escapeAttribute(entry.id)}" aria-label="Delete archive" title="Delete archive">×</button>
-          </div>
-        </div>
-      `).join("") : `<p class="drawer-help">Archive and reset stores the completed shift here.</p>`}
+      <div class="history-block-head"><strong>${escapeHtml(WORKSPACE_META[workspaceKey].title)} archives</strong><small>${archives.length}</small></div>
+      <p class="drawer-help">Complete pad versions are stored in ArchivedPad.</p>
+      <button class="ghost-btn" type="button" data-drawer-action="open-archived-pad">Open ArchivedPad</button>
     </div>
   `;
 }
@@ -2960,6 +3552,13 @@ async function hydrateStateFromCloud({ authEvent = "UNKNOWN" } = {}) {
     authState.suppressCloudSave = true;
   }
 
+  try {
+    await hydrateArchiveLibrary();
+  } catch (archiveError) {
+    console.error("Archive library load failed:", archiveError);
+    setAuthMessage(formatSupabaseError(archiveError, "ArchivedPad could not refresh. Local archive copies are still available."));
+  }
+
   authState.isHydrating = false;
   authState.suppressCloudSave = false;
   applyUrlOverrides();
@@ -3181,6 +3780,10 @@ function mergeRemoteStatePreservingLocalView(remoteInput, localViewInput = appSt
   if (!remoteInput?.workspaces && localViewInput?.workspaces?.day) {
     nextAppState.workspaces.day = localViewState.workspaces.day;
   }
+  nextAppState.archives = normalizeArchiveLibrary([
+    ...(nextAppState.archives || []),
+    ...(localViewState.archives || [])
+  ]);
   nextAppState.activeWorkspace = getActiveWorkspaceKey(localViewState);
 
   WORKSPACE_KEYS.forEach((workspaceKey) => {
@@ -3268,8 +3871,9 @@ function mergeCloudStateForSave(localInput, remoteInput) {
   }
 
   const mergedAppState = {
-    version: 3,
+    version: 4,
     activeWorkspace: getActiveWorkspaceKey(local),
+    archives: normalizeArchiveLibrary([...(local.archives || []), ...(remote.archives || [])]),
     workspaces: {}
   };
   WORKSPACE_KEYS.forEach((workspaceKey) => {
@@ -3904,7 +4508,7 @@ function isCompactMobileLayout() {
 }
 
 function syncMobileTagDock() {
-  const editorChromeActive = state.activeView === "notes" && uiState.editorFocused;
+  const editorChromeActive = !isArchivedPadMode() && state.activeView === "notes" && uiState.editorFocused;
   document.documentElement.classList.toggle("editor-is-active", editorChromeActive);
   const dock = refs.mobileTagRoot?.querySelector("[data-mobile-tag-dock]");
   if (!dock) return;
@@ -3979,6 +4583,10 @@ function setDockStyleValue(dock, property, value) {
 
 function refreshMobileTagDock() {
   if (!refs.mobileTagRoot) return;
+  if (isArchivedPadMode()) {
+    refs.mobileTagRoot.innerHTML = "";
+    return;
+  }
   refs.mobileTagRoot.innerHTML = renderMobileTagDock();
   syncMobileTagDock();
 }
@@ -4002,6 +4610,7 @@ function isIpadSplitViewLayout() {
 
 function clampCompactShortNoteScrollPosition() {
   if (
+    isArchivedPadMode() ||
     !isCompactMobileLayout() ||
     state.activeView !== "notes" ||
     window.scrollY <= 0 ||
@@ -5295,8 +5904,20 @@ async function handleDrawerAction(action, dataset = {}) {
     return;
   }
 
+  if (action === "open-archived-pad") {
+    closeDrawersWithAnimation();
+    switchWorkspace("archive");
+    return;
+  }
+
+  if (action === "retrieve-open-archive") {
+    closeDrawersWithAnimation();
+    openArchiveDialog("retrieve", dataset.historyId);
+    return;
+  }
+
   if (action === "reset-notes") {
-    resetAllNotes();
+    await resetAllNotes();
   }
 }
 
@@ -5659,15 +6280,31 @@ async function changeCurrentPassword() {
   renderAuthUi();
 }
 
-function resetAllNotes() {
+async function resetAllNotes() {
+  if (uiState.archiveBusy) return;
   const workspaceName = getActiveWorkspaceMeta().title;
-  if (!window.confirm(`Archive the current ${workspaceName} shift and start with a blank workspace?`)) return;
+  const workspaceKey = getActiveWorkspaceKey();
+  if (!window.confirm(`Archive the complete current ${workspaceName} and start with a blank pad?`)) return;
   syncEditorDocument();
-  const archives = createShiftArchive(`Completed ${workspaceName} shift`);
+  const archive = createArchiveRecord(workspaceKey, `${workspaceName} · ${formatArchiveDisplayDate(formatArchiveDateInput())}`, state);
   const recoveryHistory = state.recoveryHistory;
+  const preferences = cloneJson(state.preferences);
   const nextState = createBlankState();
-  nextState.shiftArchives = archives;
   nextState.recoveryHistory = recoveryHistory;
+  nextState.preferences = preferences;
+  uiState.archiveBusy = true;
+  setAuthMessage(`Saving ${workspaceName} archive...`);
+  try {
+    await persistArchiveRecord(archive);
+    await replaceCloudWorkspace(workspaceKey, nextState);
+  } catch (error) {
+    uiState.archiveBusy = false;
+    setAuthMessage(formatSupabaseError(error, "Archive failed. The pad was not reset."));
+    window.alert("Archive and reset could not be completed. Your notes are unchanged.");
+    renderAuthUi();
+    return;
+  }
+  appState.archives = normalizeArchiveLibrary([archive, ...appState.archives]);
   setActiveWorkspaceState(nextState);
   uiState.recoveryBaselines.clear();
   uiState.recoveryLastSavedAt.clear();
@@ -5676,7 +6313,10 @@ function resetAllNotes() {
   uiState.drawerOpen = false;
   uiState.wardOptionsOpen = false;
   uiState.bedAction = null;
-  saveState();
+  uiState.archiveBusy = false;
+  setAuthMessage("");
+  saveState({ skipCloud: true, markDirty: false, skipRecovery: true });
+  flushLocalStateSave();
   render();
 }
 
@@ -5778,6 +6418,252 @@ function createShiftArchive(label) {
     wards: cloneJson(state.wards)
   };
   return [archive, ...(state.shiftArchives || [])].slice(0, SHIFT_ARCHIVE_LIMIT);
+}
+
+function createArchiveRecord(sourceWorkspace, title, workspaceState) {
+  const snapshotState = normalizeWorkspaceState(cloneJson(workspaceState), { blankFallback: true, preserveAllWards: true });
+  snapshotState.shiftArchives = [];
+  snapshotState.recoveryHistory = [];
+  const createdAt = Date.now();
+  const snapshot = {
+    activeView: snapshotState.activeView,
+    selectedWardId: snapshotState.selectedWardId,
+    selectedNoteId: snapshotState.selectedNoteId,
+    timelineScope: snapshotState.timelineScope,
+    summaryTab: snapshotState.summaryTab,
+    preferences: cloneJson(snapshotState.preferences),
+    wards: cloneJson(snapshotState.wards)
+  };
+  return normalizeArchiveRecord({
+    id: createId("archive"),
+    sourceWorkspace,
+    title,
+    archivedFor: formatArchiveDateInput(createdAt),
+    createdAt,
+    updatedAt: createdAt,
+    schemaVersion: 1,
+    stats: getArchiveSnapshotStats(snapshot),
+    snapshot
+  });
+}
+
+function archiveToCloudRow(archive) {
+  return {
+    user_id: authState.user.id,
+    id: archive.id,
+    source_workspace: archive.sourceWorkspace,
+    title: archive.title,
+    archived_for: archive.archivedFor,
+    snapshot: archive.snapshot,
+    stats: archive.stats,
+    schema_version: archive.schemaVersion,
+    created_at: new Date(archive.createdAt).toISOString(),
+    updated_at: new Date(archive.updatedAt).toISOString(),
+    deleted_at: null
+  };
+}
+
+function archiveFromCloudRow(row) {
+  if (!row || row.deleted_at) return null;
+  return normalizeArchiveRecord({
+    id: row.id,
+    sourceWorkspace: row.source_workspace,
+    title: row.title,
+    archivedFor: row.archived_for,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    schemaVersion: row.schema_version,
+    stats: row.stats,
+    snapshot: row.snapshot
+  });
+}
+
+async function persistArchiveRecord(archive) {
+  if (!authState.client || !authState.user) {
+    throw new Error("Sign in before archiving a pad.");
+  }
+  const { error } = await authState.client
+    .from(CLOUD_ARCHIVE_TABLE)
+    .upsert(archiveToCloudRow(archive), { onConflict: "user_id,id" });
+  if (error) throw error;
+}
+
+async function replaceCloudWorkspace(workspaceKey, nextWorkspace, maxAttempts = 3) {
+  if (!authState.client || !authState.user || !WORKSPACE_KEYS.includes(workspaceKey)) {
+    throw new Error("Sign in before replacing a pad.");
+  }
+  window.clearTimeout(authState.saveTimer);
+  authState.saveTimer = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const { data: current, error: readError } = await fetchCloudStateRecord();
+    if (readError) throw readError;
+    const cloudState = current?.state_json
+      ? normalizeAppState(current.state_json)
+      : normalizeAppState(appState);
+    cloudState.activeWorkspace = getActiveWorkspaceKey(appState);
+    cloudState.workspaces[workspaceKey] = normalizeWorkspaceState(cloneJson(nextWorkspace), { blankFallback: true, preserveAllWards: true });
+    const updatedAt = new Date().toISOString();
+    const payload = {
+      user_id: authState.user.id,
+      state_json: serializeAppStateForCloud(cloudState),
+      updated_at: updatedAt
+    };
+
+    const query = current?.updated_at
+      ? authState.client
+          .from(CLOUD_STATE_TABLE)
+          .update({ state_json: payload.state_json, updated_at: updatedAt })
+          .eq("user_id", authState.user.id)
+          .eq("updated_at", current.updated_at)
+      : authState.client.from(CLOUD_STATE_TABLE).insert(payload);
+    const { data: saved, error: saveError } = await query.select("updated_at").maybeSingle();
+    if (saveError && !isCloudVersionConflictError(saveError)) throw saveError;
+    if (!saveError && saved?.updated_at) {
+      rememberCloudVersion(saved.updated_at);
+      authState.pendingRemoteRecord = null;
+      authState.pendingDoneToggles.clear();
+      return;
+    }
+  }
+  throw new Error("The pad changed on another device. Please try again.");
+}
+
+async function hydrateArchiveLibrary() {
+  if (!authState.client || !authState.user) return;
+  const localArchives = normalizeArchiveLibrary(appState.archives);
+  const { data, error } = await authState.client
+    .from(CLOUD_ARCHIVE_TABLE)
+    .select("id,source_workspace,title,archived_for,snapshot,stats,schema_version,created_at,updated_at,deleted_at")
+    .eq("user_id", authState.user.id)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+
+  const cloudRows = Array.isArray(data) ? data : [];
+  const knownIds = new Set(cloudRows.map((row) => row.id));
+  const pendingLegacy = localArchives.filter((archive) => !knownIds.has(archive.id));
+  for (const archive of pendingLegacy) {
+    await persistArchiveRecord(archive);
+  }
+  const cloudArchives = cloudRows.map(archiveFromCloudRow).filter(Boolean);
+  appState.archives = normalizeArchiveLibrary([...pendingLegacy, ...cloudArchives]);
+}
+
+async function updateArchiveDetails(archiveId, { title, archivedFor }) {
+  const current = appState.archives.find((archive) => archive.id === archiveId);
+  if (!current || uiState.archiveBusy) return;
+  const nextTitle = String(title || "").trim().slice(0, 100);
+  const nextDate = normalizeArchiveDate(archivedFor, current.createdAt);
+  if (!nextTitle) {
+    uiState.archiveStatus = "Enter a version name.";
+    renderArchiveDialog();
+    return;
+  }
+  const next = { ...current, title: nextTitle, archivedFor: nextDate, updatedAt: Date.now() };
+  uiState.archiveBusy = true;
+  uiState.archiveStatus = "Saving...";
+  renderArchiveDialog();
+  try {
+    const { data, error } = await authState.client
+      .from(CLOUD_ARCHIVE_TABLE)
+      .update({
+        title: next.title,
+        archived_for: next.archivedFor,
+        updated_at: new Date(next.updatedAt).toISOString()
+      })
+      .eq("user_id", authState.user.id)
+      .eq("id", archiveId)
+      .is("deleted_at", null)
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new Error("This archived version was deleted on another device.");
+    appState.archives = appState.archives.map((archive) => archive.id === archiveId ? next : archive);
+    uiState.archiveBusy = false;
+    uiState.archiveDialog = null;
+    uiState.archiveStatus = "Version details saved.";
+    saveState({ skipCloud: true, markDirty: false, skipRecovery: true });
+    render();
+  } catch (error) {
+    uiState.archiveBusy = false;
+    uiState.archiveStatus = formatSupabaseError(error, "Could not update this archive.");
+    renderArchiveDialog();
+  }
+}
+
+async function deleteArchiveRecord(archiveId) {
+  const archive = appState.archives.find((entry) => entry.id === archiveId);
+  if (!archive || uiState.archiveBusy) return;
+  if (!window.confirm(`Delete “${archive.title}” from ArchivedPad?`)) return;
+  uiState.archiveBusy = true;
+  try {
+    const { error } = await authState.client
+      .from(CLOUD_ARCHIVE_TABLE)
+      .update({ snapshot: {}, deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq("user_id", authState.user.id)
+      .eq("id", archive.id);
+    if (error) throw error;
+    appState.archives = appState.archives.filter((entry) => entry.id !== archive.id);
+    if (uiState.inspectedArchiveId === archive.id) {
+      uiState.inspectedArchiveId = "";
+      uiState.archiveSelectedWardId = "";
+      uiState.archiveSelectedNoteId = "";
+      updateArchiveUrl("");
+    }
+    uiState.archiveBusy = false;
+    uiState.archiveStatus = "Archived version deleted.";
+    saveState({ skipCloud: true, markDirty: false, skipRecovery: true });
+    render();
+  } catch (error) {
+    uiState.archiveBusy = false;
+    uiState.archiveStatus = formatSupabaseError(error, "Could not delete this archive.");
+    render();
+  }
+}
+
+async function retrieveArchiveToWorkspace(archiveId, destinationKey) {
+  const archive = appState.archives.find((entry) => entry.id === archiveId);
+  if (!archive || !WORKSPACE_KEYS.includes(destinationKey) || uiState.archiveBusy) return;
+  const destination = appState.workspaces[destinationKey];
+  const destinationTitle = WORKSPACE_META[destinationKey].title;
+  uiState.archiveBusy = true;
+  uiState.archiveStatus = `Protecting the current ${destinationTitle}...`;
+  renderArchiveDialog();
+
+  try {
+    const safetyArchive = createArchiveRecord(
+      destinationKey,
+      `${destinationTitle} before retrieving · ${formatArchiveDisplayDate(formatArchiveDateInput())}`,
+      destination
+    );
+    await persistArchiveRecord(safetyArchive);
+    appState.archives = normalizeArchiveLibrary([safetyArchive, ...appState.archives]);
+
+    const restored = normalizeWorkspaceState({
+      ...cloneJson(archive.snapshot),
+      recoveryHistory: destination.recoveryHistory,
+      shiftArchives: []
+    }, { blankFallback: true, preserveAllWards: true });
+    await replaceCloudWorkspace(destinationKey, restored);
+    appState.workspaces[destinationKey] = restored;
+    appState.activeWorkspace = destinationKey;
+    state = appState.workspaces[destinationKey];
+    uiState.archiveBusy = false;
+    uiState.archiveDialog = null;
+    uiState.archiveOpen = false;
+    uiState.inspectedArchiveId = "";
+    resetEditorUiForWorkspaceSwitch();
+    updateWorkspaceUrl(destinationKey);
+    updateArchiveUrl("");
+    saveState({ skipCloud: true, markDirty: false, skipRecovery: true });
+    flushLocalStateSave();
+    setAuthMessage(`${archive.title} retrieved into ${destinationTitle}.`);
+    render();
+  } catch (error) {
+    uiState.archiveBusy = false;
+    uiState.archiveStatus = formatSupabaseError(error, "Retrieve was cancelled. The destination was not changed.");
+    renderArchiveDialog();
+  }
 }
 
 function restoreRecoverySnapshot(historyId) {
@@ -6246,12 +7132,14 @@ function getReminderEditorText(entry) {
   return entry.text || entry.visibleText || "";
 }
 
-function getScopedWards(scope) {
-  return scope === "active" ? state.wards.filter((ward) => ward.id === state.selectedWardId) : state.wards;
+function getScopedWards(scope, targetState = state) {
+  return scope === "active"
+    ? targetState.wards.filter((ward) => ward.id === targetState.selectedWardId)
+    : targetState.wards;
 }
 
-function buildSummaryGroups(scope) {
-  const wards = getScopedWards(scope);
+function buildSummaryGroups(scope, targetState = state) {
+  const wards = getScopedWards(scope, targetState);
   const timed = [];
   const todo = [];
   const bedMap = new Map();
@@ -6505,8 +7393,9 @@ function createBlankState() {
 
 function createBlankAppState() {
   return {
-    version: 3,
+    version: 4,
     activeWorkspace: "shift",
+    archives: [],
     workspaces: {
       shift: createBlankState(),
       day: createBlankState()
@@ -6523,6 +7412,8 @@ function applyUrlOverrides() {
   const requestedView = params.get("view");
   const requestedWorkspace = params.get("workspace");
 
+  uiState.archiveOpen = requestedWorkspace === "archive";
+  uiState.inspectedArchiveId = uiState.archiveOpen ? String(params.get("archive") || "") : "";
   if (WORKSPACE_KEYS.includes(requestedWorkspace)) {
     appState.activeWorkspace = requestedWorkspace;
     state = getActiveWorkspaceState(appState);
@@ -6535,22 +7426,31 @@ function applyUrlOverrides() {
 
 function normalizeAppState(input) {
   if (input?.workspaces && typeof input.workspaces === "object") {
+    const workspaces = {
+      shift: normalizeWorkspaceState(input.workspaces.shift, { blankFallback: true }),
+      day: normalizeWorkspaceState(input.workspaces.day, { blankFallback: true })
+    };
+    const legacyArchives = collectLegacyWorkspaceArchives(workspaces);
+    workspaces.shift.shiftArchives = [];
+    workspaces.day.shiftArchives = [];
     return {
-      version: 3,
+      version: 4,
       activeWorkspace: WORKSPACE_KEYS.includes(input.activeWorkspace) ? input.activeWorkspace : "shift",
-      workspaces: {
-        shift: normalizeWorkspaceState(input.workspaces.shift, { blankFallback: true }),
-        day: normalizeWorkspaceState(input.workspaces.day, { blankFallback: true })
-      }
+      archives: normalizeArchiveLibrary([...(Array.isArray(input.archives) ? input.archives : []), ...legacyArchives]),
+      workspaces
     };
   }
 
   if (input && typeof input === "object" && Array.isArray(input.wards) && input.wards.length) {
+    const shiftWorkspace = normalizeWorkspaceState(input);
+    const legacyArchives = collectLegacyWorkspaceArchives({ shift: shiftWorkspace, day: null });
+    shiftWorkspace.shiftArchives = [];
     return {
-      version: 3,
+      version: 4,
       activeWorkspace: "shift",
+      archives: normalizeArchiveLibrary(legacyArchives),
       workspaces: {
-        shift: normalizeWorkspaceState(input),
+        shift: shiftWorkspace,
         day: createBlankState()
       }
     };
@@ -6559,7 +7459,7 @@ function normalizeAppState(input) {
   return createBlankAppState();
 }
 
-function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
+function normalizeWorkspaceState(input, { blankFallback = false, preserveAllWards = false } = {}) {
   if (!input || typeof input !== "object" || !Array.isArray(input.wards) || !input.wards.length) {
     return createBlankState();
   }
@@ -6603,7 +7503,7 @@ function normalizeWorkspaceState(input, { blankFallback = false } = {}) {
       updatedAt: Number(ward.updatedAt) || 0,
       notes
     };
-  }).filter((ward) => !isBuiltInDemoWard(ward));
+  }).filter((ward) => preserveAllWards || !isBuiltInDemoWard(ward));
 
   if (!wards.length) {
     const blank = createBlankState();
@@ -6681,6 +7581,101 @@ function normalizeShiftArchives(input) {
     .slice(0, SHIFT_ARCHIVE_LIMIT);
 }
 
+function collectLegacyWorkspaceArchives(workspaces) {
+  return WORKSPACE_KEYS.flatMap((sourceWorkspace) => {
+    const workspace = workspaces?.[sourceWorkspace];
+    if (!workspace || !Array.isArray(workspace.shiftArchives)) return [];
+    return workspace.shiftArchives.map((entry) => ({
+      id: entry.id,
+      sourceWorkspace,
+      title: entry.label,
+      archivedFor: formatArchiveDateInput(entry.createdAt),
+      createdAt: entry.createdAt,
+      updatedAt: entry.createdAt,
+      schemaVersion: 1,
+      snapshot: entry
+    }));
+  });
+}
+
+function normalizeArchiveLibrary(input) {
+  if (!Array.isArray(input)) return [];
+  const archives = new Map();
+  input.forEach((entry) => {
+    const normalized = normalizeArchiveRecord(entry);
+    if (!normalized) return;
+    const existing = archives.get(normalized.id);
+    if (!existing || normalized.updatedAt >= existing.updatedAt) {
+      archives.set(normalized.id, normalized);
+    }
+  });
+  return [...archives.values()].sort((left, right) => right.createdAt - left.createdAt);
+}
+
+function normalizeArchiveRecord(input) {
+  if (!input || typeof input !== "object") return null;
+  const rawSnapshot = input.snapshot && typeof input.snapshot === "object" ? input.snapshot : input;
+  if (!Array.isArray(rawSnapshot.wards) || !rawSnapshot.wards.length) return null;
+  const sourceWorkspace = WORKSPACE_KEYS.includes(input.sourceWorkspace)
+    ? input.sourceWorkspace
+    : WORKSPACE_KEYS.includes(input.source_workspace) ? input.source_workspace : "shift";
+  const createdAt = parseArchiveTimestamp(input.createdAt ?? input.created_at);
+  const updatedAt = parseArchiveTimestamp(input.updatedAt ?? input.updated_at ?? createdAt);
+  const snapshotState = normalizeWorkspaceState(rawSnapshot, { blankFallback: true, preserveAllWards: true });
+  snapshotState.shiftArchives = [];
+  snapshotState.recoveryHistory = [];
+  return {
+    id: typeof input.id === "string" && input.id ? input.id : createId("archive"),
+    sourceWorkspace,
+    title: String(input.title || input.label || `Archived ${WORKSPACE_META[sourceWorkspace].title}`).slice(0, 100),
+    archivedFor: normalizeArchiveDate(input.archivedFor || input.archived_for, createdAt),
+    createdAt,
+    updatedAt,
+    schemaVersion: Math.max(1, Number(input.schemaVersion || input.schema_version) || 1),
+    stats: normalizeArchiveStats(input.stats, snapshotState),
+    snapshot: {
+      activeView: snapshotState.activeView,
+      selectedWardId: snapshotState.selectedWardId,
+      selectedNoteId: snapshotState.selectedNoteId,
+      timelineScope: snapshotState.timelineScope,
+      summaryTab: snapshotState.summaryTab,
+      preferences: cloneJson(snapshotState.preferences),
+      wards: cloneJson(snapshotState.wards)
+    }
+  };
+}
+
+function parseArchiveTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function normalizeArchiveDate(value, fallbackTimestamp = Date.now()) {
+  const date = String(value || "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : formatArchiveDateInput(fallbackTimestamp);
+}
+
+function formatArchiveDateInput(value = Date.now()) {
+  const date = new Date(Number(value) || value || Date.now());
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeArchiveStats(input, snapshot) {
+  const wards = Array.isArray(snapshot?.wards) ? snapshot.wards : [];
+  const computed = getArchiveSnapshotStats(snapshot);
+  return {
+    wardCount: Math.max(0, Number(input?.wardCount ?? input?.ward_count) || computed.wardCount),
+    bedCount: Math.max(0, Number(input?.bedCount ?? input?.bed_count) || computed.bedCount),
+    reminderCount: Math.max(0, Number(input?.reminderCount ?? input?.reminder_count) || computed.reminderCount),
+    todoCount: Math.max(0, Number(input?.todoCount ?? input?.todo_count) || computed.todoCount),
+    noteCount: Math.max(0, Number(input?.noteCount ?? input?.note_count) || wards.reduce((count, ward) => count + (ward.notes?.length || 0), 0))
+  };
+}
+
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -6705,13 +7700,14 @@ function setActiveWorkspaceState(nextState) {
 }
 
 function getActiveWorkspaceMeta() {
-  return WORKSPACE_META[getActiveWorkspaceKey()] || WORKSPACE_META.shift;
+  return WORKSPACE_META[getPadMode()] || WORKSPACE_META.shift;
 }
 
 function renderWorkspaceIdentity() {
-  const currentKey = getActiveWorkspaceKey();
+  const currentKey = getPadMode();
   const current = WORKSPACE_META[currentKey];
-  const nextKey = currentKey === "shift" ? "day" : "shift";
+  const currentIndex = PAD_MODE_KEYS.indexOf(currentKey);
+  const nextKey = PAD_MODE_KEYS[(currentIndex + 1) % PAD_MODE_KEYS.length];
   const next = WORKSPACE_META[nextKey];
   document.body.dataset.workspace = currentKey;
   document.title = `${current.title} - Ward Notes`;
@@ -6724,20 +7720,49 @@ function renderWorkspaceIdentity() {
 }
 
 function switchWorkspace(targetKey = "") {
-  const currentKey = getActiveWorkspaceKey();
-  const nextKey = WORKSPACE_KEYS.includes(targetKey) ? targetKey : currentKey === "shift" ? "day" : "shift";
+  const currentKey = getPadMode();
+  const currentIndex = PAD_MODE_KEYS.indexOf(currentKey);
+  const nextKey = PAD_MODE_KEYS.includes(targetKey)
+    ? targetKey
+    : PAD_MODE_KEYS[(currentIndex + 1) % PAD_MODE_KEYS.length];
   if (nextKey === currentKey) return;
 
-  syncEditorDocument();
-  appState.activeWorkspace = nextKey;
-  state = getActiveWorkspaceState(appState);
+  if (!isArchivedPadMode()) syncEditorDocument();
+  uiState.archiveOpen = nextKey === "archive";
+  if (WORKSPACE_KEYS.includes(nextKey)) {
+    appState.activeWorkspace = nextKey;
+    state = getActiveWorkspaceState(appState);
+    uiState.inspectedArchiveId = "";
+    uiState.archiveSelectedWardId = "";
+    uiState.archiveSelectedNoteId = "";
+  }
   updateWorkspaceUrl(nextKey);
-  ensureSelection();
+  if (nextKey !== "archive") updateArchiveUrl("");
+  if (!uiState.archiveOpen) ensureSelection();
   resetEditorUiForWorkspaceSwitch();
-  saveState();
+  saveState({ skipCloud: uiState.archiveOpen, markDirty: !uiState.archiveOpen });
   render();
+  if (uiState.archiveOpen && authState.client && authState.user) {
+    hydrateArchiveLibrary()
+      .then(() => {
+        saveState({ skipCloud: true, markDirty: false, skipRecovery: true });
+        render();
+      })
+      .catch((error) => {
+        uiState.archiveStatus = formatSupabaseError(error, "ArchivedPad could not refresh.");
+        render();
+      });
+  }
   refs.workspaceSwitcher?.classList.add("is-switching");
   window.setTimeout(() => refs.workspaceSwitcher?.classList.remove("is-switching"), 220);
+}
+
+function getPadMode() {
+  return uiState.archiveOpen ? "archive" : getActiveWorkspaceKey();
+}
+
+function isArchivedPadMode() {
+  return getPadMode() === "archive";
 }
 
 function resetEditorUiForWorkspaceSwitch() {
@@ -7635,7 +8660,7 @@ async function saveCloudStateNow({ conflictRetry = false } = {}) {
   const updatedAt = new Date().toISOString();
   const payload = {
     user_id: authState.user.id,
-    state_json: appState,
+    state_json: serializeAppStateForCloud(appState),
     updated_at: updatedAt
   };
 
@@ -7683,6 +8708,18 @@ async function saveCloudStateNow({ conflictRetry = false } = {}) {
   applyPendingRemoteStateIfReady();
   setAuthMessage("");
   renderAuthUi();
+}
+
+function serializeAppStateForCloud(input) {
+  const payload = cloneJson(input);
+  payload.version = 4;
+  delete payload.archives;
+  WORKSPACE_KEYS.forEach((workspaceKey) => {
+    if (payload.workspaces?.[workspaceKey]) {
+      payload.workspaces[workspaceKey].shiftArchives = [];
+    }
+  });
+  return payload;
 }
 
 function isCloudVersionConflictError(error) {

@@ -194,3 +194,95 @@ $$;
 
 grant select, insert, update, delete on table public.shiftpad_editor_debug_logs to authenticated, service_role;
 grant usage, select on sequence public.shiftpad_editor_debug_logs_id_seq to authenticated, service_role;
+
+create table if not exists public.shiftpad_archives (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  source_workspace text not null check (source_workspace in ('shift', 'day')),
+  title text not null,
+  archived_for date not null,
+  snapshot jsonb not null,
+  stats jsonb not null default '{}'::jsonb,
+  schema_version integer not null default 1,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  deleted_at timestamptz,
+  primary key (user_id, id)
+);
+
+create index if not exists shiftpad_archives_user_created_idx
+on public.shiftpad_archives (user_id, created_at desc);
+
+alter table public.shiftpad_archives enable row level security;
+
+drop policy if exists "shiftpad_archives_select_own" on public.shiftpad_archives;
+create policy "shiftpad_archives_select_own"
+on public.shiftpad_archives
+for select
+to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_archives_insert_own" on public.shiftpad_archives;
+create policy "shiftpad_archives_insert_own"
+on public.shiftpad_archives
+for insert
+to authenticated
+with check ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_archives_update_own" on public.shiftpad_archives;
+create policy "shiftpad_archives_update_own"
+on public.shiftpad_archives
+for update
+to authenticated
+using ((select auth.uid()) = user_id)
+with check ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_archives_delete_own" on public.shiftpad_archives;
+create policy "shiftpad_archives_delete_own"
+on public.shiftpad_archives
+for delete
+to authenticated
+using ((select auth.uid()) = user_id);
+
+grant select, insert, update, delete on table public.shiftpad_archives to authenticated, service_role;
+
+insert into public.shiftpad_archives (
+  user_id,
+  id,
+  source_workspace,
+  title,
+  archived_for,
+  snapshot,
+  stats,
+  schema_version,
+  created_at,
+  updated_at
+)
+select
+  user_state.user_id,
+  coalesce(
+    nullif(archive_entry ->> 'id', ''),
+    'legacy-' || md5(user_state.user_id::text || ':' || workspace.source_workspace || ':' || archive_entry::text)
+  ),
+  workspace.source_workspace,
+  coalesce(nullif(archive_entry ->> 'label', ''), 'Archived ' || initcap(workspace.source_workspace) || 'Pad'),
+  (to_timestamp(coalesce((archive_entry ->> 'createdAt')::double precision, extract(epoch from now()) * 1000) / 1000) at time zone 'Asia/Bangkok')::date,
+  archive_entry,
+  jsonb_build_object(
+    'wardCount', jsonb_array_length(coalesce(archive_entry -> 'wards', '[]'::jsonb))
+  ),
+  1,
+  to_timestamp(coalesce((archive_entry ->> 'createdAt')::double precision, extract(epoch from now()) * 1000) / 1000),
+  timezone('utc', now())
+from public.shiftpad_user_state as user_state
+cross join lateral (
+  values
+    ('shift'::text, coalesce(user_state.state_json #> '{workspaces,shift,shiftArchives}', '[]'::jsonb)),
+    ('day'::text, coalesce(user_state.state_json #> '{workspaces,day,shiftArchives}', '[]'::jsonb))
+) as workspace(source_workspace, archives)
+cross join lateral jsonb_array_elements(
+  case when jsonb_typeof(workspace.archives) = 'array' then workspace.archives else '[]'::jsonb end
+) as archive_entry
+where jsonb_typeof(archive_entry -> 'wards') = 'array'
+  and jsonb_array_length(archive_entry -> 'wards') > 0
+on conflict (user_id, id) do nothing;
