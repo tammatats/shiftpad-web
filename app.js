@@ -36,7 +36,7 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-08-01-archived-pad-v2";
+const APP_BUILD = "2026-08-01-archived-pad-v3";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const PAD_MODE_KEYS = ["shift", "day", "archive"];
@@ -2302,7 +2302,8 @@ function renderWorkspaceHistory() {
   const archives = appState.archives.filter((entry) => entry.sourceWorkspace === workspaceKey);
   return `
     <div class="history-block">
-      <div class="history-block-head"><strong>Recent note versions</strong><small>${state.recoveryHistory.length}/${RECOVERY_HISTORY_LIMIT}</small></div>
+      <div class="history-block-head"><strong>Note recovery</strong><small>${state.recoveryHistory.length}/${RECOVERY_HISTORY_LIMIT}</small></div>
+      <p class="drawer-help">Automatic snapshots of individual notes protect recent edits. Complete pad versions are stored separately in ArchivedPad.</p>
       ${recoveries.length ? recoveries.map((entry) => {
         const preview = getRecoveryHistoryPreview(entry.documentHtml);
         return `
@@ -7734,8 +7735,7 @@ function getActiveWorkspaceMeta() {
 function renderWorkspaceIdentity() {
   const currentKey = getPadMode();
   const current = WORKSPACE_META[currentKey];
-  const currentIndex = PAD_MODE_KEYS.indexOf(currentKey);
-  const nextKey = PAD_MODE_KEYS[(currentIndex + 1) % PAD_MODE_KEYS.length];
+  const nextKey = getNextTitleWorkspaceKey(currentKey);
   const next = WORKSPACE_META[nextKey];
   document.body.dataset.workspace = currentKey;
   document.title = `${current.title} - Ward Notes`;
@@ -7749,10 +7749,9 @@ function renderWorkspaceIdentity() {
 
 function switchWorkspace(targetKey = "") {
   const currentKey = getPadMode();
-  const currentIndex = PAD_MODE_KEYS.indexOf(currentKey);
   const nextKey = PAD_MODE_KEYS.includes(targetKey)
     ? targetKey
-    : PAD_MODE_KEYS[(currentIndex + 1) % PAD_MODE_KEYS.length];
+    : getNextTitleWorkspaceKey(currentKey);
   if (nextKey === currentKey) return;
 
   if (!isArchivedPadMode()) syncEditorDocument();
@@ -7783,6 +7782,11 @@ function switchWorkspace(targetKey = "") {
   }
   refs.workspaceSwitcher?.classList.add("is-switching");
   window.setTimeout(() => refs.workspaceSwitcher?.classList.remove("is-switching"), 220);
+}
+
+function getNextTitleWorkspaceKey(currentKey) {
+  if (currentKey === "archive") return "shift";
+  return currentKey === "shift" ? "day" : "shift";
 }
 
 function getPadMode() {
