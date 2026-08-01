@@ -36,7 +36,7 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-08-01-archived-pad-v1";
+const APP_BUILD = "2026-08-01-archived-pad-v2";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const PAD_MODE_KEYS = ["shift", "day", "archive"];
@@ -6296,7 +6296,8 @@ async function resetAllNotes() {
   setAuthMessage(`Saving ${workspaceName} archive...`);
   try {
     await persistArchiveRecord(archive);
-    await replaceCloudWorkspace(workspaceKey, nextState);
+    const cloudState = await replaceCloudWorkspace(workspaceKey, nextState);
+    rebaseUntouchedWorkspaces(workspaceKey, cloudState);
   } catch (error) {
     uiState.archiveBusy = false;
     setAuthMessage(formatSupabaseError(error, "Archive failed. The pad was not reset."));
@@ -6523,10 +6524,20 @@ async function replaceCloudWorkspace(workspaceKey, nextWorkspace, maxAttempts = 
       rememberCloudVersion(saved.updated_at);
       authState.pendingRemoteRecord = null;
       authState.pendingDoneToggles.clear();
-      return;
+      return cloudState;
     }
   }
   throw new Error("The pad changed on another device. Please try again.");
+}
+
+function rebaseUntouchedWorkspaces(replacedWorkspaceKey, cloudState) {
+  WORKSPACE_KEYS.forEach((workspaceKey) => {
+    if (workspaceKey === replacedWorkspaceKey || !cloudState?.workspaces?.[workspaceKey]) return;
+    appState.workspaces[workspaceKey] = normalizeWorkspaceState(
+      cloneJson(cloudState.workspaces[workspaceKey]),
+      { blankFallback: true }
+    );
+  });
 }
 
 async function hydrateArchiveLibrary() {
@@ -6644,7 +6655,8 @@ async function retrieveArchiveToWorkspace(archiveId, destinationKey) {
       recoveryHistory: destination.recoveryHistory,
       shiftArchives: []
     }, { blankFallback: true, preserveAllWards: true });
-    await replaceCloudWorkspace(destinationKey, restored);
+    const cloudState = await replaceCloudWorkspace(destinationKey, restored);
+    rebaseUntouchedWorkspaces(destinationKey, cloudState);
     appState.workspaces[destinationKey] = restored;
     appState.activeWorkspace = destinationKey;
     state = appState.workspaces[destinationKey];
@@ -7566,7 +7578,7 @@ function normalizeShiftArchives(input) {
   return input
     .filter((entry) => entry && Array.isArray(entry.wards) && entry.wards.length)
     .map((entry) => ({
-      id: typeof entry.id === "string" ? entry.id : createId("archive"),
+      id: typeof entry.id === "string" ? entry.id : "",
       createdAt: Number(entry.createdAt) || Date.now(),
       label: typeof entry.label === "string" ? entry.label.slice(0, 100) : "Archived shift",
       activeView: entry.activeView === "timeline" ? "timeline" : "notes",
@@ -7586,7 +7598,7 @@ function collectLegacyWorkspaceArchives(workspaces) {
     const workspace = workspaces?.[sourceWorkspace];
     if (!workspace || !Array.isArray(workspace.shiftArchives)) return [];
     return workspace.shiftArchives.map((entry) => ({
-      id: entry.id,
+      id: entry.id || createLegacyArchiveId(sourceWorkspace, entry),
       sourceWorkspace,
       title: entry.label,
       archivedFor: formatArchiveDateInput(entry.createdAt),
@@ -7625,7 +7637,13 @@ function normalizeArchiveRecord(input) {
   snapshotState.shiftArchives = [];
   snapshotState.recoveryHistory = [];
   return {
-    id: typeof input.id === "string" && input.id ? input.id : createId("archive"),
+    id: typeof input.id === "string" && input.id
+      ? input.id
+      : createLegacyArchiveId(sourceWorkspace, {
+          createdAt,
+          label: input.title || input.label,
+          wards: snapshotState.wards
+        }),
     sourceWorkspace,
     title: String(input.title || input.label || `Archived ${WORKSPACE_META[sourceWorkspace].title}`).slice(0, 100),
     archivedFor: normalizeArchiveDate(input.archivedFor || input.archived_for, createdAt),
@@ -7643,6 +7661,16 @@ function normalizeArchiveRecord(input) {
       wards: cloneJson(snapshotState.wards)
     }
   };
+}
+
+function createLegacyArchiveId(sourceWorkspace, archive) {
+  const createdAt = Math.max(0, Math.trunc(Number(archive?.createdAt) || 0));
+  const label = String(archive?.label || "archive")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, 24) || "archive";
+  const wardCount = Array.isArray(archive?.wards) ? archive.wards.length : 0;
+  return `legacy-${sourceWorkspace}-${createdAt}-${label}-${wardCount}`;
 }
 
 function parseArchiveTimestamp(value) {

@@ -262,7 +262,16 @@ select
   user_state.user_id,
   coalesce(
     nullif(archive_entry ->> 'id', ''),
-    'legacy-' || md5(user_state.user_id::text || ':' || workspace.source_workspace || ':' || archive_entry::text)
+    'legacy-' || workspace.source_workspace || '-' ||
+    case
+      when coalesce(archive_entry ->> 'createdAt', '') ~ '^[0-9]+(\.[0-9]+)?$'
+        then floor((archive_entry ->> 'createdAt')::double precision)::bigint::text
+      else '0'
+    end || '-' ||
+    coalesce(
+      nullif(left(regexp_replace(lower(coalesce(archive_entry ->> 'label', 'archive')), '[^a-z0-9]+', '', 'g'), 24), ''),
+      'archive'
+    ) || '-' || jsonb_array_length(archive_entry -> 'wards')::text
   ),
   workspace.source_workspace,
   coalesce(nullif(archive_entry ->> 'label', ''), 'Archived ' || initcap(workspace.source_workspace) || 'Pad'),
