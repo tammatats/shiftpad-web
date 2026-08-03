@@ -36,7 +36,7 @@ const NOTE_DOCUMENT_MODEL_SYNC_DELAY_MS = 120;
 const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
-const APP_BUILD = "2026-08-01-archived-pad-v3";
+const APP_BUILD = "2026-08-03-stale-editor-write-guard";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const PAD_MODE_KEYS = ["shift", "day", "archive"];
@@ -977,6 +977,7 @@ function bindEvents() {
     if (!editor) return;
     const note = getCurrentNote();
     if (!note) return;
+    if (!canCommitEditorToCurrentNote(editor, "input")) return;
     clearEditorTapScrollForInput();
     syncEditorEmptyState(editor);
 
@@ -1014,6 +1015,7 @@ function bindEvents() {
       return;
     }
     setNoteDocumentHtml(note, nextHtml, { deferModel: true });
+    markEditorCommittedToNote(editor, note);
     rememberEditorSelection(editor);
     saveState();
     refreshWardDrawerMetricsIfOpen();
@@ -1028,6 +1030,7 @@ function bindEvents() {
     if (!editor) return;
     const note = getCurrentNote();
     if (!note) return;
+    if (!canCommitEditorToCurrentNote(editor, "blur")) return;
 
     ensureEditorLineIdentities(editor, note.id);
     const nextHtml = sanitizeEditorHtml(editor.innerHTML);
@@ -1036,6 +1039,7 @@ function bindEvents() {
       return;
     }
     setNoteDocumentHtml(note, nextHtml);
+    markEditorCommittedToNote(editor, note);
     rememberEditorSelection(editor);
     saveState();
   }, true);
@@ -1045,6 +1049,7 @@ function bindEvents() {
     if (!editor) return;
     const note = getCurrentNote();
     if (!note) return;
+    if (!canCommitEditorToCurrentNote(editor, "keyup")) return;
 
     if (event.key === "Backspace" || event.key === "Delete") {
       repairCaretAtEditorLineBoundary(editor);
@@ -1056,6 +1061,7 @@ function bindEvents() {
       return;
     }
     setNoteDocumentHtml(note, nextHtml);
+    markEditorCommittedToNote(editor, note);
     rememberEditorSelection(editor);
     saveState();
   });
@@ -1065,6 +1071,7 @@ function bindEvents() {
     if (editor) {
       const note = getCurrentNote();
       if (!note) return;
+      if (!canCommitEditorToCurrentNote(editor, "click")) return;
 
       ensureEditorLineIdentities(editor, note.id);
       const nextHtml = sanitizeEditorHtml(editor.innerHTML);
@@ -1073,6 +1080,7 @@ function bindEvents() {
         return;
       }
       setNoteDocumentHtml(note, nextHtml);
+      markEditorCommittedToNote(editor, note);
       rememberEditorSelection(editor);
       saveState();
     }
@@ -1114,7 +1122,9 @@ function bindEvents() {
       copyHnNumber(hnToken);
       return;
     }
-    if (getEditorFromEventTarget(event.target)) {
+    const editor = getEditorFromEventTarget(event.target);
+    if (editor) {
+      if (!canCommitEditorToCurrentNote(editor, "keydown")) return;
       restoreEditorSelectionAfterScreenSwitch("keydown");
       hideBedIndex();
       handleNotepadKeydown(event);
@@ -1124,6 +1134,10 @@ function bindEvents() {
   refs.editorRoot.addEventListener("beforeinput", (event) => {
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
+    if (!canCommitEditorToCurrentNote(editor, "beforeinput")) {
+      event.preventDefault();
+      return;
+    }
     restoreEditorSelectionAfterScreenSwitch("beforeinput");
     if (handleNotepadBeforeInput(event)) {
       event.preventDefault();
@@ -2670,6 +2684,10 @@ function renderEditor() {
             spellcheck="true"
             aria-label="Main notepad"
             autocapitalize="sentences"
+            data-workspace-key="${escapeAttribute(getActiveWorkspaceKey())}"
+            data-ward-id="${escapeAttribute(ward.id)}"
+            data-note-id="${escapeAttribute(note.id)}"
+            data-note-version="${escapeAttribute(String(getNoteUpdatedAt(note)))}"
             data-placeholder="Tap to start this ward note"
           >${documentHtml}</div>
           ${renderBedIndexRail(bedIndex)}
@@ -3127,6 +3145,7 @@ function sortCurrentWardBedSections() {
   const note = getCurrentNote();
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!note || !editor) return;
+  if (!canCommitEditorToCurrentNote(editor, "sort-beds")) return;
 
   normalizeEditorBlocks(editor);
   const lines = Array.from(editor.children).filter((line) => ["DIV", "P"].includes(line.tagName));
@@ -3188,6 +3207,7 @@ function sortCurrentWardBedSections() {
   if (nextHtml === previousHtml) return;
 
   setNoteDocumentHtml(note, nextHtml);
+  markEditorCommittedToNote(editor, note);
   saveState();
   applyEditorCompletionClasses(editor);
   refreshEditorBedIndex(note);
@@ -3540,10 +3560,12 @@ async function hydrateStateFromCloud({ authEvent = "UNKNOWN" } = {}) {
 
   if (data?.state_json) {
     needsCloudWorkspaceMigration = !data.state_json.workspaces;
+    invalidateLiveEditorBinding("cloud-hydration");
     const hydrated = mergeHydratedCloudState(data.state_json, fallback);
     appState = hydrated.state;
     preservedEntities = hydrated.preservedEntities;
     state = getActiveWorkspaceState(appState);
+    resetRecoveryTrackingAfterCloudApply();
     rememberCloudVersion(data.updated_at);
   } else {
     appState = normalizeAppState(fallback);
@@ -3738,8 +3760,10 @@ function applyRemoteCloudState(record, { force = false } = {}) {
     });
   }
 
+  invalidateLiveEditorBinding("cloud-live-sync");
   appState = remoteState;
   state = getActiveWorkspaceState(appState);
+  resetRecoveryTrackingAfterCloudApply();
   rememberCloudVersion(record.updated_at || new Date(remoteUpdatedAt).toISOString());
   authState.lastRemoteAppliedAt = Date.now();
   authState.suppressCloudSave = true;
@@ -4478,6 +4502,7 @@ function handleQuickTag(tag) {
   if (!note) return;
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!editor) return;
+  if (!canCommitEditorToCurrentNote(editor, "quick-tag")) return;
   const debugEntry = beginEditorDebugAction(editor, {
     action: "tag-insert",
     source: "quick-tag",
@@ -4491,6 +4516,7 @@ function handleQuickTag(tag) {
 
   ensureEditorLineIdentities(editor, note.id);
   setNoteDocumentHtml(note, editor.innerHTML);
+  markEditorCommittedToNote(editor, note);
   saveState();
   updateSortBedsButtonFromEditor(editor);
   rememberEditorSelection(editor);
@@ -5444,6 +5470,8 @@ function toggleTaggedLineDone(noteId, tokenId, done, reminderKey = "") {
 
 function toggleTodoTokenInEditor(token) {
   if (!token) return;
+  const editor = token.closest?.("#notepad-editor");
+  if (!canCommitEditorToCurrentNote(editor, "todo-toggle")) return;
   const note = getCurrentNote();
   const tokenId = token.dataset.tokenId || "";
   const done = token.dataset.done !== "true";
@@ -6682,6 +6710,7 @@ async function retrieveArchiveToWorkspace(archiveId, destinationKey) {
 function restoreRecoverySnapshot(historyId) {
   const snapshot = state.recoveryHistory.find((entry) => entry.id === historyId);
   if (!snapshot || !window.confirm(`Restore the ${formatHistoryTimestamp(snapshot.createdAt)} version?`)) return;
+  let beforeRestore = null;
   let ward = state.wards.find((entry) => entry.id === snapshot.wardId);
   if (!ward) {
     ward = createWard(snapshot.wardName || "Recovered ward", snapshot.wardColor || WARD_COLORS[state.wards.length % WARD_COLORS.length]);
@@ -6695,6 +6724,7 @@ function restoreRecoverySnapshot(historyId) {
     note.createdAt = snapshot.noteCreatedAt || note.createdAt;
     ward.notes.push(note);
   } else {
+    beforeRestore = captureNoteDebugSnapshot(note);
     addRecoverySnapshot({ note, ward, documentHtml: note.documentHtml, reason: "Before restore" });
   }
   setNoteDocumentHtml(note, snapshot.documentHtml);
@@ -6702,6 +6732,17 @@ function restoreRecoverySnapshot(historyId) {
   state.selectedNoteId = note.id;
   state.activeView = "notes";
   uiState.recoveryBaselines.set(note.id, { html: note.documentHtml, updatedAt: note.updatedAt });
+  appendEditorDebugLog({
+    action: "recovery-version-restored",
+    source: "history",
+    success: true,
+    handledBy: "restoreRecoverySnapshot",
+    historyId: snapshot.id,
+    historyCreatedAt: snapshot.createdAt,
+    historyReason: snapshot.reason,
+    before: beforeRestore || null,
+    after: captureNoteDebugSnapshot(note)
+  });
   saveState({ skipRecovery: true });
   closeDrawersWithAnimation();
   render();
@@ -8676,8 +8717,10 @@ async function saveCloudStateNow({ conflictRetry = false } = {}) {
       throw cloudReadError;
     }
     if (cloudRecord?.state_json && hasRecoverableCloudData(cloudRecord.state_json)) {
+      invalidateLiveEditorBinding("cloud-empty-state-recovery");
       appState = mergeRemoteStatePreservingLocalView(cloudRecord.state_json);
       state = getActiveWorkspaceState(appState);
+      resetRecoveryTrackingAfterCloudApply();
       rememberCloudVersion(cloudRecord.updated_at);
       authState.isSaving = false;
       authState.suppressCloudSave = true;
@@ -8787,8 +8830,10 @@ async function handleCloudSaveConflict({ conflictRetry = false } = {}) {
       }
 
       authState.pendingRemoteRecord = null;
+      invalidateLiveEditorBinding("cloud-conflict-merge");
       appState = mergeRemoteStatePreservingLocalView(mergedState);
       state = getActiveWorkspaceState(appState);
+      resetRecoveryTrackingAfterCloudApply();
       rememberCloudVersion(data.updated_at);
       authState.suppressCloudSave = true;
       saveState({ skipCloud: true, markDirty: false });
@@ -10730,6 +10775,80 @@ function getEditorFromEventTarget(target) {
   return element?.closest?.("#notepad-editor") || null;
 }
 
+function markEditorCommittedToNote(editor, note = getCurrentNote()) {
+  if (!editor || !note) return;
+  const ward = getCurrentWard();
+  editor.dataset.workspaceKey = getActiveWorkspaceKey();
+  editor.dataset.wardId = ward?.id || "";
+  editor.dataset.noteId = note.id || "";
+  editor.dataset.noteVersion = String(getNoteUpdatedAt(note));
+  delete editor.dataset.bindingInvalidated;
+  delete editor.dataset.staleWriteLogged;
+}
+
+function invalidateLiveEditorBinding(reason) {
+  const editor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  if (!editor) return;
+  editor.dataset.bindingInvalidated = reason || "state-replaced";
+}
+
+function resetRecoveryTrackingAfterCloudApply() {
+  uiState.recoveryBaselines.clear();
+  uiState.recoveryLastSavedAt.clear();
+}
+
+function canCommitEditorToCurrentNote(editor, source = "editor-write") {
+  const ward = getCurrentWard();
+  const note = getCurrentNote();
+  const liveEditor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  if (!editor || !ward || !note) return false;
+
+  const binding = {
+    workspaceKey: editor.dataset.workspaceKey || "",
+    wardId: editor.dataset.wardId || "",
+    noteId: editor.dataset.noteId || "",
+    noteVersion: Number(editor.dataset.noteVersion) || 0
+  };
+  const current = {
+    workspaceKey: getActiveWorkspaceKey(),
+    wardId: ward.id || "",
+    noteId: note.id || "",
+    noteVersion: getNoteUpdatedAt(note)
+  };
+  const staleReason =
+    editor.dataset.bindingInvalidated ? editor.dataset.bindingInvalidated :
+    editor !== liveEditor ? "detached-editor" :
+    binding.workspaceKey && binding.workspaceKey !== current.workspaceKey ? "workspace-changed" :
+    binding.wardId && binding.wardId !== current.wardId ? "ward-changed" :
+    binding.noteId && binding.noteId !== current.noteId ? "note-changed" :
+    binding.noteVersion && binding.noteVersion !== current.noteVersion ? "note-version-changed" :
+    "";
+  if (!staleReason) return true;
+
+  if (editor.dataset.staleWriteLogged !== "true") {
+    editor.dataset.staleWriteLogged = "true";
+    appendEditorDebugLog({
+      action: "stale-editor-write-blocked",
+      source,
+      success: true,
+      handledBy: "canCommitEditorToCurrentNote",
+      staleReason,
+      editorBinding: binding,
+      currentBinding: current,
+      before: null,
+      after: captureEditorDebugSnapshot(editor)
+    });
+  }
+
+  if (editor === liveEditor) {
+    window.setTimeout(() => {
+      const latestEditor = refs.editorRoot?.querySelector?.("#notepad-editor");
+      if (latestEditor === editor) render();
+    }, 0);
+  }
+  return false;
+}
+
 function isNodeInsideEditor(editor, node) {
   if (!editor || !node) return false;
   let current = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
@@ -10771,6 +10890,10 @@ function insertHtmlAtSelection(html) {
 function handleNotepadPaste(event) {
   const editor = getEditorFromEventTarget(event.target);
   if (!editor) return;
+  if (!canCommitEditorToCurrentNote(editor, "paste")) {
+    event.preventDefault();
+    return;
+  }
 
   const clipboard = event.clipboardData;
   const pastedHtml = clipboard?.getData("text/html") || "";
@@ -12632,6 +12755,7 @@ function syncEditorDocument() {
   const note = getCurrentNote();
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!note || !editor) return;
+  if (!canCommitEditorToCurrentNote(editor, "sync-editor-document")) return;
 
   const marker = insertSelectionMarker(editor);
   normalizeEditorBlocks(editor);
@@ -12641,6 +12765,7 @@ function syncEditorDocument() {
   const nextHtml = sanitizeEditorHtml(editor.innerHTML);
   if (nextHtml !== note.documentHtml) {
     setNoteDocumentHtml(note, nextHtml);
+    markEditorCommittedToNote(editor, note);
     saveState();
     refreshWardDrawerMetricsIfOpen();
   }
