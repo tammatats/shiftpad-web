@@ -41,7 +41,7 @@ const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
-const APP_BUILD = "2026-08-03-revisioned-note-sync";
+const APP_BUILD = "2026-08-03-caret-conflict-fix";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const PAD_MODE_KEYS = ["shift", "day", "archive"];
@@ -1029,7 +1029,7 @@ function bindEvents() {
     setNoteDocumentHtml(note, nextHtml, { deferModel: true });
     markEditorCommittedToNote(editor, note);
     rememberEditorSelection(editor);
-    saveState();
+    saveState({ skipCloud: true });
     refreshWardDrawerMetricsIfOpen();
     hideBedIndex();
     queueEditorCaretVisibilityCheck(editor, event.inputType || "input");
@@ -1053,7 +1053,7 @@ function bindEvents() {
     setNoteDocumentHtml(note, nextHtml);
     markEditorCommittedToNote(editor, note);
     rememberEditorSelection(editor);
-    saveState();
+    saveState({ skipCloud: true });
   }, true);
 
   refs.editorRoot.addEventListener("keyup", (event) => {
@@ -1075,7 +1075,7 @@ function bindEvents() {
     setNoteDocumentHtml(note, nextHtml);
     markEditorCommittedToNote(editor, note);
     rememberEditorSelection(editor);
-    saveState();
+    saveState({ skipCloud: true });
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
@@ -1094,7 +1094,7 @@ function bindEvents() {
       setNoteDocumentHtml(note, nextHtml);
       markEditorCommittedToNote(editor, note);
       rememberEditorSelection(editor);
-      saveState();
+      saveState({ skipCloud: true });
     }
   });
 
@@ -3054,7 +3054,7 @@ function renameSelectedBed(value) {
   setNoteDocumentHtml(context.note, context.root.innerHTML);
   clearSavedEditorSelection();
   uiState.bedAction = null;
-  saveState();
+  saveState({ skipCloud: true });
   render();
 }
 
@@ -3088,7 +3088,7 @@ function deleteSelectedBedSection() {
   setNoteDocumentHtml(context.note, context.root.innerHTML);
   clearSavedEditorSelection();
   uiState.bedAction = null;
-  saveState({ skipRecovery: true });
+  saveState({ skipCloud: true, skipRecovery: true });
   render();
 }
 
@@ -3129,7 +3129,7 @@ function moveBedSectionToWard(targetWardId) {
   setNoteDocumentHtml(targetNote, targetRoot.innerHTML, { updatedAt: now });
   clearSavedEditorSelection();
   uiState.bedAction = null;
-  saveState();
+  saveState({ skipCloud: true });
   render();
 }
 
@@ -3220,7 +3220,7 @@ function sortCurrentWardBedSections() {
 
   setNoteDocumentHtml(note, nextHtml);
   markEditorCommittedToNote(editor, note);
-  saveState();
+  saveState({ skipCloud: true });
   applyEditorCompletionClasses(editor);
   refreshEditorBedIndex(note);
   renderStickyWardBar();
@@ -3967,7 +3967,6 @@ async function saveNoteDocumentNow(workspaceKey, noteId) {
       note.cloudRevision = result.revision;
       note.cloudPending = getNoteDocumentHtml(note) !== snapshotHtml;
       scheduleLocalStateSave();
-      scheduleCloudSave();
       if (note.cloudPending) {
         scheduleNoteDocumentSave(location);
       } else {
@@ -5027,7 +5026,7 @@ function handleQuickTag(tag) {
   ensureEditorLineIdentities(editor, note.id);
   setNoteDocumentHtml(note, editor.innerHTML);
   markEditorCommittedToNote(editor, note);
-  saveState();
+  saveState({ skipCloud: true });
   updateSortBedsButtonFromEditor(editor);
   rememberEditorSelection(editor);
   finishEditorDebugAction(debugEntry, {
@@ -5974,7 +5973,7 @@ function toggleTaggedLineDone(noteId, tokenId, done, reminderKey = "") {
   if (!applyDoneToggleToState(state, { noteId, tokenId, done, reminderKey })) return;
 
   rememberPendingDoneToggle(noteId, tokenId, done, reminderKey);
-  saveState();
+  saveState({ skipCloud: true });
   render();
 }
 
@@ -6186,7 +6185,7 @@ function updateSummaryLineText(noteId, lineIndex, nextText, sourceLineIndex = Na
   const before = captureNoteDebugSnapshot(note);
   writeLineText(target.element, nextText);
   setNoteDocumentHtml(note, root.innerHTML);
-  saveState();
+  saveState({ skipCloud: true });
   return {
     success: true,
     noteId,
@@ -6274,7 +6273,7 @@ function updateBedGroupText(bedKey, nextText) {
     setNoteDocumentHtml(note, root.innerHTML);
   });
 
-  saveState();
+  saveState({ skipCloud: true });
 }
 
 function getEditableLineTargets(note) {
@@ -9349,6 +9348,11 @@ async function handleCloudSaveConflict({ conflictRetry = false } = {}) {
         selectedNoteId: state.selectedNoteId
       };
       const localActiveNote = getCurrentNote();
+      const liveEditor = refs.editorRoot?.querySelector?.("#notepad-editor") || null;
+      const liveEditorWasFocused = isEditorActivelyFocused();
+      const editorBeforeConflict = liveEditorWasFocused
+        ? captureEditorCaretDebugSnapshot(liveEditor)
+        : null;
       let mergedState = mergeCloudStateForSave(appState, data.state_json);
       applyKnownAuthoritativeNoteDocuments(mergedState, { preservePending: true });
       let replayedDoneToggle = false;
@@ -9366,7 +9370,6 @@ async function handleCloudSaveConflict({ conflictRetry = false } = {}) {
       }
 
       authState.pendingRemoteRecord = null;
-      invalidateLiveEditorBinding("cloud-conflict-merge");
       appState = mergeRemoteStatePreservingLocalView(mergedState);
       state = getActiveWorkspaceState(appState);
       resetRecoveryTrackingAfterCloudApply();
@@ -9385,10 +9388,27 @@ async function handleCloudSaveConflict({ conflictRetry = false } = {}) {
         mergedActiveNote &&
         mergedActiveNote.documentHtml !== localActiveNote.documentHtml &&
         getNoteUpdatedAt(mergedActiveNote) > getNoteUpdatedAt(localActiveNote);
-      if (!isEditorActivelyFocused() || activeNoteChangedToRemote) {
-        render();
-      } else {
+      const canPreserveLiveEditor = Boolean(
+        liveEditor &&
+        liveEditorWasFocused &&
+        mergedActiveNote &&
+        !activeNoteChangedToRemote
+      );
+      if (canPreserveLiveEditor) {
+        markEditorCommittedToNote(liveEditor, mergedActiveNote);
+        rememberEditorSelection(liveEditor, { force: true });
+        appendEditorDebugLog({
+          action: "cloud-conflict-editor-preserved",
+          source: "cloud-sync",
+          success: true,
+          handledBy: "handleCloudSaveConflict",
+          before: editorBeforeConflict,
+          after: captureEditorCaretDebugSnapshot(liveEditor)
+        });
         renderAuthUi();
+      } else {
+        invalidateLiveEditorBinding("cloud-conflict-merge");
+        render();
       }
 
       if (!replayedDoneToggle) {
@@ -13302,7 +13322,7 @@ function syncEditorDocument() {
   if (nextHtml !== note.documentHtml) {
     setNoteDocumentHtml(note, nextHtml);
     markEditorCommittedToNote(editor, note);
-    saveState();
+    saveState({ skipCloud: true });
     refreshWardDrawerMetricsIfOpen();
   }
   updateSortBedsButtonFromEditor(editor);
