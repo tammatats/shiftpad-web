@@ -41,7 +41,7 @@ const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
-const APP_BUILD = "2026-08-03-caret-conflict-fix";
+const APP_BUILD = "2026-08-07-archive-write-isolation";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const PAD_MODE_KEYS = ["shift", "day", "archive"];
@@ -1612,14 +1612,14 @@ function renderArchivedNote(archive, archiveState) {
           <strong>${escapeHtml(archive.title)}</strong>
         </div>
         <div class="smart-pad-surface document-pad archived-document-pad">
-          <div id="notepad-editor" class="notepad-editor archived-notepad" aria-label="Archived notepad">${getNoteDocumentHtml(note)}</div>
+          <div id="archived-notepad-view" class="notepad-editor archived-notepad" data-archived-editor="true" aria-label="Archived notepad" aria-readonly="true">${getNoteDocumentHtml(note)}</div>
           ${renderBedIndexRail(bedIndex)}
         </div>
       </section>
     </div>
   `;
   applyCustomTagColors(refs.editorRoot);
-  applyEditorCompletionClasses(refs.editorRoot.querySelector("#notepad-editor"));
+  applyEditorCompletionClasses(refs.editorRoot.querySelector("#archived-notepad-view"));
 }
 
 function renderArchivedTimeline(archive, archiveState) {
@@ -2700,6 +2700,7 @@ function renderEditor() {
             data-ward-id="${escapeAttribute(ward.id)}"
             data-note-id="${escapeAttribute(note.id)}"
             data-note-version="${escapeAttribute(String(getNoteUpdatedAt(note)))}"
+            data-live-editor="true"
             data-placeholder="Tap to start this ward note"
           >${documentHtml}</div>
           ${renderBedIndexRail(bedIndex)}
@@ -3752,13 +3753,12 @@ function getNoteDocumentKey(workspaceKey, noteId) {
 function findNoteLocation(targetAppState, workspaceKey, noteId, wardId = "") {
   const workspace = targetAppState?.workspaces?.[workspaceKey];
   if (!workspace || !Array.isArray(workspace.wards)) return null;
-  const orderedWards = wardId
-    ? [workspace.wards.find((ward) => ward.id === wardId), ...workspace.wards].filter(Boolean)
-    : workspace.wards;
-  const seen = new Set();
-  for (const ward of orderedWards) {
-    if (!ward || seen.has(ward.id)) continue;
-    seen.add(ward.id);
+  if (wardId) {
+    const ward = workspace.wards.find((entry) => entry.id === wardId);
+    const note = ward?.notes?.find?.((entry) => entry.id === noteId);
+    return ward && note ? { workspaceKey, workspace, ward, note } : null;
+  }
+  for (const ward of workspace.wards) {
     const note = ward.notes?.find?.((entry) => entry.id === noteId);
     if (note) return { workspaceKey, workspace, ward, note };
   }
@@ -9543,7 +9543,7 @@ function startBedIndexScrub(rail, event) {
   event.preventDefault();
   cancelBedLongPress();
   window.clearTimeout(uiState.bedIndexTimer);
-  const anchors = getBedIndexScrubAnchors(labels);
+  const anchors = getBedIndexScrubAnchors(labels, rail);
   const rawStartClientY = Number(event.clientY);
   const startScreenY = Number(event.screenY);
   const useTouchCoordinate = (isLikelyIphoneDevice() || isLikelyIpadDevice())
@@ -9835,8 +9835,8 @@ function finishBedIndexScrub(event) {
   return true;
 }
 
-function getBedIndexScrubAnchors(labels) {
-  const editor = refs.editorRoot.querySelector("#notepad-editor");
+function getBedIndexScrubAnchors(labels, rail = null) {
+  const editor = getBedIndexEditor(rail);
   if (!editor) return [];
   const tokensByLabel = new Map();
   editor.querySelectorAll('.tag-token[data-tag="bed"]').forEach((token) => {
@@ -10123,7 +10123,8 @@ function updateBedIndexFromViewport(rail, editor) {
 }
 
 function jumpToBedInEditor(bedLabel, { behavior = "smooth", keepVisible = false, updateIndex = true } = {}) {
-  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  const rail = refs.editorRoot.querySelector(".bed-index-rail");
+  const editor = getBedIndexEditor(rail);
   if (!editor || !bedLabel) return;
   const target = Array.from(editor.querySelectorAll('.tag-token[data-tag="bed"]')).find((token) => {
     const label = String(token.textContent || "").replace(/^Bed\s*/i, "").trim().toUpperCase();
@@ -10134,7 +10135,6 @@ function jumpToBedInEditor(bedLabel, { behavior = "smooth", keepVisible = false,
   line.scrollIntoView({ behavior, block: "center" });
   setBedIndexVisible(true);
   if (updateIndex) {
-    const rail = refs.editorRoot.querySelector(".bed-index-rail");
     const labels = getBedIndexLabels(rail);
     const index = labels.findIndex((bed) => bed.toUpperCase() === String(bedLabel).toUpperCase());
     if (index >= 0) setBedIndexActiveState(rail, index);
@@ -10142,6 +10142,14 @@ function jumpToBedInEditor(bedLabel, { behavior = "smooth", keepVisible = false,
   if (keepVisible) return;
   window.clearTimeout(uiState.bedIndexTimer);
   uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 900);
+}
+
+function getBedIndexEditor(rail = null) {
+  const surfaceEditor = rail?.closest?.(".smart-pad-surface")?.querySelector?.(".notepad-editor");
+  if (surfaceEditor) return surfaceEditor;
+  return refs.editorRoot.querySelector(
+    isArchivedPadMode() ? "#archived-notepad-view" : '#notepad-editor[data-live-editor="true"]'
+  );
 }
 
 function formatClock(timestamp) {
@@ -11328,7 +11336,7 @@ function getEditorFromEventTarget(target) {
     target.nodeType === Node.ELEMENT_NODE
       ? target
       : target.parentElement || target.parentNode;
-  return element?.closest?.("#notepad-editor") || null;
+  return element?.closest?.('#notepad-editor[data-live-editor="true"]') || null;
 }
 
 function markEditorCommittedToNote(editor, note = getCurrentNote()) {
@@ -11356,7 +11364,7 @@ function resetRecoveryTrackingAfterCloudApply() {
 function canCommitEditorToCurrentNote(editor, source = "editor-write") {
   const ward = getCurrentWard();
   const note = getCurrentNote();
-  const liveEditor = refs.editorRoot?.querySelector?.("#notepad-editor");
+  const liveEditor = refs.editorRoot?.querySelector?.('#notepad-editor[data-live-editor="true"]');
   if (!editor || !ward || !note) return false;
 
   const binding = {
@@ -11372,11 +11380,14 @@ function canCommitEditorToCurrentNote(editor, source = "editor-write") {
     noteVersion: getNoteUpdatedAt(note)
   };
   const staleReason =
+    isArchivedPadMode() ? "archived-pad" :
+    editor.dataset.liveEditor !== "true" ? "non-live-editor" :
+    !binding.workspaceKey || !binding.wardId || !binding.noteId ? "missing-editor-binding" :
     editor.dataset.bindingInvalidated ? editor.dataset.bindingInvalidated :
     editor !== liveEditor ? "detached-editor" :
-    binding.workspaceKey && binding.workspaceKey !== current.workspaceKey ? "workspace-changed" :
-    binding.wardId && binding.wardId !== current.wardId ? "ward-changed" :
-    binding.noteId && binding.noteId !== current.noteId ? "note-changed" :
+    binding.workspaceKey !== current.workspaceKey ? "workspace-changed" :
+    binding.wardId !== current.wardId ? "ward-changed" :
+    binding.noteId !== current.noteId ? "note-changed" :
     binding.noteVersion && binding.noteVersion !== current.noteVersion ? "note-version-changed" :
     "";
   if (!staleReason) return true;
