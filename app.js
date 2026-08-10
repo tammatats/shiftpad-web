@@ -12,7 +12,8 @@ const EDITOR_DEBUG_CLOUD_TABLE = "shiftpad_editor_debug_logs";
 const CLOUD_SAVE_DEBOUNCE_MS = 300;
 const NOTE_DOCUMENT_SAVE_DEBOUNCE_MS = 260;
 const NOTE_DOCUMENT_RETRY_MS = 1800;
-const CLOUD_SYNC_POLL_MS = 1500;
+const CLOUD_SYNC_FALLBACK_POLL_MS = 60 * 1000;
+const CLOUD_SYNC_REFRESH_COOLDOWN_MS = 2500;
 const CLOUD_REMOTE_APPLY_IDLE_MS = 1200;
 const CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS = 2500;
 const CLOUD_LOCAL_EDIT_PROTECTION_MS = 8000;
@@ -41,7 +42,7 @@ const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
-const APP_BUILD = "2026-08-07-archive-write-isolation";
+const APP_BUILD = "2026-08-10-egress-safe-live-sync";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const WORKSPACE_KEYS = ["shift", "day"];
 const PAD_MODE_KEYS = ["shift", "day", "archive"];
@@ -120,6 +121,8 @@ const authState = {
   saveTimer: null,
   localSaveTimer: null,
   livePollTimer: null,
+  cloudRefreshPromise: null,
+  lastCloudRefreshAt: 0,
   debugLogUploadTimer: null,
   realtimeChannel: null,
   noteDocumentClientId: getOrCreateNoteDocumentClientId(),
@@ -3660,7 +3663,13 @@ function startCloudLiveSync() {
       )
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
+          const justConnected = authState.realtimeStatus !== "subscribed";
           authState.realtimeStatus = "subscribed";
+          if (justConnected) {
+            fetchLatestCloudState({ reason: "realtime-subscribed", force: true }).catch((error) => {
+              console.error("Cloud sync subscription refresh failed:", error);
+            });
+          }
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
           authState.realtimeStatus = "error";
         }
@@ -3671,18 +3680,19 @@ function startCloudLiveSync() {
     authState.realtimeStatus = "error";
   }
 
-  fetchLatestCloudState({ reason: "start" }).catch((error) => {
+  fetchLatestCloudState({ reason: "start", force: true }).catch((error) => {
     console.error("Cloud sync refresh failed:", error);
   });
   authState.livePollTimer = window.setInterval(() => {
-    fetchLatestCloudState({ reason: "poll" }).catch((error) => {
+    if (authState.realtimeStatus === "subscribed" || document.visibilityState === "hidden") return;
+    fetchLatestCloudState({ reason: "fallback-poll" }).catch((error) => {
       console.error("Cloud sync poll failed:", error);
       if (authState.realtimeStatus !== "subscribed") {
         authState.realtimeStatus = "error";
         renderAuthUi();
       }
     });
-  }, CLOUD_SYNC_POLL_MS);
+  }, CLOUD_SYNC_FALLBACK_POLL_MS);
   renderAuthUi();
 }
 
@@ -3711,6 +3721,8 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
     authState.noteDocumentSaveInFlight.clear();
     authState.pendingRemoteNoteDocuments.clear();
     authState.noteDocumentFetchInFlight = false;
+    authState.cloudRefreshPromise = null;
+    authState.lastCloudRefreshAt = 0;
     authState.realtimeStatus = "off";
     authState.lastCloudUpdatedAt = 0;
     authState.lastCloudUpdatedAtValue = "";
@@ -3719,19 +3731,34 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
   }
 }
 
-async function fetchLatestCloudState() {
+async function fetchLatestCloudState({ reason = "manual", force = false } = {}) {
   if (!authState.client || !authState.user || authState.isHydrating || document.visibilityState === "hidden") return;
-  const { data, error } = await fetchCloudStateRecord();
+  if (reason === "fallback-poll" && authState.realtimeStatus === "subscribed") return;
+  if (authState.cloudRefreshPromise) return authState.cloudRefreshPromise;
+  if (!force && Date.now() - authState.lastCloudRefreshAt < CLOUD_SYNC_REFRESH_COOLDOWN_MS) return;
 
-  if (error) throw error;
-  if (authState.realtimeStatus === "error") {
-    authState.realtimeStatus = "polling";
-    renderAuthUi();
+  const refreshPromise = (async () => {
+    const { data, error } = await fetchCloudStateRecord();
+
+    if (error) throw error;
+    if (authState.realtimeStatus === "error") {
+      authState.realtimeStatus = "polling";
+      renderAuthUi();
+    }
+    if (data) {
+      handleRemoteCloudRecord(data, { source: reason });
+    }
+    await fetchLatestNoteDocuments({ source: reason });
+  })();
+  authState.cloudRefreshPromise = refreshPromise;
+  try {
+    return await refreshPromise;
+  } finally {
+    if (authState.cloudRefreshPromise === refreshPromise) {
+      authState.cloudRefreshPromise = null;
+      authState.lastCloudRefreshAt = Date.now();
+    }
   }
-  if (data) {
-    handleRemoteCloudRecord(data, { source: "poll" });
-  }
-  await fetchLatestNoteDocuments({ source: "poll" });
 }
 
 function getOrCreateNoteDocumentClientId() {
