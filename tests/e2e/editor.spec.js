@@ -73,7 +73,7 @@ test("pasted rich text is normalized to the notepad typography", async ({ page }
 });
 
 test("compact widths keep the ward title and tag controls visible", async ({ page }) => {
-  await page.setViewportSize({ width: 592, height: 820 });
+  await page.setViewportSize({ width: 381, height: 588 });
   await page.locator("#notepad-editor").click();
   await expect(page.locator("#sticky-ward-root")).toBeVisible();
   const desktopTagsVisible = await page.locator(".quick-tags").isVisible();
@@ -81,9 +81,11 @@ test("compact widths keep the ward title and tag controls visible", async ({ pag
     await expect(page.locator('[data-quick-tag="bed"]')).toBeVisible();
     const geometry = await page.evaluate(() => ({
       tagsBottom: document.querySelector(".quick-tags")?.getBoundingClientRect().bottom || 0,
-      editorTop: document.querySelector("#notepad-editor")?.getBoundingClientRect().top || 0
+      editorTop: document.querySelector("#notepad-editor")?.getBoundingClientRect().top || 0,
+      firstLineTop: document.querySelector("#notepad-editor")?.firstElementChild?.getBoundingClientRect().top || 0
     }));
     expect(geometry.editorTop).toBeGreaterThanOrEqual(geometry.tagsBottom);
+    expect(geometry.firstLineTop).toBeGreaterThanOrEqual(geometry.tagsBottom);
   } else {
     await expect(page.locator("[data-mobile-tag-toggle]")).toBeVisible();
   }

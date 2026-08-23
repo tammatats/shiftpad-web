@@ -28,6 +28,7 @@
   --top-controls-height: 190px;
   --desktop-tags-top: calc(env(safe-area-inset-top) + 92px);
   --desktop-tags-height: 54px;
+  --desktop-tags-clearance: 64px;
   --header-control-size: 44px;
   --header-control-side: max(26px, calc((100vw - 1240px) / 2 + 26px));
   --header-control-top: calc(env(safe-area-inset-top) + 26px);
@@ -2451,7 +2452,7 @@ select:focus {
   }
 
   .document-pad {
-    margin-top: calc(var(--desktop-tags-height) + 10px);
+    margin-top: var(--desktop-tags-clearance);
   }
 }
 

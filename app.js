@@ -453,12 +453,17 @@ function updateDesktopTagBarOffset() {
   const controlsRect = refs.topControlStack?.getBoundingClientRect?.();
   const controlsBottom = Math.max(0, Math.round(controlsRect?.bottom || 0));
   const quickTagsRect = refs.editorRoot?.querySelector?.(".quick-tags")?.getBoundingClientRect?.();
+  const noteCardRect = refs.editorRoot?.querySelector?.(".note-pad-card")?.getBoundingClientRect?.();
   if (controlsRect?.height) {
     document.documentElement.style.setProperty("--top-controls-height", `${Math.round(controlsRect.height)}px`);
   }
   document.documentElement.style.setProperty("--desktop-tags-top", `${controlsBottom + 8}px`);
   if (quickTagsRect?.height) {
     document.documentElement.style.setProperty("--desktop-tags-height", `${Math.round(quickTagsRect.height)}px`);
+  }
+  if (quickTagsRect && noteCardRect) {
+    const clearance = Math.max(0, Math.ceil(quickTagsRect.bottom - noteCardRect.top + 10));
+    document.documentElement.style.setProperty("--desktop-tags-clearance", `${clearance}px`);
   }
   syncDrawerControlPositions();
 }
