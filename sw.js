@@ -1,9 +1,11 @@
-const CACHE_NAME = "shiftpad-shell-v55";
+const CACHE_NAME = "shiftpad-shell-v56";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
   "/styles.css",
   "/app.js",
+  "/lib/sync-core.js",
+  "/lib/diagnostics-core.js",
   "/manifest.webmanifest",
   "/icons/icon-180.png",
   "/icons/icon-192.png",
@@ -15,7 +17,12 @@ const CACHE_FIRST_PATHS = new Set([
   "/icons/icon-192.png",
   "/icons/icon-512.png"
 ]);
-const NETWORK_FIRST_PATHS = new Set(["/app.js", "/styles.css"]);
+const NETWORK_FIRST_PATHS = new Set([
+  "/app.js",
+  "/styles.css",
+  "/lib/sync-core.js",
+  "/lib/diagnostics-core.js"
+]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

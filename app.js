@@ -7,12 +7,14 @@ const CORE_REMINDER_TAGS = ["time", "lab", "io"];
 const CLOUD_STATE_TABLE = "shiftpad_user_state";
 const CLOUD_ARCHIVE_TABLE = "shiftpad_archives";
 const CLOUD_NOTE_DOCUMENT_TABLE = "shiftpad_note_documents";
+const CLOUD_NOTE_VERSION_TABLE = "shiftpad_note_document_versions";
+const CLOUD_REMINDER_STATE_TABLE = "shiftpad_reminder_state";
 const CLOUD_NOTE_COMMIT_RPC = "shiftpad_commit_note_document";
 const EDITOR_DEBUG_CLOUD_TABLE = "shiftpad_editor_debug_logs";
 const CLOUD_SAVE_DEBOUNCE_MS = 300;
 const NOTE_DOCUMENT_SAVE_DEBOUNCE_MS = 260;
-const NOTE_DOCUMENT_RETRY_MS = 1800;
-const CLOUD_SYNC_FALLBACK_POLL_MS = 60 * 1000;
+const REMINDER_INDEX_SAVE_DEBOUNCE_MS = 700;
+const NOTE_DOCUMENT_RETRY_MS = 4000;
 const CLOUD_SYNC_REFRESH_COOLDOWN_MS = 2500;
 const CLOUD_REMOTE_APPLY_IDLE_MS = 1200;
 const CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS = 2500;
@@ -29,7 +31,7 @@ const BED_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitiv
 const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
-const EDITOR_DEBUG_LIMIT = 200;
+const EDITOR_DEBUG_LIMIT = 100;
 const MAX_BED_INDEX_LABELS = 9;
 const RECOVERY_HISTORY_LIMIT = 12;
 const SHIFT_ARCHIVE_LIMIT = 6;
@@ -42,8 +44,10 @@ const SHORT_NOTE_SCROLL_NATIVE_WATCH_MAX_MS = 520;
 const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
-const APP_BUILD = "2026-08-10-egress-safe-live-sync";
+const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
+const APP_BUILD = "2026-08-19-reliability-suite";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
+const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
 const PAD_MODE_KEYS = ["shift", "day", "archive"];
 const SUMMARY_TABS = ["reminders", "todo"];
@@ -104,10 +108,13 @@ const refs = {
   drawerRoot: document.getElementById("drawer-root"),
   bedActionRoot: document.getElementById("bed-action-root"),
   archiveActionRoot: document.getElementById("archive-action-root"),
+  versionActionRoot: document.getElementById("version-action-root"),
   searchRoot: document.getElementById("search-root"),
   mobileTagRoot: document.getElementById("mobile-tag-root"),
   timelineRoot: document.getElementById("timeline-root"),
-  workspace: document.querySelector(".workspace")
+  workspace: document.querySelector(".workspace"),
+  syncIndicator: document.getElementById("sync-indicator"),
+  syncIndicatorLabel: document.getElementById("sync-indicator-label")
 };
 
 let appState = loadAppState();
@@ -121,6 +128,7 @@ const authState = {
   saveTimer: null,
   localSaveTimer: null,
   livePollTimer: null,
+  fallbackPollAttempt: 0,
   cloudRefreshPromise: null,
   lastCloudRefreshAt: 0,
   debugLogUploadTimer: null,
@@ -129,6 +137,9 @@ const authState = {
   noteDocuments: new Map(),
   noteDocumentSaveTimers: new Map(),
   noteDocumentSaveInFlight: new Set(),
+  reminderIndexSaveTimer: null,
+  reminderIndexPending: false,
+  reminderIndexSaving: false,
   pendingRemoteNoteDocuments: new Map(),
   noteDocumentFetchInFlight: false,
   suppressNoteDocumentSave: false,
@@ -140,6 +151,9 @@ const authState = {
   lastRemoteAppliedAt: 0,
   realtimeStatus: "off",
   isSaving: false,
+  stateCloudPending: false,
+  lastCloudSavedAt: 0,
+  lastSyncError: "",
   isHydrating: false,
   hydratingUserId: "",
   hydratedUserId: "",
@@ -220,7 +234,14 @@ const uiState = {
   archiveTimelineScope: "all",
   archiveDialog: null,
   archiveBusy: false,
-  archiveStatus: ""
+  archiveStatus: "",
+  cloudVersions: [],
+  cloudVersionsNoteId: "",
+  cloudVersionsLoading: false,
+  cloudVersionsStatus: "",
+  inspectedCloudVersion: null,
+  notificationDeliveries: [],
+  notificationDeliveriesLoading: false
 };
 const noteDocumentModelTimers = new Map();
 const noteParseCache = new Map();
@@ -726,6 +747,16 @@ function bindEvents() {
       title: data.get("title"),
       archivedFor: data.get("archivedFor")
     });
+  });
+
+  refs.versionActionRoot?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-version-dialog-close]") || event.target.matches("[data-version-dialog-backdrop]")) {
+      uiState.inspectedCloudVersion = null;
+      renderCloudVersionDialog();
+      return;
+    }
+    const restore = event.target.closest("[data-version-dialog-restore]");
+    if (restore) restoreCloudNoteVersion(Number(restore.dataset.versionDialogRestore));
   });
 
   refs.editorRoot.addEventListener("mousedown", (event) => {
@@ -1391,6 +1422,8 @@ function bindEvents() {
     });
   });
   window.addEventListener("online", () => {
+    authState.lastSyncError = "";
+    flushPendingCloudWrites();
     fetchLatestCloudState({ reason: "online" }).catch((error) => {
       console.error("Cloud sync online refresh failed:", error);
     });
@@ -1398,6 +1431,10 @@ function bindEvents() {
     refreshPushSubscriptionIfEnabled({ force: true }).catch((error) => {
       console.warn("Notification reconnect refresh failed:", error);
     });
+  });
+  window.addEventListener("offline", () => {
+    authState.lastSyncError = "";
+    renderAuthUi();
   });
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
   window.addEventListener("resize", updateDesktopTagBarOffset, { passive: true });
@@ -1413,6 +1450,7 @@ function render() {
     renderDrawer();
     renderBedActionSheet();
     renderArchiveDialog();
+    renderCloudVersionDialog();
     renderWorkspaceSearch();
     refs.mobileTagRoot.innerHTML = "";
     requestAnimationFrame(updateDesktopTagBarOffset);
@@ -1435,6 +1473,7 @@ function render() {
   renderDrawer();
   renderBedActionSheet();
   renderArchiveDialog();
+  renderCloudVersionDialog();
   renderWorkspaceSearch();
   refreshMobileTagDock();
   requestAnimationFrame(updateDesktopTagBarOffset);
@@ -2329,6 +2368,24 @@ function renderWorkspaceHistory() {
   const recoveries = Array.isArray(state.recoveryHistory) ? state.recoveryHistory.slice(0, 6) : [];
   const workspaceKey = getActiveWorkspaceKey();
   const archives = appState.archives.filter((entry) => entry.sourceWorkspace === workspaceKey);
+  const note = getCurrentNote();
+  const versionsMatch = uiState.cloudVersionsNoteId === note?.id;
+  const cloudVersions = versionsMatch ? uiState.cloudVersions : [];
+  const cloudVersionMarkup = cloudVersions.length
+    ? cloudVersions.map((entry) => `
+        <div class="history-row cloud-version-row">
+          <div class="history-copy">
+            <strong>Revision ${escapeHtml(String(entry.revision))}</strong>
+            <small>${escapeHtml(formatHistoryTimestamp(Date.parse(entry.created_at || "")))}</small>
+            <span class="history-preview">${escapeHtml(getRecoveryHistoryPreview(entry.document_html))}</span>
+          </div>
+          <div class="history-row-actions">
+            <button class="tiny-btn" type="button" data-drawer-action="inspect-cloud-version" data-revision="${escapeHtml(String(entry.revision))}">Inspect</button>
+            <button class="tiny-btn" type="button" data-drawer-action="restore-cloud-version" data-revision="${escapeHtml(String(entry.revision))}">Restore</button>
+          </div>
+        </div>
+      `).join("")
+    : "";
   return `
     <div class="history-block">
       <div class="history-block-head"><strong>Note recovery</strong><small>${state.recoveryHistory.length}/${RECOVERY_HISTORY_LIMIT}</small></div>
@@ -2344,9 +2401,100 @@ function renderWorkspaceHistory() {
       }).join("") : `<p class="drawer-help">Earlier note versions appear here automatically while you edit.</p>`}
     </div>
     <div class="history-block">
+      <div class="history-block-head"><strong>Cloud versions</strong><small>${cloudVersions.length || ""}</small></div>
+      <p class="drawer-help">Immutable server revisions for the current note. Restoring creates a new revision and keeps the current note in Recovery.</p>
+      <button class="ghost-btn" type="button" data-drawer-action="load-cloud-versions" ${!authState.user || !note || uiState.cloudVersionsLoading ? "disabled" : ""}>${uiState.cloudVersionsLoading ? "Loading..." : "Load cloud versions"}</button>
+      ${uiState.cloudVersionsStatus ? `<p class="debug-status">${escapeHtml(uiState.cloudVersionsStatus)}</p>` : ""}
+      ${cloudVersionMarkup}
+    </div>
+    <div class="history-block">
       <div class="history-block-head"><strong>${escapeHtml(WORKSPACE_META[workspaceKey].title)} archives</strong><small>${archives.length}</small></div>
       <p class="drawer-help">Complete pad versions are stored in ArchivedPad.</p>
       <button class="ghost-btn" type="button" data-drawer-action="open-archived-pad">Open ArchivedPad</button>
+    </div>
+  `;
+}
+
+async function loadCloudNoteVersions() {
+  const note = getCurrentNote();
+  if (!authState.client || !authState.user || !note) return;
+  uiState.cloudVersionsLoading = true;
+  uiState.cloudVersionsStatus = "";
+  renderDrawer();
+  const workspaceKey = getActiveWorkspaceKey();
+  const { data, error } = await authState.client
+    .from(CLOUD_NOTE_VERSION_TABLE)
+    .select("workspace_key,ward_id,note_id,document_html,note_updated_at,revision,client_id,created_at")
+    .eq("user_id", authState.user.id)
+    .eq("workspace_key", workspaceKey)
+    .eq("note_id", note.id)
+    .order("revision", { ascending: false })
+    .limit(20);
+  uiState.cloudVersionsLoading = false;
+  if (error) {
+    uiState.cloudVersionsStatus = `Could not load versions: ${error.message || "Unknown error"}`;
+  } else {
+    uiState.cloudVersionsNoteId = note.id;
+    uiState.cloudVersions = Array.isArray(data) ? data : [];
+    uiState.cloudVersionsStatus = uiState.cloudVersions.length ? "" : "No server versions yet.";
+  }
+  renderDrawer();
+}
+
+function getLoadedCloudVersion(revision) {
+  return uiState.cloudVersions.find((entry) => Number(entry.revision) === Number(revision)) || null;
+}
+
+function inspectCloudNoteVersion(revision) {
+  uiState.inspectedCloudVersion = getLoadedCloudVersion(revision);
+  renderCloudVersionDialog();
+}
+
+function restoreCloudNoteVersion(revision) {
+  const version = getLoadedCloudVersion(revision);
+  const note = getCurrentNote();
+  const ward = getCurrentWard();
+  if (!version || !note || !ward || note.id !== version.note_id) return;
+  addRecoverySnapshot({
+    note,
+    ward,
+    documentHtml: getNoteDocumentHtml(note),
+    reason: "Before cloud version restore",
+    targetState: state
+  });
+  setNoteDocumentHtml(note, version.document_html, { updatedAt: Date.now() });
+  note.cloudPending = true;
+  uiState.inspectedCloudVersion = null;
+  invalidateLiveEditorBinding("cloud-version-restore");
+  saveState();
+  render();
+  setAuthMessage(`Revision ${version.revision} restored as a new change.`);
+}
+
+function renderCloudVersionDialog() {
+  if (!refs.versionActionRoot) return;
+  const version = uiState.inspectedCloudVersion;
+  if (!version) {
+    refs.versionActionRoot.innerHTML = "";
+    return;
+  }
+  refs.versionActionRoot.innerHTML = `
+    <div class="archive-dialog-layer cloud-version-dialog-layer">
+      <button class="archive-dialog-scrim" type="button" data-version-dialog-backdrop aria-label="Close version preview"></button>
+      <section class="archive-dialog cloud-version-dialog" role="dialog" aria-modal="true" aria-labelledby="cloud-version-title">
+        <header>
+          <div>
+            <p class="section-kicker">Cloud version</p>
+            <h2 id="cloud-version-title">Revision ${escapeHtml(String(version.revision))}</h2>
+            <span>${escapeHtml(formatHistoryTimestamp(Date.parse(version.created_at || "")))}</span>
+          </div>
+          <button class="archive-dialog-close" type="button" data-version-dialog-close aria-label="Close">×</button>
+        </header>
+        <div class="cloud-version-preview">${sanitizeEditorHtml(version.document_html)}</div>
+        <div class="archive-dialog-actions">
+          <button class="accent-btn" type="button" data-version-dialog-restore="${escapeHtml(String(version.revision))}">Restore as new revision</button>
+        </div>
+      </section>
     </div>
   `;
 }
@@ -2527,6 +2675,17 @@ function renderNotificationSettings() {
           : support.message);
 
   const toggleDisabled = busy || !support.supported || !authState.user || !configured || permission === "denied";
+  const deliveryRows = uiState.notificationDeliveries.map((delivery) => {
+    const statusLabel = delivery.status === "sent" ? "Sent" : delivery.status === "failed" ? "Failed" : "Scheduled";
+    const timestamp = delivery.sent_at || delivery.failed_at || delivery.scheduled_for;
+    return `
+      <div class="notification-delivery-row" data-status="${escapeAttribute(delivery.status || "scheduled")}">
+        <span class="notification-delivery-dot" aria-hidden="true"></span>
+        <span><strong>${escapeHtml(delivery.title || "Reminder")}</strong><small>${escapeHtml(formatHistoryTimestamp(Date.parse(timestamp || "")))}</small></span>
+        <b>${escapeHtml(statusLabel)}</b>
+      </div>
+    `;
+  }).join("");
 
   return `
     <div class="notification-card">
@@ -2554,7 +2713,9 @@ function renderNotificationSettings() {
           data-drawer-action="test-notification"
           ${!enabled || busy ? "disabled" : ""}
         >Test notification</button>
+        <button class="ghost-btn" type="button" data-drawer-action="refresh-delivery-history" ${!authState.user || uiState.notificationDeliveriesLoading ? "disabled" : ""}>${uiState.notificationDeliveriesLoading ? "Loading..." : "Delivery history"}</button>
       </div>
+      ${deliveryRows ? `<div class="notification-delivery-list" aria-label="Recent notification deliveries">${deliveryRows}</div>` : ""}
       ${configured ? "" : `<p class="drawer-help">Vercel needs VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY before notifications can be enabled.</p>`}
       ${authState.user ? "" : `<p class="drawer-help">Sign in before enabling notifications.</p>`}
     </div>
@@ -2590,13 +2751,32 @@ function renderDiagnosticsSettings() {
           <span class="switch-track"></span>
         </span>
       </label>
-      <p class="drawer-help">Records editor behavior and note content for troubleshooting. Uploads automatically while signed in, and cloud data is deleted after 14 days.</p>
+      <p class="drawer-help">Records compact interaction and caret diagnostics without note text. Uploads automatically while signed in, and cloud data is deleted after 7 days.</p>
       <div class="debug-actions">
         <button class="ghost-btn" type="button" data-drawer-action="clear-debug-logs" ${logs.length || authState.user ? "" : "disabled"}>Clear diagnostic data</button>
       </div>
       <p class="debug-status">${escapeHtml(status)}</p>
     </div>
   `;
+}
+
+async function refreshNotificationDeliveryHistory() {
+  if (!authState.client || !authState.user) return;
+  uiState.notificationDeliveriesLoading = true;
+  renderDrawer();
+  const { data, error } = await authState.client
+    .from("shiftpad_notification_deliveries")
+    .select("id,title,status,scheduled_for,sent_at,failed_at,attempt_count")
+    .eq("user_id", authState.user.id)
+    .order("updated_at", { ascending: false })
+    .limit(8);
+  uiState.notificationDeliveriesLoading = false;
+  if (error) {
+    uiState.notificationStatus = `Delivery history unavailable: ${error.message || "Unknown error"}`;
+  } else {
+    uiState.notificationDeliveries = Array.isArray(data) ? data : [];
+  }
+  renderDrawer();
 }
 
 function getAccountDisplayName() {
@@ -2606,17 +2786,32 @@ function getAccountDisplayName() {
 }
 
 function getSyncStatusText() {
-  if (!authState.configured) return "Add Supabase env vars";
-  if (!authState.user) return authState.ready ? "Sign in to load cloud notes" : "Checking session...";
-  if (authState.isHydrating) return "Loading cloud notes...";
-  if (authState.saveTimer) return "Saving soon...";
-  if (authState.isSaving) return "Saving to cloud...";
-  if (authState.pendingRemoteRecord) return isEditorActivelyFocused() ? "Cloud update waiting" : "Loading newer cloud edits...";
-  if (authState.lastRemoteAppliedAt) return formatLiveSyncStatus();
-  if (authState.realtimeStatus === "subscribed") return "Live sync on";
-  if (authState.realtimeStatus === "polling") return "Live sync polling";
-  if (authState.realtimeStatus === "error") return "Cloud sync reconnecting";
-  return "Cloud sync on";
+  return getSyncStatusModel().detail;
+}
+
+function getSyncStatusModel() {
+  const pendingNotes = window.ShiftPadSyncCore?.getPendingNoteCount?.(appState) || 0;
+  return window.ShiftPadSyncCore?.buildSyncStatus?.({
+    configured: authState.configured,
+    signedIn: Boolean(authState.user),
+    online: navigator.onLine,
+    hydrating: authState.isHydrating,
+    saving: Boolean(authState.isSaving || authState.saveTimer || authState.noteDocumentSaveInFlight.size),
+    pendingState: authState.stateCloudPending || authState.reminderIndexPending,
+    pendingNotes,
+    error: authState.lastSyncError,
+    realtimeStatus: authState.realtimeStatus
+  }) || { tone: "local", label: "Local", detail: "Local only", unsavedCount: 0 };
+}
+
+function renderSyncIndicator() {
+  const status = getSyncStatusModel();
+  if (refs.syncIndicator) {
+    refs.syncIndicator.dataset.tone = status.tone;
+    refs.syncIndicator.title = status.detail;
+    refs.syncIndicator.setAttribute("aria-label", `${status.label}. ${status.detail}`);
+  }
+  if (refs.syncIndicatorLabel) refs.syncIndicatorLabel.textContent = status.label;
 }
 
 function formatLiveSyncStatus() {
@@ -2639,6 +2834,11 @@ function toggleDrawerSection(key) {
     uiState.drawerSections.add(key);
   }
   renderDrawer();
+  if (key === "notifications" && uiState.drawerSections.has(key)) {
+    refreshNotificationDeliveryHistory().catch((error) => {
+      console.warn("Notification delivery history failed:", error);
+    });
+  }
 }
 
 function renderDelayField(key, label, value) {
@@ -3293,6 +3493,7 @@ function renderAuthUi() {
     refs.authSetupMessage.textContent =
       "Set Vercel env vars SUPABASE_URL and SUPABASE_ANON_KEY, then run the Supabase SQL schema before signing in.";
     refs.authSetupMessage.classList.remove("hidden");
+    renderSyncIndicator();
     return;
   }
 
@@ -3301,6 +3502,7 @@ function renderAuthUi() {
   if (!hasUser) {
     refs.accountLabel.textContent = "Signed out";
     refs.syncStatus.textContent = authState.ready ? "Sign in to load your cloud notes" : "Checking session...";
+    renderSyncIndicator();
     return;
   }
 
@@ -3314,9 +3516,18 @@ function renderAuthUi() {
   } else {
     refs.syncStatus.textContent = getSyncStatusText();
   }
+  renderSyncIndicator();
 }
 
 async function initAuth() {
+  if (IS_LOCAL_E2E) {
+    authState.user = { id: "local-e2e-user", email: "e2e@local.test", user_metadata: { display_name: "Local test" } };
+    authState.ready = true;
+    authState.configured = false;
+    appState = loadStateForUser(authState.user.id) || createBlankAppState();
+    state = getActiveWorkspaceState(appState);
+    return;
+  }
   const config = window.SHIFTPAD_PUBLIC_CONFIG || {};
   if (!config.supabaseUrl || !config.supabaseAnonKey) {
     authState.ready = true;
@@ -3400,6 +3611,7 @@ async function applySession(session, { event = "UNKNOWN" } = {}) {
   authState.session = session || null;
   authState.user = session?.user || null;
   authState.ready = true;
+  authState.stateCloudPending = nextUserId ? readCloudOutboxMarker(nextUserId) : false;
 
   if (!authState.user) {
     stopCloudLiveSync();
@@ -3625,6 +3837,7 @@ async function hydrateStateFromCloud({ authEvent = "UNKNOWN" } = {}) {
     scheduleCloudSave();
   }
   scheduleChangedNoteDocumentSaves();
+  scheduleReminderIndexSave();
   render();
 }
 
@@ -3665,13 +3878,20 @@ function startCloudLiveSync() {
         if (status === "SUBSCRIBED") {
           const justConnected = authState.realtimeStatus !== "subscribed";
           authState.realtimeStatus = "subscribed";
+          authState.fallbackPollAttempt = 0;
+          authState.lastSyncError = "";
+          if (authState.livePollTimer) {
+            window.clearTimeout(authState.livePollTimer);
+            authState.livePollTimer = null;
+          }
           if (justConnected) {
-            fetchLatestCloudState({ reason: "realtime-subscribed", force: true }).catch((error) => {
+            fetchLatestCloudState({ reason: "realtime-subscribed" }).catch((error) => {
               console.error("Cloud sync subscription refresh failed:", error);
             });
           }
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
           authState.realtimeStatus = "error";
+          scheduleCloudFallbackPoll({ reset: true });
         }
         renderAuthUi();
       });
@@ -3683,22 +3903,42 @@ function startCloudLiveSync() {
   fetchLatestCloudState({ reason: "start", force: true }).catch((error) => {
     console.error("Cloud sync refresh failed:", error);
   });
-  authState.livePollTimer = window.setInterval(() => {
-    if (authState.realtimeStatus === "subscribed" || document.visibilityState === "hidden") return;
-    fetchLatestCloudState({ reason: "fallback-poll" }).catch((error) => {
-      console.error("Cloud sync poll failed:", error);
-      if (authState.realtimeStatus !== "subscribed") {
-        authState.realtimeStatus = "error";
-        renderAuthUi();
-      }
-    });
-  }, CLOUD_SYNC_FALLBACK_POLL_MS);
+  scheduleCloudFallbackPoll({ reset: true });
   renderAuthUi();
+}
+
+function scheduleCloudFallbackPoll({ reset = false } = {}) {
+  if (authState.livePollTimer) window.clearTimeout(authState.livePollTimer);
+  authState.livePollTimer = null;
+  if (!authState.client || !authState.user || authState.realtimeStatus === "subscribed") return;
+  if (reset) authState.fallbackPollAttempt = 0;
+  const delay = window.ShiftPadSyncCore?.getFallbackDelay?.(authState.fallbackPollAttempt) || 60_000;
+  authState.livePollTimer = window.setTimeout(async () => {
+    authState.livePollTimer = null;
+    if (document.visibilityState === "hidden" || !navigator.onLine) {
+      authState.fallbackPollAttempt += 1;
+      scheduleCloudFallbackPoll();
+      return;
+    }
+    try {
+      await fetchLatestCloudState({ reason: "fallback-poll", force: true });
+      authState.lastSyncError = "";
+      if (authState.realtimeStatus !== "subscribed") authState.realtimeStatus = "polling";
+    } catch (error) {
+      console.error("Cloud sync poll failed:", error);
+      authState.lastSyncError = "Cloud reconnecting";
+      if (authState.realtimeStatus !== "subscribed") authState.realtimeStatus = "error";
+    } finally {
+      authState.fallbackPollAttempt += 1;
+      renderAuthUi();
+      scheduleCloudFallbackPoll();
+    }
+  }, delay);
 }
 
 function stopCloudLiveSync({ keepStatus = false } = {}) {
   if (authState.livePollTimer) {
-    window.clearInterval(authState.livePollTimer);
+    window.clearTimeout(authState.livePollTimer);
     authState.livePollTimer = null;
   }
   if (authState.remoteApplyTimer) {
@@ -3708,6 +3948,10 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
   if (authState.debugLogUploadTimer) {
     window.clearTimeout(authState.debugLogUploadTimer);
     authState.debugLogUploadTimer = null;
+  }
+  if (authState.reminderIndexSaveTimer) {
+    window.clearTimeout(authState.reminderIndexSaveTimer);
+    authState.reminderIndexSaveTimer = null;
   }
   if (authState.realtimeChannel && authState.client?.removeChannel) {
     authState.client.removeChannel(authState.realtimeChannel);
@@ -3727,6 +3971,8 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
     authState.lastCloudUpdatedAt = 0;
     authState.lastCloudUpdatedAtValue = "";
     authState.lastRemoteAppliedAt = 0;
+    authState.fallbackPollAttempt = 0;
+    authState.lastSyncError = "";
     authState.noteDocuments.clear();
   }
 }
@@ -3738,17 +3984,24 @@ async function fetchLatestCloudState({ reason = "manual", force = false } = {}) 
   if (!force && Date.now() - authState.lastCloudRefreshAt < CLOUD_SYNC_REFRESH_COOLDOWN_MS) return;
 
   const refreshPromise = (async () => {
-    const { data, error } = await fetchCloudStateRecord();
-
-    if (error) throw error;
+    const [stateResponse, manifestResponse] = await Promise.all([
+      fetchCloudStateMetadata(),
+      fetchNoteDocumentManifest()
+    ]);
+    if (stateResponse.error) throw stateResponse.error;
+    if (manifestResponse.error) throw manifestResponse.error;
     if (authState.realtimeStatus === "error") {
       authState.realtimeStatus = "polling";
-      renderAuthUi();
     }
-    if (data) {
-      handleRemoteCloudRecord(data, { source: reason });
+    const remoteUpdatedAt = String(stateResponse.data?.updated_at || "");
+    if (remoteUpdatedAt && remoteUpdatedAt !== authState.lastCloudUpdatedAtValue) {
+      const { data, error } = await fetchCloudStateRecord();
+      if (error) throw error;
+      if (data) handleRemoteCloudRecord(data, { source: reason });
     }
-    await fetchLatestNoteDocuments({ source: reason });
+    await fetchChangedNoteDocuments(manifestResponse.data || [], { source: reason });
+    authState.lastSyncError = "";
+    renderAuthUi();
   })();
   authState.cloudRefreshPromise = refreshPromise;
   try {
@@ -3759,6 +4012,36 @@ async function fetchLatestCloudState({ reason = "manual", force = false } = {}) 
       authState.lastCloudRefreshAt = Date.now();
     }
   }
+}
+
+function fetchCloudStateMetadata() {
+  return authState.client
+    .from(CLOUD_STATE_TABLE)
+    .select("updated_at")
+    .eq("user_id", authState.user.id)
+    .maybeSingle();
+}
+
+function fetchNoteDocumentManifest() {
+  return authState.client
+    .from(CLOUD_NOTE_DOCUMENT_TABLE)
+    .select("workspace_key,ward_id,note_id,revision,updated_at")
+    .eq("user_id", authState.user.id);
+}
+
+async function fetchChangedNoteDocuments(manifestRows, { source = "poll" } = {}) {
+  const diff = window.ShiftPadSyncCore?.diffNoteManifest?.(manifestRows, authState.noteDocuments);
+  if (!diff) return fetchLatestNoteDocuments({ source });
+  diff.deletedKeys.forEach((key) => authState.noteDocuments.delete(key));
+  if (!diff.changed.length) return;
+  const noteIds = Array.from(new Set(diff.changed.map((row) => row.note_id)));
+  const { data, error } = await authState.client
+    .from(CLOUD_NOTE_DOCUMENT_TABLE)
+    .select("user_id,workspace_key,ward_id,note_id,document_html,note_updated_at,revision,client_id,updated_at")
+    .eq("user_id", authState.user.id)
+    .in("note_id", noteIds);
+  if (error) throw error;
+  (data || []).forEach((row) => handleRemoteNoteDocumentRecord(row, { source }));
 }
 
 function getOrCreateNoteDocumentClientId() {
@@ -3930,7 +4213,7 @@ function scheduleChangedNoteDocumentSaves() {
           cloud.ward_id !== ward.id
         ) {
           note.cloudPending = true;
-          scheduleNoteDocumentSave({ workspaceKey, workspace, ward, note });
+          if (navigator.onLine) scheduleNoteDocumentSave({ workspaceKey, workspace, ward, note });
         }
       });
     });
@@ -3939,6 +4222,12 @@ function scheduleChangedNoteDocumentSaves() {
 
 function scheduleNoteDocumentSave(location, delay = NOTE_DOCUMENT_SAVE_DEBOUNCE_MS) {
   if (!location?.note?.id || authState.suppressNoteDocumentSave) return;
+  location.note.cloudPending = true;
+  scheduleLocalStateSave();
+  if (!navigator.onLine) {
+    renderAuthUi();
+    return;
+  }
   const key = getNoteDocumentKey(location.workspaceKey, location.note.id);
   const existingTimer = authState.noteDocumentSaveTimers.get(key);
   if (existingTimer) window.clearTimeout(existingTimer);
@@ -3953,6 +4242,10 @@ function scheduleNoteDocumentSave(location, delay = NOTE_DOCUMENT_SAVE_DEBOUNCE_
 
 async function saveNoteDocumentNow(workspaceKey, noteId) {
   if (!authState.client || !authState.user || authState.suppressNoteDocumentSave) return;
+  if (!navigator.onLine) {
+    renderAuthUi();
+    return;
+  }
   const key = getNoteDocumentKey(workspaceKey, noteId);
   const location = findNoteLocation(appState, workspaceKey, noteId);
   if (!location) return;
@@ -4000,6 +4293,10 @@ async function saveNoteDocumentNow(workspaceKey, noteId) {
         setAuthMessage("");
       }
       shouldApplyPending = true;
+      authState.lastCloudSavedAt = Date.now();
+      authState.lastSyncError = "";
+      scheduleReminderIndexSave();
+      renderAuthUi();
       return;
     }
 
@@ -4036,11 +4333,13 @@ async function saveNoteDocumentNow(workspaceKey, noteId) {
   } catch (error) {
     note.cloudPending = true;
     scheduleLocalStateSave();
-    scheduleNoteDocumentSave(location, NOTE_DOCUMENT_RETRY_MS);
+    if (navigator.onLine) scheduleNoteDocumentSave(location, NOTE_DOCUMENT_RETRY_MS);
+    authState.lastSyncError = navigator.onLine ? "Cloud save retrying" : "";
     setAuthMessage("Note saved on this device. Cloud revision sync will retry automatically.");
     throw error;
   } finally {
     authState.noteDocumentSaveInFlight.delete(key);
+    renderAuthUi();
     if (shouldApplyPending) {
       window.setTimeout(() => applyPendingRemoteStateIfReady(), 0);
     }
@@ -6444,6 +6743,26 @@ async function handleDrawerAction(action, dataset = {}) {
     return;
   }
 
+  if (action === "refresh-delivery-history") {
+    await refreshNotificationDeliveryHistory();
+    return;
+  }
+
+  if (action === "load-cloud-versions") {
+    await loadCloudNoteVersions();
+    return;
+  }
+
+  if (action === "inspect-cloud-version") {
+    inspectCloudNoteVersion(Number(dataset.revision));
+    return;
+  }
+
+  if (action === "restore-cloud-version") {
+    restoreCloudNoteVersion(Number(dataset.revision));
+    return;
+  }
+
   if (action === "clear-debug-logs") {
     await clearEditorDebugLogs();
     return;
@@ -8442,6 +8761,7 @@ function saveState({ skipCloud = false, markDirty = true, skipRecovery = false }
   if (markDirty && !authState.suppressCloudSave) {
     authState.lastLocalMutationAt = Date.now();
     scheduleChangedNoteDocumentSaves();
+    scheduleReminderIndexSave();
   }
   scheduleLocalStateSave();
   if (!skipCloud) {
@@ -8647,7 +8967,14 @@ function appendEditorDebugLog(entry) {
     layout: captureLayoutDebugSnapshot(),
     ...entry
   };
-  logs.push(logEntry);
+  const compactLog = window.ShiftPadDiagnosticsCore?.compactDiagnosticPayload?.(logEntry, {
+    maxBytes: 24_000,
+    maxDepth: 5,
+    maxArray: 16
+  }) || logEntry;
+  compactLog.clientLogId = logEntry.clientLogId;
+  compactLog.timestamp = logEntry.timestamp;
+  logs.push(compactLog);
   setEditorDebugLogs(logs);
   queueEditorDebugCloudUpload();
 }
@@ -8691,7 +9018,7 @@ async function clearEditorDebugLogs() {
 
 function queueEditorDebugCloudUpload() {
   if (!isEditorDebugLoggingEnabled()) return;
-  if (!authState.client || !authState.user) return;
+  if (!authState.client || !authState.user || !navigator.onLine) return;
   window.clearTimeout(authState.debugLogUploadTimer);
   authState.debugLogUploadTimer = window.setTimeout(() => {
     authState.debugLogUploadTimer = null;
@@ -8822,6 +9149,11 @@ async function upsertEditorDebugCloudRows(rows, { keepalive = false } = {}) {
 }
 
 function buildEditorDebugCloudRow(log) {
+  const payload = window.ShiftPadDiagnosticsCore?.compactDiagnosticPayload?.(log, {
+    maxBytes: 12_000,
+    maxDepth: 4,
+    maxArray: 12
+  }) || log;
   return {
     user_id: authState.user.id,
     client_log_id: log.clientLogId,
@@ -8829,13 +9161,13 @@ function buildEditorDebugCloudRow(log) {
     browser: log.browser || "",
     path: log.path || "",
     ward_id: log.wardId || "",
-    ward_name: log.wardName || "",
+    ward_name: "",
     note_id: log.noteId || "",
-    note_title: log.noteTitle || "",
+    note_title: "",
     action: log.action || "",
     handled_by: log.handledBy || "",
     success: typeof log.success === "boolean" ? log.success : null,
-    payload: log
+    payload
   };
 }
 
@@ -9242,9 +9574,138 @@ function getEditorDebugLineIndex(editor, node) {
   return -1;
 }
 
+function scheduleReminderIndexSave({ delay = REMINDER_INDEX_SAVE_DEBOUNCE_MS } = {}) {
+  if (!authState.client || !authState.user || authState.isHydrating || authState.suppressCloudSave) return;
+  authState.reminderIndexPending = true;
+  if (authState.reminderIndexSaveTimer) window.clearTimeout(authState.reminderIndexSaveTimer);
+  authState.reminderIndexSaveTimer = null;
+  if (!navigator.onLine) {
+    renderAuthUi();
+    return;
+  }
+  authState.reminderIndexSaveTimer = window.setTimeout(() => {
+    authState.reminderIndexSaveTimer = null;
+    saveReminderIndexNow().catch((error) => {
+      console.error("Reminder index save failed:", error);
+      authState.lastSyncError = "Reminder schedule retrying";
+      if (navigator.onLine) scheduleReminderIndexSave({ delay: NOTE_DOCUMENT_RETRY_MS });
+    });
+  }, Math.max(0, Number(delay) || 0));
+  renderAuthUi();
+}
+
+async function saveReminderIndexNow() {
+  if (!authState.client || !authState.user || !navigator.onLine || authState.reminderIndexSaving) return;
+  authState.reminderIndexSaving = true;
+  try {
+    const payload = buildReminderIndexPayload();
+    const { error } = await authState.client
+      .from(CLOUD_REMINDER_STATE_TABLE)
+      .upsert({
+        user_id: authState.user.id,
+        reminders_json: payload,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "user_id" });
+    if (error) throw error;
+
+    authState.reminderIndexPending = false;
+    authState.lastSyncError = "";
+    authState.lastCloudSavedAt = Date.now();
+  } catch (error) {
+    authState.reminderIndexPending = true;
+    throw error;
+  } finally {
+    authState.reminderIndexSaving = false;
+    renderAuthUi();
+  }
+}
+
+function buildReminderIndexPayload() {
+  const reminders = [];
+  WORKSPACE_KEYS.forEach((workspaceKey) => {
+    const workspaceState = appState.workspaces?.[workspaceKey];
+    if (!workspaceState) return;
+    const preferences = workspaceState.preferences || {};
+    (workspaceState.wards || []).forEach((ward) => {
+      (ward.notes || []).forEach((note) => {
+        const parsed = getCachedTaggedLines(note);
+        parsed.lines.forEach((line) => {
+          getReminderItemsForIndexedLine(line, preferences).forEach((item) => {
+            const tokenId = line.reminderTokenId || line.primaryTokenId || line.lineId || String(line.lineIndex);
+            reminders.push({
+              key: [workspaceKey, note.id || "note", tokenId, item.key || item.time].join(":"),
+              workspaceKey,
+              workspaceLabel: WORKSPACE_META[workspaceKey]?.title || "ShiftPad",
+              wardId: String(ward.id || "").slice(0, 200),
+              wardName: String(ward.name || "Ward").slice(0, 120),
+              noteId: String(note.id || "").slice(0, 200),
+              lineId: String(line.lineId || "").slice(0, 200),
+              bedLabel: String(line.bedLabel || "").slice(0, 80),
+              reminderType: String(line.reminderType || "").slice(0, 80),
+              reminderTypeLabel: getIndexedReminderTypeLabel(line.reminderType, preferences),
+              reminderTime: item.time,
+              reminderKey: item.key,
+              done: Boolean(item.done),
+              text: String(line.text || line.visibleText || "Reminder due").replace(/\s+/g, " ").trim().slice(0, 180),
+              anchorAt: Number(
+                line.reminderType === "io"
+                  ? line.ioCreatedAt || line.reminderCreatedAt || note.createdAt
+                  : line.reminderCreatedAt || note.updatedAt || note.createdAt
+              ) || Date.now()
+            });
+          });
+        });
+      });
+    });
+  });
+  return reminders;
+}
+
+function getReminderItemsForIndexedLine(line, preferences = {}) {
+  if (!line?.reminderType) return [];
+  const delays = preferences.tagDelays || {};
+  if (line.reminderType === "time" && line.timeTag) {
+    return [{ time: addMinutesToTime(line.timeTag, delays.time), key: "time", done: Boolean(line.done) }];
+  }
+  if (line.reminderType === "lab" && line.timeTag) {
+    return [{ time: addMinutesToTime(line.timeTag, delays.lab ?? 60), key: "lab", done: Boolean(line.done) }];
+  }
+  if (line.reminderType === "io") {
+    return getIoBaseTimesForTimestamp(line.ioCreatedAt || line.noteCreatedAt).map((baseTime) => {
+      const key = getIoReminderKey(baseTime);
+      return {
+        time: addMinutesToTime(baseTime, delays.io),
+        key,
+        done: Boolean(line.ioDoneByTime?.[key])
+      };
+    });
+  }
+  const customTag = (preferences.customTags || []).find((tag) => tag.id === line.reminderType);
+  if (!customTag?.hasReminder) return [];
+  const startTime = formatTimeFromTimestamp(line.reminderCreatedAt || line.noteCreatedAt);
+  return [{
+    time: addMinutesToTime(startTime, customTag.delayMinutes),
+    key: line.reminderType,
+    done: Boolean(line.done)
+  }];
+}
+
+function getIndexedReminderTypeLabel(type, preferences = {}) {
+  if (type === "time") return "Time";
+  if (type === "lab") return "Lab";
+  if (type === "io") return "I/O";
+  return (preferences.customTags || []).find((tag) => tag.id === type)?.label || "Reminder";
+}
+
 function scheduleCloudSave() {
   if (!authState.client || !authState.user || authState.suppressCloudSave) return;
+  setStateCloudPending(true);
   window.clearTimeout(authState.saveTimer);
+  if (!navigator.onLine) {
+    authState.saveTimer = null;
+    renderAuthUi();
+    return;
+  }
   authState.saveTimer = window.setTimeout(() => {
     authState.saveTimer = null;
     saveCloudStateNow().catch((error) => {
@@ -9266,6 +9727,11 @@ function fetchCloudStateRecord() {
 
 async function saveCloudStateNow({ conflictRetry = false } = {}) {
   if (!authState.client || !authState.user || authState.suppressCloudSave) return;
+  if (!navigator.onLine) {
+    setStateCloudPending(true);
+    renderAuthUi();
+    return;
+  }
 
   authState.isSaving = true;
   renderAuthUi();
@@ -9329,6 +9795,8 @@ async function saveCloudStateNow({ conflictRetry = false } = {}) {
       return;
     }
     console.error("Cloud save failed:", error);
+    setStateCloudPending(true);
+    authState.lastSyncError = "Cloud state save retrying";
     setAuthMessage(`Cloud save failed: ${error.message}`);
     renderAuthUi();
     return;
@@ -9340,9 +9808,43 @@ async function saveCloudStateNow({ conflictRetry = false } = {}) {
   }
 
   rememberCloudVersion(data.updated_at || updatedAt);
+  setStateCloudPending(false);
+  authState.lastCloudSavedAt = Date.now();
+  authState.lastSyncError = "";
   authState.pendingDoneToggles.clear();
   applyPendingRemoteStateIfReady();
   setAuthMessage("");
+  renderAuthUi();
+}
+
+function getCloudOutboxKey(userId = authState.user?.id || "") {
+  return `${CLOUD_OUTBOX_NAMESPACE}:${userId}`;
+}
+
+function readCloudOutboxMarker(userId) {
+  try {
+    return localStorage.getItem(getCloudOutboxKey(userId)) === "pending";
+  } catch {
+    return false;
+  }
+}
+
+function setStateCloudPending(pending) {
+  authState.stateCloudPending = Boolean(pending);
+  try {
+    const key = getCloudOutboxKey();
+    if (pending) localStorage.setItem(key, "pending");
+    else localStorage.removeItem(key);
+  } catch {
+    // The in-memory outbox still protects the current session.
+  }
+}
+
+function flushPendingCloudWrites() {
+  if (!authState.client || !authState.user || !navigator.onLine) return;
+  if (authState.stateCloudPending) scheduleCloudSave();
+  scheduleChangedNoteDocumentSaves();
+  if (authState.reminderIndexPending) scheduleReminderIndexSave({ delay: 0 });
   renderAuthUi();
 }
 

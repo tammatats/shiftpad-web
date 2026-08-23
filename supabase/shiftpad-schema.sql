@@ -338,21 +338,73 @@ using (auth.uid() = user_id);
 create table if not exists public.shiftpad_notification_deliveries (
   id bigserial primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
+  subscription_id bigint references public.shiftpad_push_subscriptions(id) on delete cascade,
   reminder_key text not null,
   scheduled_for timestamptz not null,
   title text not null,
   body text not null,
-  sent_at timestamptz not null default timezone('utc', now()),
-  unique (user_id, reminder_key, scheduled_for)
+  status text not null default 'scheduled' check (status in ('scheduled', 'sent', 'failed', 'cancelled')),
+  attempt_count integer not null default 1,
+  sent_at timestamptz,
+  failed_at timestamptz,
+  last_error text not null default '',
+  workspace_key text not null default '',
+  ward_name text not null default '',
+  bed_label text not null default '',
+  reminder_type text not null default '',
+  updated_at timestamptz not null default timezone('utc', now()),
+  unique (subscription_id, reminder_key, scheduled_for)
 );
 
 alter table public.shiftpad_notification_deliveries enable row level security;
+
+drop policy if exists "shiftpad_notification_deliveries_select_own" on public.shiftpad_notification_deliveries;
+create policy "shiftpad_notification_deliveries_select_own"
+on public.shiftpad_notification_deliveries
+for select
+to authenticated
+using ((select auth.uid()) = user_id);
 
 grant select, insert, update, delete on table public.shiftpad_user_state to authenticated, service_role;
 grant select, insert, update, delete on table public.shiftpad_push_subscriptions to authenticated, service_role;
 grant usage, select on sequence public.shiftpad_push_subscriptions_id_seq to authenticated, service_role;
 grant select, insert, update, delete on table public.shiftpad_notification_deliveries to service_role;
+grant select on table public.shiftpad_notification_deliveries to authenticated;
 grant usage, select on sequence public.shiftpad_notification_deliveries_id_seq to service_role;
+
+create table if not exists public.shiftpad_reminder_state (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  reminders_json jsonb not null default '[]'::jsonb,
+  updated_at timestamptz not null default timezone('utc', now()),
+  constraint shiftpad_reminder_state_array_check check (jsonb_typeof(reminders_json) = 'array'),
+  constraint shiftpad_reminder_state_size_check check (pg_column_size(reminders_json) <= 262144)
+);
+
+alter table public.shiftpad_reminder_state enable row level security;
+
+drop policy if exists "shiftpad_reminder_state_select_own" on public.shiftpad_reminder_state;
+create policy "shiftpad_reminder_state_select_own"
+on public.shiftpad_reminder_state for select to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_reminder_state_insert_own" on public.shiftpad_reminder_state;
+create policy "shiftpad_reminder_state_insert_own"
+on public.shiftpad_reminder_state for insert to authenticated
+with check ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_reminder_state_update_own" on public.shiftpad_reminder_state;
+create policy "shiftpad_reminder_state_update_own"
+on public.shiftpad_reminder_state for update to authenticated
+using ((select auth.uid()) = user_id)
+with check ((select auth.uid()) = user_id);
+
+drop policy if exists "shiftpad_reminder_state_delete_own" on public.shiftpad_reminder_state;
+create policy "shiftpad_reminder_state_delete_own"
+on public.shiftpad_reminder_state for delete to authenticated
+using ((select auth.uid()) = user_id);
+
+revoke all on table public.shiftpad_reminder_state from anon, authenticated;
+grant select, insert, update, delete on table public.shiftpad_reminder_state to authenticated, service_role;
 
 create table if not exists public.shiftpad_editor_debug_logs (
   id bigserial primary key,
@@ -418,15 +470,15 @@ declare
   existing_job_id bigint;
 begin
   for existing_job_id in
-    select jobid from cron.job where jobname = 'shiftpad_prune_editor_debug_logs_14_days'
+    select jobid from cron.job where jobname in ('shiftpad_prune_editor_debug_logs_14_days', 'shiftpad_prune_editor_debug_logs_7_days')
   loop
     perform cron.unschedule(existing_job_id);
   end loop;
 
   perform cron.schedule(
-    'shiftpad_prune_editor_debug_logs_14_days',
+    'shiftpad_prune_editor_debug_logs_7_days',
     '27 3 * * *',
-    $cron$delete from public.shiftpad_editor_debug_logs where logged_at < now() - interval '14 days'$cron$
+    $cron$delete from public.shiftpad_editor_debug_logs where logged_at < now() - interval '7 days'$cron$
   );
 end
 $$;

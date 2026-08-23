@@ -73,32 +73,38 @@ module.exports = async function handler(req, res) {
 
     const now = new Date();
     const windowMinutes = Number(process.env.REMINDER_WINDOW_MINUTES || DEFAULT_WINDOW_MINUTES);
-    const [states, subscriptions] = await Promise.all([
+    const [states, reminderIndexes, subscriptions] = await Promise.all([
       supabaseRest("shiftpad_user_state?select=user_id,state_json", { serviceRole: true }),
-      supabaseRest("shiftpad_push_subscriptions?select=user_id,endpoint,p256dh,auth,time_zone", { serviceRole: true })
+      supabaseRest("shiftpad_reminder_state?select=user_id,reminders_json", { serviceRole: true }),
+      supabaseRest("shiftpad_push_subscriptions?select=id,user_id,endpoint,p256dh,auth,time_zone", { serviceRole: true })
     ]);
 
     const stateByUser = new Map((states || []).map((row) => [row.user_id, row.state_json]));
+    const reminderIndexByUser = new Map((reminderIndexes || []).map((row) => [row.user_id, row.reminders_json]));
     let sent = 0;
     let skipped = 0;
     let failed = 0;
 
     for (const subscription of subscriptions || []) {
+      const indexedReminders = reminderIndexByUser.get(subscription.user_id);
       const state = stateByUser.get(subscription.user_id);
-      if (!state) {
+      if (!Array.isArray(indexedReminders) && !state) {
         skipped += 1;
         continue;
       }
 
-      const dueReminders = buildDueReminders(state, {
+      const reminderOptions = {
         now,
         timeZone: subscription.time_zone || "UTC",
         windowMinutes
-      });
+      };
+      const dueReminders = Array.isArray(indexedReminders)
+        ? buildDueRemindersFromIndex(indexedReminders, reminderOptions)
+        : buildDueReminders(state, reminderOptions);
 
       for (const reminder of dueReminders) {
-        const inserted = await reserveDelivery(subscription.user_id, reminder);
-        if (!inserted) {
+        const delivery = await reserveDelivery(subscription, reminder);
+        if (!delivery) {
           skipped += 1;
           continue;
         }
@@ -120,9 +126,12 @@ module.exports = async function handler(req, res) {
             })
           );
           sent += 1;
+          await markDeliverySent(delivery.id).catch((statusError) => {
+            console.warn("Reminder was accepted, but delivery status could not update:", statusError?.message || statusError);
+          });
         } catch (error) {
           failed += 1;
-          await releaseDelivery(subscription.user_id, reminder).catch(() => undefined);
+          await markDeliveryFailed(delivery.id, error).catch(() => undefined);
           if (error.statusCode === 404 || error.statusCode === 410) {
             await removeSubscription(subscription.endpoint).catch(() => undefined);
           }
@@ -137,31 +146,74 @@ module.exports = async function handler(req, res) {
   }
 };
 
-async function reserveDelivery(userId, reminder) {
-  const rows = await supabaseRest("shiftpad_notification_deliveries?on_conflict=user_id,reminder_key,scheduled_for", {
+async function reserveDelivery(subscription, reminder) {
+  const rows = await supabaseRest("shiftpad_notification_deliveries?on_conflict=subscription_id,reminder_key,scheduled_for", {
     method: "POST",
     serviceRole: true,
     prefer: "resolution=ignore-duplicates,return=representation",
     body: {
-      user_id: userId,
+      user_id: subscription.user_id,
+      subscription_id: subscription.id,
       reminder_key: reminder.key,
       scheduled_for: reminder.scheduledFor,
       title: reminder.title,
-      body: reminder.body
+      body: reminder.body,
+      status: "scheduled",
+      attempt_count: 1,
+      workspace_key: reminder.workspaceKey,
+      ward_name: reminder.wardName,
+      bed_label: reminder.bedLabel,
+      reminder_type: reminder.reminderType
     }
   });
-  return Array.isArray(rows) && rows.length > 0;
+  if (Array.isArray(rows) && rows.length > 0) return rows[0];
+
+  const query = [
+    "select=id,status,attempt_count",
+    `subscription_id=eq.${encodeFilterValue(subscription.id)}`,
+    `reminder_key=eq.${encodeFilterValue(reminder.key)}`,
+    `scheduled_for=eq.${encodeFilterValue(reminder.scheduledFor)}`,
+    "limit=1"
+  ].join("&");
+  const existingRows = await supabaseRest(`shiftpad_notification_deliveries?${query}`, { serviceRole: true });
+  const existing = Array.isArray(existingRows) ? existingRows[0] : null;
+  if (!existing || existing.status !== "failed" || Number(existing.attempt_count || 0) >= 3) return null;
+
+  const retried = await supabaseRest(`shiftpad_notification_deliveries?id=eq.${encodeFilterValue(existing.id)}`, {
+    method: "PATCH",
+    serviceRole: true,
+    prefer: "return=representation",
+    body: {
+      status: "scheduled",
+      attempt_count: Number(existing.attempt_count || 0) + 1,
+      failed_at: null,
+      last_error: "",
+      updated_at: new Date().toISOString()
+    }
+  });
+  return Array.isArray(retried) ? retried[0] || null : null;
 }
 
-async function releaseDelivery(userId, reminder) {
-  const query = [
-    `user_id=eq.${encodeFilterValue(userId)}`,
-    `reminder_key=eq.${encodeFilterValue(reminder.key)}`,
-    `scheduled_for=eq.${encodeFilterValue(reminder.scheduledFor)}`
-  ].join("&");
-  await supabaseRest(`shiftpad_notification_deliveries?${query}`, {
-    method: "DELETE",
-    serviceRole: true
+async function markDeliverySent(deliveryId) {
+  const now = new Date().toISOString();
+  await supabaseRest(`shiftpad_notification_deliveries?id=eq.${encodeFilterValue(deliveryId)}`, {
+    method: "PATCH",
+    serviceRole: true,
+    body: { status: "sent", sent_at: now, failed_at: null, last_error: "", updated_at: now }
+  });
+}
+
+async function markDeliveryFailed(deliveryId, error) {
+  const now = new Date().toISOString();
+  await supabaseRest(`shiftpad_notification_deliveries?id=eq.${encodeFilterValue(deliveryId)}`, {
+    method: "PATCH",
+    serviceRole: true,
+    body: {
+      status: "failed",
+      failed_at: now,
+      last_error: String(error?.message || error || "Push failed").slice(0, 500),
+      updated_at: now
+    }
   });
 }
 
@@ -215,7 +267,11 @@ function buildDueReminders(state, { now, timeZone, windowMinutes }) {
               title: `${formatTimeLabel(reminderTime)} ${typeLabel || "Reminder"}`,
               body: `${workspaceLabel} · ${ward.name || "Ward"}${bedText ? ` · ${bedText}` : ""}: ${summary}`.slice(0, 180),
               tag: `shiftpad-${workspaceKey === "shift" ? "" : `${workspaceKey}-`}${note.id || "note"}-${line.lineIndex}-${reminderTime}`.replace(/[^a-z0-9_.:-]/gi, "-"),
-              url: `/?view=timeline&workspace=${workspaceKey}`
+              url: `/?view=timeline&workspace=${workspaceKey}`,
+              workspaceKey,
+              wardName: String(ward.name || "Ward").slice(0, 120),
+              bedLabel: String(line.bedLabel || "").slice(0, 80),
+              reminderType: String(line.reminderType || "").slice(0, 80)
             });
           });
         });
@@ -224,6 +280,38 @@ function buildDueReminders(state, { now, timeZone, windowMinutes }) {
   });
 
   return reminders;
+}
+
+function buildDueRemindersFromIndex(indexedReminders, { now, timeZone, windowMinutes }) {
+  const due = [];
+  (Array.isArray(indexedReminders) ? indexedReminders : []).forEach((entry) => {
+    if (!entry || entry.done || !entry.reminderTime || !entry.key) return;
+    const scheduled = getScheduledInstant({
+      reminderTime: entry.reminderTime,
+      noteCreatedAt: Number(entry.anchorAt) || now.getTime(),
+      timeZone,
+      now
+    });
+    const ageMs = now.getTime() - scheduled.getTime();
+    if (ageMs < 0 || ageMs > windowMinutes * 60 * 1000) return;
+    const bedText = entry.bedLabel ? `Bed ${String(entry.bedLabel).toUpperCase()}` : "";
+    const workspaceKey = String(entry.workspaceKey || "shift");
+    const noteId = String(entry.noteId || "note");
+    const lineId = String(entry.lineId || "line");
+    due.push({
+      key: String(entry.key),
+      scheduledFor: scheduled.toISOString(),
+      title: `${formatTimeLabel(entry.reminderTime)} ${entry.reminderTypeLabel || "Reminder"}`,
+      body: `${entry.workspaceLabel || WORKSPACE_LABELS[workspaceKey] || "ShiftPad"} · ${entry.wardName || "Ward"}${bedText ? ` · ${bedText}` : ""}: ${entry.text || "Reminder due"}`.slice(0, 180),
+      tag: `shiftpad-${workspaceKey}-${noteId}-${lineId}-${entry.reminderTime}`.replace(/[^a-z0-9_.:-]/gi, "-"),
+      url: `/?view=timeline&workspace=${workspaceKey}`,
+      workspaceKey,
+      wardName: String(entry.wardName || "Ward").slice(0, 120),
+      bedLabel: String(entry.bedLabel || "").slice(0, 80),
+      reminderType: String(entry.reminderType || "").slice(0, 80)
+    });
+  });
+  return due;
 }
 
 function getReminderWorkspaces(state) {
@@ -549,3 +637,9 @@ function getReminderTypeLabel(type, preferences) {
 function formatTimeLabel(value) {
   return normalizeTimeTagValue(value).replace(".", ":");
 }
+
+module.exports._test = {
+  buildDueReminders,
+  buildDueRemindersFromIndex,
+  getScheduledInstant
+};
