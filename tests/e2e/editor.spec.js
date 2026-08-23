@@ -77,7 +77,15 @@ test("compact widths keep the ward title and tag controls visible", async ({ pag
   await page.locator("#notepad-editor").click();
   await expect(page.locator("#sticky-ward-root")).toBeVisible();
   const desktopTagsVisible = await page.locator(".quick-tags").isVisible();
-  if (desktopTagsVisible) await expect(page.locator('[data-quick-tag="bed"]')).toBeVisible();
-  else await expect(page.locator("[data-mobile-tag-toggle]")).toBeVisible();
+  if (desktopTagsVisible) {
+    await expect(page.locator('[data-quick-tag="bed"]')).toBeVisible();
+    const geometry = await page.evaluate(() => ({
+      tagsBottom: document.querySelector(".quick-tags")?.getBoundingClientRect().bottom || 0,
+      editorTop: document.querySelector("#notepad-editor")?.getBoundingClientRect().top || 0
+    }));
+    expect(geometry.editorTop).toBeGreaterThanOrEqual(geometry.tagsBottom);
+  } else {
+    await expect(page.locator("[data-mobile-tag-toggle]")).toBeVisible();
+  }
   await expect(page.locator("#sync-indicator")).toBeVisible();
 });

@@ -452,10 +452,14 @@ function getVisualKeyboardOffset() {
 function updateDesktopTagBarOffset() {
   const controlsRect = refs.topControlStack?.getBoundingClientRect?.();
   const controlsBottom = Math.max(0, Math.round(controlsRect?.bottom || 0));
+  const quickTagsRect = refs.editorRoot?.querySelector?.(".quick-tags")?.getBoundingClientRect?.();
   if (controlsRect?.height) {
     document.documentElement.style.setProperty("--top-controls-height", `${Math.round(controlsRect.height)}px`);
   }
   document.documentElement.style.setProperty("--desktop-tags-top", `${controlsBottom + 8}px`);
+  if (quickTagsRect?.height) {
+    document.documentElement.style.setProperty("--desktop-tags-height", `${Math.round(quickTagsRect.height)}px`);
+  }
   syncDrawerControlPositions();
 }
 
