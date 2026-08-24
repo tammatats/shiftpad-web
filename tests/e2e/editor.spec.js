@@ -81,9 +81,11 @@ test("compact widths keep the ward title and tag controls visible", async ({ pag
     await expect(page.locator('[data-quick-tag="bed"]')).toBeVisible();
     const geometry = await page.evaluate(() => ({
       tagsBottom: document.querySelector(".quick-tags")?.getBoundingClientRect().bottom || 0,
+      tagsHeight: document.querySelector(".quick-tags")?.getBoundingClientRect().height || 0,
       editorTop: document.querySelector("#notepad-editor")?.getBoundingClientRect().top || 0,
       firstLineTop: document.querySelector("#notepad-editor")?.firstElementChild?.getBoundingClientRect().top || 0
     }));
+    expect(geometry.tagsHeight).toBeLessThanOrEqual(112);
     expect(geometry.editorTop).toBeGreaterThanOrEqual(geometry.tagsBottom);
     expect(geometry.firstLineTop).toBeGreaterThanOrEqual(geometry.tagsBottom);
   } else {

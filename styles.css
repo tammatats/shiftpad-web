@@ -3844,7 +3844,15 @@ select:focus {
 
 @media (max-width: 860px) and (hover: hover) and (pointer: fine) {
   .quick-tags {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .quick-tags .quick-chip {
+    width: 100%;
+    min-width: 0;
+    padding-inline: 6px;
   }
 
   .mobile-tag-dock {
