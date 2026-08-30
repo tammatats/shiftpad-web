@@ -76,6 +76,24 @@ test("compact widths keep the ward title and tag controls visible", async ({ pag
   await page.setViewportSize({ width: 381, height: 588 });
   await page.locator("#notepad-editor").click();
   await expect(page.locator("#sticky-ward-root")).toBeVisible();
+  const headerGeometry = await page.evaluate(() => {
+    const header = document.querySelector(".app-header")?.getBoundingClientRect();
+    const settings = document.querySelector("#menu-btn")?.getBoundingClientRect();
+    const wards = document.querySelector("#ward-options-btn")?.getBoundingClientRect();
+    return {
+      headerTop: header?.top || 0,
+      headerBottom: header?.bottom || 0,
+      settingsTop: settings?.top || 0,
+      wardsTop: wards?.top || 0,
+      wardsBottom: wards?.bottom || 0,
+      wardsRight: wards?.right || 0,
+      headerRight: header?.right || 0
+    };
+  });
+  expect(Math.abs(headerGeometry.settingsTop - headerGeometry.wardsTop)).toBeLessThanOrEqual(1);
+  expect(headerGeometry.wardsTop).toBeGreaterThanOrEqual(headerGeometry.headerTop);
+  expect(headerGeometry.wardsBottom).toBeLessThanOrEqual(headerGeometry.headerBottom + 1);
+  expect(headerGeometry.wardsRight).toBeLessThanOrEqual(headerGeometry.headerRight + 1);
   const desktopTagsVisible = await page.locator(".quick-tags").isVisible();
   if (desktopTagsVisible) {
     await expect(page.locator('[data-quick-tag="bed"]')).toBeVisible();
