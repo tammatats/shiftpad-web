@@ -2,7 +2,9 @@ const webpush = require("web-push");
 const { handleApiError, sendJson, supabaseRest } = require("./_supabase");
 
 const CORE_REMINDER_TAGS = ["time", "lab", "io"];
-const DEFAULT_WINDOW_MINUTES = 10;
+const DEFAULT_WINDOW_MINUTES = 60;
+const MIN_WINDOW_MINUTES = 5;
+const MAX_WINDOW_MINUTES = 180;
 const WORKSPACE_LABELS = {
   shift: "ShiftPad",
   day: "DayPad"
@@ -72,7 +74,7 @@ module.exports = async function handler(req, res) {
     configureWebPush();
 
     const now = new Date();
-    const windowMinutes = Number(process.env.REMINDER_WINDOW_MINUTES || DEFAULT_WINDOW_MINUTES);
+    const windowMinutes = getReminderWindowMinutes(process.env.REMINDER_WINDOW_MINUTES);
     const [states, reminderIndexes, subscriptions] = await Promise.all([
       supabaseRest("shiftpad_user_state?select=user_id,state_json", { serviceRole: true }),
       supabaseRest("shiftpad_reminder_state?select=user_id,reminders_json", { serviceRole: true }),
@@ -638,8 +640,16 @@ function formatTimeLabel(value) {
   return normalizeTimeTagValue(value).replace(".", ":");
 }
 
+function getReminderWindowMinutes(value) {
+  if (value === undefined || value === null || value === "") return DEFAULT_WINDOW_MINUTES;
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes <= 0) return DEFAULT_WINDOW_MINUTES;
+  return Math.max(MIN_WINDOW_MINUTES, Math.min(MAX_WINDOW_MINUTES, Math.round(minutes)));
+}
+
 module.exports._test = {
   buildDueReminders,
   buildDueRemindersFromIndex,
-  getScheduledInstant
+  getScheduledInstant,
+  getReminderWindowMinutes
 };

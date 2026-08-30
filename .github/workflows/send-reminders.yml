@@ -1,8 +1,8 @@
 name: Send ShiftPad reminders
 
 on:
-  schedule:
-    - cron: "*/10 * * * *"
+  # Supabase Cron is the production five-minute scheduler. This remains as a
+  # manual recovery path without making redundant scheduled requests.
   workflow_dispatch:
 
 jobs:
