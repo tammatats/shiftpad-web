@@ -460,7 +460,7 @@ function updateDesktopTagBarOffset() {
   document.documentElement.style.setProperty("--desktop-tags-top", `${controlsBottom + 8}px`);
   if (quickTagsRect?.height) {
     document.documentElement.style.setProperty("--desktop-tags-height", `${Math.round(quickTagsRect.height)}px`);
-    const clearance = Math.max(0, Math.ceil(quickTagsRect.height + 10));
+    const clearance = Math.max(0, Math.min(180, Math.ceil(quickTagsRect.height + 10)));
     document.documentElement.style.setProperty("--desktop-tags-clearance", `${clearance}px`);
   }
   syncDrawerControlPositions();

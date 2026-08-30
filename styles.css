@@ -2452,7 +2452,7 @@ select:focus {
   }
 
   .document-pad {
-    margin-top: var(--desktop-tags-clearance);
+    margin-top: min(var(--desktop-tags-clearance), calc(var(--desktop-tags-height) + 10px), 180px);
   }
 }
 

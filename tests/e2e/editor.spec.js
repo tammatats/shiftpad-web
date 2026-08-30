@@ -168,21 +168,37 @@ test("long desktop notes extend the document and scroll to their final line", as
     element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
   });
 
+  const staleClearance = await page.evaluate(() => {
+    document.documentElement.style.setProperty("--desktop-tags-height", "105px");
+    document.documentElement.style.setProperty("--desktop-tags-clearance", "17070px");
+    return {
+      applied: getComputedStyle(document.querySelector(".document-pad")).marginTop,
+      requested: getComputedStyle(document.documentElement).getPropertyValue("--desktop-tags-clearance").trim()
+    };
+  });
+  expect(staleClearance.requested).toBe("17070px");
+  expect(Number.parseFloat(staleClearance.applied)).toBeLessThanOrEqual(115);
+
   const before = await page.evaluate(() => ({
     viewportHeight: window.innerHeight,
     documentHeight: document.documentElement.scrollHeight,
-    maxScrollY: document.documentElement.scrollHeight - window.innerHeight,
-    tagClearance: getComputedStyle(document.documentElement).getPropertyValue("--desktop-tags-clearance").trim()
+    maxScrollY: document.documentElement.scrollHeight - window.innerHeight
   }));
   expect(before.documentHeight).toBeGreaterThan(before.viewportHeight);
   expect(before.maxScrollY).toBeGreaterThan(0);
 
   await page.evaluate(() => window.scrollTo({ top: 500, behavior: "auto" }));
   await page.waitForTimeout(80);
-  const midScrollClearance = await page.evaluate(() =>
-    getComputedStyle(document.documentElement).getPropertyValue("--desktop-tags-clearance").trim()
-  );
-  expect(midScrollClearance).toBe(before.tagClearance);
+  const midScroll = await page.evaluate(() => ({
+    appliedClearance: getComputedStyle(document.querySelector(".document-pad")).marginTop,
+    documentHeight: document.documentElement.scrollHeight,
+    requestedClearance: getComputedStyle(document.documentElement)
+      .getPropertyValue("--desktop-tags-clearance")
+      .trim()
+  }));
+  expect(Number.parseFloat(midScroll.requestedClearance)).toBeLessThanOrEqual(180);
+  expect(Number.parseFloat(midScroll.appliedClearance)).toBeLessThanOrEqual(180);
+  expect(midScroll.documentHeight).toBeLessThanOrEqual(before.documentHeight + 2);
 
   await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" }));
   await page.waitForTimeout(80);
