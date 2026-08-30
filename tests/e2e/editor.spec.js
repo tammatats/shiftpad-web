@@ -93,3 +93,86 @@ test("compact widths keep the ward title and tag controls visible", async ({ pag
   }
   await expect(page.locator("#sync-indicator")).toBeVisible();
 });
+
+test("focused editor accepts a clean remote revision without losing its caret", async ({ page }) => {
+  const editor = page.locator("#notepad-editor");
+  await editor.evaluate((element) => {
+    element.innerHTML = [
+      '<div data-line-id="line-a">first</div>',
+      '<div data-line-id="line-b">second</div>'
+    ].join("");
+    element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    const text = element.children[1].firstChild;
+    const range = document.createRange();
+    range.setStart(text, 3);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    element.focus({ preventScroll: true });
+    window.rememberEditorSelection(element, { force: true });
+  });
+
+  await page.evaluate(() => {
+    const note = window.getCurrentNote();
+    window.setNoteDocumentHtml(note, [
+      '<div data-line-id="line-a">first from monitor two</div>',
+      '<div data-line-id="line-b">second</div>'
+    ].join(""));
+    window.patchCurrentNoteEditorFromModel({
+      workspaceKey: "shift",
+      ward: window.getCurrentWard(),
+      note
+    }, { source: "e2e" });
+  });
+
+  await expect(editor.locator('[data-line-id="line-a"]')).toHaveText("first from monitor two");
+  const caret = await page.evaluate(() => {
+    const editorElement = document.querySelector("#notepad-editor");
+    const selection = window.getSelection();
+    const line = selection?.anchorNode?.parentElement?.closest?.("[data-line-id]");
+    return {
+      focused: document.activeElement === editorElement,
+      lineId: line?.dataset?.lineId || "",
+      offset: selection?.anchorOffset ?? -1
+    };
+  });
+  expect(caret).toEqual({ focused: true, lineId: "line-b", offset: 3 });
+});
+
+test("long desktop notes extend the document and scroll to their final line", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const editor = page.locator("#notepad-editor");
+  await editor.evaluate((element) => {
+    element.innerHTML = Array.from({ length: 90 }, (_, index) =>
+      `<div data-line-id="long-${index}">Long note line ${index + 1}</div>`
+    ).join("");
+    element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+  });
+
+  const before = await page.evaluate(() => ({
+    viewportHeight: window.innerHeight,
+    documentHeight: document.documentElement.scrollHeight,
+    maxScrollY: document.documentElement.scrollHeight - window.innerHeight,
+    tagClearance: getComputedStyle(document.documentElement).getPropertyValue("--desktop-tags-clearance").trim()
+  }));
+  expect(before.documentHeight).toBeGreaterThan(before.viewportHeight);
+  expect(before.maxScrollY).toBeGreaterThan(0);
+
+  await page.evaluate(() => window.scrollTo({ top: 500, behavior: "auto" }));
+  await page.waitForTimeout(80);
+  const midScrollClearance = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--desktop-tags-clearance").trim()
+  );
+  expect(midScrollClearance).toBe(before.tagClearance);
+
+  await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" }));
+  await page.waitForTimeout(80);
+  const after = await page.evaluate(() => ({
+    scrollY: window.scrollY,
+    lastLineBottom: document.querySelector('[data-line-id="long-89"]')?.getBoundingClientRect().bottom || Infinity,
+    viewportHeight: window.innerHeight
+  }));
+  expect(after.scrollY).toBeGreaterThan(0);
+  expect(after.lastLineBottom).toBeLessThanOrEqual(after.viewportHeight + 1);
+});

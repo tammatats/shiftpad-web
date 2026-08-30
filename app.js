@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-08-19-reliability-suite";
+const APP_BUILD = "2026-08-30-live-sync";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -162,6 +162,7 @@ const authState = {
 };
 const uiState = {
   editorFocused: false,
+  editorCompositionActive: false,
   mobileTagsOpen: false,
   savedSelection: null,
   savedSelectionBookmark: null,
@@ -453,16 +454,13 @@ function updateDesktopTagBarOffset() {
   const controlsRect = refs.topControlStack?.getBoundingClientRect?.();
   const controlsBottom = Math.max(0, Math.round(controlsRect?.bottom || 0));
   const quickTagsRect = refs.editorRoot?.querySelector?.(".quick-tags")?.getBoundingClientRect?.();
-  const noteCardRect = refs.editorRoot?.querySelector?.(".note-pad-card")?.getBoundingClientRect?.();
   if (controlsRect?.height) {
     document.documentElement.style.setProperty("--top-controls-height", `${Math.round(controlsRect.height)}px`);
   }
   document.documentElement.style.setProperty("--desktop-tags-top", `${controlsBottom + 8}px`);
   if (quickTagsRect?.height) {
     document.documentElement.style.setProperty("--desktop-tags-height", `${Math.round(quickTagsRect.height)}px`);
-  }
-  if (quickTagsRect && noteCardRect) {
-    const clearance = Math.max(0, Math.ceil(quickTagsRect.bottom - noteCardRect.top + 10));
+    const clearance = Math.max(0, Math.ceil(quickTagsRect.height + 10));
     document.documentElement.style.setProperty("--desktop-tags-clearance", `${clearance}px`);
   }
   syncDrawerControlPositions();
@@ -1021,6 +1019,17 @@ function bindEvents() {
       }
       syncMobileTagDock();
     }, 50);
+  });
+
+  refs.editorRoot.addEventListener("compositionstart", (event) => {
+    if (!getEditorFromEventTarget(event.target)) return;
+    uiState.editorCompositionActive = true;
+  });
+
+  refs.editorRoot.addEventListener("compositionend", (event) => {
+    if (!getEditorFromEventTarget(event.target)) return;
+    uiState.editorCompositionActive = false;
+    window.setTimeout(() => applyPendingRemoteStateIfReady(), 0);
   });
 
   refs.editorRoot.addEventListener("paste", (event) => {
@@ -4184,6 +4193,59 @@ function applyCloudNoteDocumentToLocation(row, location) {
   return changed;
 }
 
+function patchCurrentNoteEditorFromModel(location, { source = "realtime", merged = false } = {}) {
+  const editor = refs.editorRoot?.querySelector?.('#notepad-editor[data-live-editor="true"]');
+  if (
+    !editor ||
+    state.activeView !== "notes" ||
+    location?.workspaceKey !== getActiveWorkspaceKey() ||
+    location?.note?.id !== getCurrentNote()?.id
+  ) {
+    return false;
+  }
+
+  const wasFocused = isEditorActivelyFocused();
+  const scrollSnapshot = { x: window.scrollX, y: window.scrollY };
+  if (wasFocused) rememberEditorSelection(editor, { force: true });
+
+  editor.innerHTML = getNoteDocumentHtml(location.note);
+  applyCustomTagColors(editor);
+  applyEditorCompletionClasses(editor);
+  syncEditorEmptyState(editor);
+  markEditorCommittedToNote(editor, location.note);
+  updateSortBedsButtonFromEditor(editor);
+  refreshEditorBedIndex(location.note);
+
+  if (wasFocused) {
+    editor.focus({ preventScroll: true });
+    if (!restoreEditorSelectionBookmark(editor)) {
+      restoreEditorSelection(editor);
+    }
+    rememberEditorSelection(editor, { force: true });
+  }
+
+  window.requestAnimationFrame(() => {
+    if (
+      Math.abs(window.scrollX - scrollSnapshot.x) > 1 ||
+      Math.abs(window.scrollY - scrollSnapshot.y) > 1
+    ) {
+      window.scrollTo({ left: scrollSnapshot.x, top: scrollSnapshot.y, behavior: "auto" });
+    }
+  });
+
+  appendEditorDebugLog({
+    action: merged ? "note-revision-live-merge" : "note-revision-live-apply",
+    source,
+    success: true,
+    handledBy: "focused-editor-in-place-update",
+    workspaceKey: location.workspaceKey,
+    wardId: location.ward?.id || "",
+    noteId: location.note.id,
+    editorFocused: wasFocused
+  });
+  return true;
+}
+
 function applyKnownAuthoritativeNoteDocuments(targetAppState, { preservePending = false } = {}) {
   authState.noteDocuments.forEach((row) => {
     const location = findNoteLocation(targetAppState, row.workspace_key, row.note_id, row.ward_id);
@@ -4381,11 +4443,12 @@ function handleRemoteNoteDocumentRecord(input, { source = "realtime" } = {}) {
     location.note.cloudPending ||
     (cached && localHtml !== cached.document_html)
   );
-  if (
-    authState.noteDocumentSaveInFlight.has(key) ||
-    localDirty ||
-    (isCurrentNote && isEditorActivelyFocused())
-  ) {
+  const shouldQueue = window.ShiftPadSyncCore?.shouldQueueRemoteNoteDocument?.({
+    saveInFlight: authState.noteDocumentSaveInFlight.has(key),
+    localDirty,
+    editorComposing: isCurrentNote && uiState.editorCompositionActive
+  }) ?? Boolean(authState.noteDocumentSaveInFlight.has(key) || localDirty);
+  if (shouldQueue) {
     const pending = authState.pendingRemoteNoteDocuments.get(key);
     if (!pending || row.revision >= pending.revision) {
       authState.pendingRemoteNoteDocuments.set(key, row);
@@ -4396,9 +4459,14 @@ function handleRemoteNoteDocumentRecord(input, { source = "realtime" } = {}) {
 
   const changed = applyCloudNoteDocumentToLocation(row, location);
   scheduleLocalStateSave();
-  if (changed && (isCurrentNote || state.activeView === "timeline")) {
-    invalidateLiveEditorBinding(`note-revision-${source}`);
-    render();
+  if (changed) {
+    authState.lastRemoteAppliedAt = Date.now();
+    if (isCurrentNote && patchCurrentNoteEditorFromModel(location, { source })) {
+      renderAuthUi();
+    } else if (isCurrentNote || state.activeView === "timeline") {
+      invalidateLiveEditorBinding(`note-revision-${source}`);
+      render();
+    }
   }
 }
 
@@ -4413,11 +4481,18 @@ function applyPendingNoteDocumentsIfReady() {
     const isCurrentNote =
       row.workspace_key === getActiveWorkspaceKey() &&
       row.note_id === getCurrentNote()?.id;
-    if (authState.noteDocumentSaveInFlight.has(key) || (isCurrentNote && isEditorActivelyFocused())) return;
-
     const note = location.note;
     const localHtml = getNoteDocumentHtml(note);
     const base = authState.noteDocuments.get(key);
+    const localDirty = Boolean(note.cloudPending || (base && localHtml !== base.document_html));
+    const shouldWait = window.ShiftPadSyncCore?.shouldWaitToResolveQueuedNoteDocument?.({
+      saveInFlight: authState.noteDocumentSaveInFlight.has(key),
+      localDirty,
+      recentLocalMutation: isCurrentNote && hasRecentLocalMutation(CLOUD_REMOTE_APPLY_IDLE_MS),
+      editorComposing: isCurrentNote && uiState.editorCompositionActive
+    }) ?? Boolean(authState.noteDocumentSaveInFlight.has(key));
+    if (shouldWait) return;
+
     let nextHtml = row.document_html;
     let shouldSaveMergedDocument = false;
 
@@ -4461,6 +4536,7 @@ function applyPendingNoteDocumentsIfReady() {
       authState.suppressNoteDocumentSave = previousSuppress;
     }
     scheduleLocalStateSave();
+    authState.lastRemoteAppliedAt = Date.now();
 
     appendEditorDebugLog({
       action: shouldSaveMergedDocument ? "note-revision-merged" : "note-revision-applied",
@@ -4474,7 +4550,12 @@ function applyPendingNoteDocumentsIfReady() {
     });
 
     if (shouldSaveMergedDocument) {
+      if (isCurrentNote) {
+        patchCurrentNoteEditorFromModel(location, { source: "cloud-note-sync", merged: true });
+      }
       scheduleNoteDocumentSave(location, 0);
+    } else if (isCurrentNote && patchCurrentNoteEditorFromModel(location, { source: "cloud-note-sync" })) {
+      renderAuthUi();
     } else if (isCurrentNote || state.activeView === "timeline") {
       invalidateLiveEditorBinding("note-revision-applied");
       render();
@@ -4541,9 +4622,11 @@ function schedulePendingRemoteStateApply() {
   if (authState.remoteApplyTimer) {
     window.clearTimeout(authState.remoteApplyTimer);
   }
-  const delay = (isEditorActivelyFocused() || getActiveWardNameInput())
-    ? CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS
-    : CLOUD_REMOTE_APPLY_IDLE_MS;
+  const delay = authState.pendingRemoteNoteDocuments.size
+    ? CLOUD_REMOTE_APPLY_IDLE_MS
+    : (isEditorActivelyFocused() || getActiveWardNameInput())
+      ? CLOUD_REMOTE_APPLY_FOCUSED_RETRY_MS
+      : CLOUD_REMOTE_APPLY_IDLE_MS;
   authState.remoteApplyTimer = window.setTimeout(() => {
     authState.remoteApplyTimer = null;
     applyPendingRemoteStateIfReady();
@@ -4552,7 +4635,10 @@ function schedulePendingRemoteStateApply() {
 
 function applyPendingRemoteStateIfReady() {
   applyPendingNoteDocumentsIfReady();
-  if (!authState.pendingRemoteRecord) return;
+  if (!authState.pendingRemoteRecord) {
+    if (authState.pendingRemoteNoteDocuments.size) schedulePendingRemoteStateApply();
+    return;
+  }
   if (shouldDeferRemoteStateApply()) {
     schedulePendingRemoteStateApply();
     return;
@@ -4560,6 +4646,7 @@ function applyPendingRemoteStateIfReady() {
   const record = authState.pendingRemoteRecord;
   authState.pendingRemoteRecord = null;
   applyRemoteCloudState(record);
+  if (authState.pendingRemoteNoteDocuments.size) schedulePendingRemoteStateApply();
 }
 
 function isEditorActivelyFocused() {

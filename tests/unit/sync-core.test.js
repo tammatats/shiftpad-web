@@ -28,3 +28,28 @@ test("offline status reports durable unsaved work", () => {
   assert.equal(status.label, "3 unsaved");
   assert.equal(status.tone, "offline");
 });
+
+test("a clean focused reader can display a remote note immediately", () => {
+  assert.equal(sync.shouldQueueRemoteNoteDocument({
+    saveInFlight: false,
+    localDirty: false,
+    editorComposing: false
+  }), false);
+});
+
+test("remote note updates wait for local saves and active composition", () => {
+  assert.equal(sync.shouldQueueRemoteNoteDocument({ localDirty: true }), true);
+  assert.equal(sync.shouldQueueRemoteNoteDocument({ saveInFlight: true }), true);
+  assert.equal(sync.shouldQueueRemoteNoteDocument({ editorComposing: true }), true);
+});
+
+test("queued remote notes merge after the local editor becomes idle", () => {
+  assert.equal(sync.shouldWaitToResolveQueuedNoteDocument({
+    localDirty: true,
+    recentLocalMutation: true
+  }), true);
+  assert.equal(sync.shouldWaitToResolveQueuedNoteDocument({
+    localDirty: true,
+    recentLocalMutation: false
+  }), false);
+});
