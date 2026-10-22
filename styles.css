@@ -3696,12 +3696,16 @@ select:focus {
     grid-column: auto;
   }
 
-  .quick-tags {
+  html.uses-mobile-tag-dock .quick-tags {
     display: none;
   }
 
+  html.uses-mobile-tag-dock .document-pad {
+    margin-top: 0;
+    padding-bottom: 64px;
+  }
+
   .mobile-tag-dock {
-    display: flex;
     position: fixed;
     left: 0;
     top: auto;
@@ -3719,6 +3723,10 @@ select:focus {
     transform: translate3d(var(--mobile-tag-x, 12px), var(--mobile-tag-y, 0px), 0);
     will-change: transform;
     transition: opacity 100ms ease;
+  }
+
+  html.uses-mobile-tag-dock .mobile-tag-dock {
+    display: flex;
   }
 
   .mobile-tag-dock.is-visible {
@@ -3859,11 +3867,11 @@ select:focus {
     display: none;
   }
 
-  html.is-ipad-device .quick-tags {
+  html.uses-mobile-tag-dock .quick-tags {
     display: none;
   }
 
-  html.is-ipad-device .mobile-tag-dock {
+  html.uses-mobile-tag-dock .mobile-tag-dock {
     display: flex;
   }
 }

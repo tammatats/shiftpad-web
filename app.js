@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-08-30-live-sync";
+const APP_BUILD = "2026-10-22-ipad-split";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -859,8 +859,18 @@ function bindEvents() {
   }, { passive: false });
 
   refs.editorRoot.addEventListener("touchend", (event) => {
-    if (uiState.bedIndexScrub?.useTouchCoordinate) finishBedIndexScrub(event);
-  }, { passive: true });
+    if (uiState.bedIndexScrub?.useTouchCoordinate) {
+      finishBedIndexScrub(event);
+      return;
+    }
+    const token = event.target.closest?.('.tag-token[contenteditable="false"]');
+    if (event.touches.length || !token || token.dataset.editing === "true" || ["todo", "hn"].includes(token.dataset.tag) ||
+      isArchivedPadMode() || uiState.editorTapScroll?.moved || uiState.suppressNextBedClick) return;
+    // Safari may select chip text without sending a click. Finish a deliberate
+    // chip tap here, while focus is still allowed to open the native keyboard.
+    event.preventDefault();
+    focusEditorFromTap(getEditorFromEventTarget(token), token);
+  }, { passive: false });
   refs.editorRoot.addEventListener("touchcancel", (event) => {
     if (uiState.bedIndexScrub?.useTouchCoordinate) finishBedIndexScrub(event);
   }, { passive: true });
@@ -984,9 +994,7 @@ function bindEvents() {
 
     if (getEditorFromEventTarget(event.target)) {
       const editor = refs.editorRoot.querySelector("#notepad-editor");
-      uiState.editorFocused = true;
-      syncMobileTagDock();
-      rememberEditorSelection(editor);
+      focusEditorFromTap(editor, event.target);
       finishEditorTapDebug(editor);
       stabilizeEditorTapScroll(editor);
       return;
@@ -1208,40 +1216,29 @@ function bindEvents() {
     }
   });
 
+  let mobileTagTouchStart = null;
   refs.mobileTagRoot?.addEventListener("pointerdown", (event) => {
     if (!event.target.closest("[data-mobile-tag-dock]")) return;
+    rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
     event.preventDefault();
   });
-
-  refs.mobileTagRoot?.addEventListener("click", (event) => {
-    const toggle = event.target.closest("[data-mobile-tag-toggle]");
-    if (toggle) {
-      const editor = refs.editorRoot.querySelector("#notepad-editor");
-      const debugEntry = beginEditorDebugAction(editor, {
-        action: "mobile-tag-menu-toggle",
-        source: "mobile-tag-dock",
-        open: !uiState.mobileTagsOpen
-      });
-      uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
-      restoreEditorFocusAndSelection();
-      syncMobileTagDock();
-      finishEditorDebugAction(debugEntry, {
-        success: true,
-        handledBy: "toggleMobileTagMenu",
-        editor,
-        extra: { open: uiState.mobileTagsOpen }
-      });
-      return;
-    }
-
-    const tagButton = event.target.closest("[data-mobile-tag]");
-    if (tagButton) {
-      restoreEditorFocusAndSelection();
-      handleQuickTag(tagButton.dataset.mobileTag);
-      uiState.mobileTagsOpen = false;
-      syncMobileTagDock();
-    }
+  refs.mobileTagRoot?.addEventListener("touchstart", (event) => {
+    mobileTagTouchStart = getEditorPointerPoint(event);
+    rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
+  }, { passive: true });
+  refs.mobileTagRoot?.addEventListener("touchend", (event) => {
+    const start = mobileTagTouchStart;
+    mobileTagTouchStart = null;
+    const end = getEditorPointerPoint(event);
+    if (event.touches.length || !start || !end || Math.hypot(end.x - start.x, end.y - start.y) > 10) return;
+    if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag]")) return;
+    event.preventDefault();
+    handleMobileTagDockAction(event);
+  }, { passive: false });
+  refs.mobileTagRoot?.addEventListener("touchcancel", () => {
+    mobileTagTouchStart = null;
   });
+  refs.mobileTagRoot?.addEventListener("click", handleMobileTagDockAction);
 
   refs.bedActionRoot?.addEventListener("click", (event) => {
     const close = event.target.closest?.("[data-bed-action-close]");
@@ -1990,6 +1987,7 @@ function trapSearchFocus(event) {
 
 function renderWorkspaceSearch() {
   if (!refs.searchRoot) return;
+  syncMobileTagDock();
   if (!uiState.searchOpen) {
     refs.searchRoot.innerHTML = "";
     refs.searchBtn?.setAttribute("aria-expanded", "false");
@@ -2190,6 +2188,7 @@ function renderDrawer({ animateSide = "", force = false } = {}) {
   }
   restoreDrawerScrollPositions();
   focusEditingWardInput();
+  syncMobileTagDock();
 }
 
 function renderArchivedPadDrawerMenu() {
@@ -2935,7 +2934,7 @@ function renderEditor() {
 
   requestAnimationFrame(() => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
-    if (!isCompactMobileLayout()) {
+    if (!isTouchEditorDevice()) {
       editor?.focus({ preventScroll: true });
     }
     syncMobileTagDock();
@@ -3138,6 +3137,7 @@ function setBedActionMode(mode) {
 
 function renderBedActionSheet({ focusRenameImmediately = false } = {}) {
   if (!refs.bedActionRoot) return;
+  syncMobileTagDock();
   const action = uiState.bedAction;
   document.body.classList.toggle("bed-action-open", Boolean(action));
   if (!action) {
@@ -5428,6 +5428,53 @@ function clampDelay(value, fallback = 0) {
   return Math.max(-720, Math.min(720, Math.round(number)));
 }
 
+function focusEditorFromTap(editor, target) {
+  if (!editor) return;
+  editor.focus({ preventScroll: true });
+  const token = target?.closest?.('.tag-token[contenteditable="false"]');
+  if (token && token.dataset.editing !== "true") {
+    ensureCaretBoundaryAfter(token);
+    const range = document.createRange();
+    range.setStart(token.nextSibling, 1);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  uiState.editorFocused = editor.contains(document.activeElement);
+  syncMobileTagDock();
+  rememberEditorSelection(editor);
+}
+
+function handleMobileTagDockAction(event) {
+  const toggle = event.target.closest("[data-mobile-tag-toggle]");
+  if (toggle) {
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    const debugEntry = beginEditorDebugAction(editor, {
+      action: "mobile-tag-menu-toggle",
+      source: "mobile-tag-dock",
+      open: !uiState.mobileTagsOpen
+    });
+    uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
+    restoreEditorFocusAndSelection();
+    syncMobileTagDock();
+    finishEditorDebugAction(debugEntry, {
+      success: true,
+      handledBy: "toggleMobileTagMenu",
+      editor,
+      extra: { open: uiState.mobileTagsOpen }
+    });
+    return;
+  }
+  const tagButton = event.target.closest("[data-mobile-tag]");
+  if (tagButton) {
+    restoreEditorFocusAndSelection();
+    handleQuickTag(tagButton.dataset.mobileTag);
+    uiState.mobileTagsOpen = false;
+    syncMobileTagDock();
+  }
+}
+
 function handleQuickTag(tag) {
   const note = getCurrentNote();
   if (!note) return;
@@ -5459,23 +5506,37 @@ function handleQuickTag(tag) {
   });
 }
 
-function isCompactMobileLayout() {
-  const narrow = window.matchMedia("(max-width: 860px)").matches;
+function isTouchEditorDevice() {
   const touchLike = window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(hover: none)").matches;
-  return narrow && (touchLike || isLikelyIpadDevice());
+  return touchLike || isLikelyIpadDevice();
+}
+
+function isCompactMobileLayout() {
+  return window.matchMedia("(max-width: 860px)").matches && isTouchEditorDevice();
 }
 
 function syncMobileTagDock() {
+  const compact = isCompactMobileLayout();
+  document.documentElement.classList.toggle("uses-mobile-tag-dock", compact);
   const editorChromeActive = !isArchivedPadMode() && state.activeView === "notes" && uiState.editorFocused;
   document.documentElement.classList.toggle("editor-is-active", editorChromeActive);
   const dock = refs.mobileTagRoot?.querySelector("[data-mobile-tag-dock]");
   if (!dock) return;
 
-  const shouldShow = isCompactMobileLayout() && state.activeView === "notes" && uiState.editorFocused;
+  // Keep a way into tag entry even after blur, a pad switch, or keyboard dismissal.
+  const shouldShow = compact && !isArchivedPadMode() && state.activeView === "notes" &&
+    !uiState.drawerOpen && !uiState.wardOptionsOpen && !uiState.searchOpen && !uiState.bedAction;
+  if (!shouldShow) uiState.mobileTagsOpen = false;
   const isOpen = shouldShow && uiState.mobileTagsOpen;
   dock.classList.toggle("is-visible", shouldShow);
   dock.classList.toggle("is-open", isOpen);
   dock.setAttribute("aria-hidden", String(!shouldShow));
+  dock.inert = !shouldShow;
+  const tray = dock.querySelector(".mobile-tag-tray");
+  if (tray) {
+    tray.inert = !isOpen;
+    tray.setAttribute("aria-hidden", String(!isOpen));
+  }
   const toggle = dock.querySelector("[data-mobile-tag-toggle]");
   if (toggle) {
     toggle.setAttribute("aria-expanded", String(isOpen));
@@ -5502,36 +5563,28 @@ function positionMobileTagDock() {
   const viewport = window.visualViewport;
   const compact = window.matchMedia("(max-width: 560px)").matches;
   const marginX = compact ? 10 : 12;
-  const marginBottom = compact ? 6 : 8;
+  const marginBottom = Math.max(compact ? 6 : 8, Number.parseFloat(getComputedStyle(dock).bottom) || 0);
   const visualLeft = Math.round(viewport?.offsetLeft || 0);
   const visualTop = Math.max(0, Math.round(viewport?.offsetTop || 0));
   const visualWidth = Math.round(viewport?.width || window.innerWidth);
   const visualHeight = Math.round(viewport?.height || window.innerHeight);
-  const layoutHeight = Math.round(window.innerHeight || visualHeight);
   const dockHeight = Math.round(dock.offsetHeight || 44);
   const x = Math.max(0, visualLeft + marginX);
   const width = Math.max(0, visualWidth - marginX * 2);
-  const trayMaxHeight = Math.max(144, visualHeight - dockHeight - marginBottom - 18);
-  const heightLoss = Math.max(0, layoutHeight - visualHeight);
-  const ipadSplitView = isIpadSplitViewLayout();
-  const useOffsetAwareMode = isLikelyIpadDevice() && !ipadSplitView;
-  const keyboardOverlap = useOffsetAwareMode ? Math.max(0, heightLoss - visualTop) : heightLoss;
+  const trayMaxHeight = Math.max(44, visualHeight - dockHeight - marginBottom - 28);
 
-  dock.dataset.mobileTagMode = ipadSplitView ? "ipad-split" : useOffsetAwareMode ? "ipad-offset" : "height-loss";
+  dock.dataset.mobileTagMode = "visual-viewport";
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
   setDockStyleValue(dock, "--mobile-tag-tray-max-height", `${trayMaxHeight}px`);
 
-  if (ipadSplitView && heightLoss > 0) {
-    setDockStyleValue(dock, "--mobile-tag-y", "0px");
-    const baseTop = dock.getBoundingClientRect().top;
-    const targetTop = visualTop + visualHeight - marginBottom - dockHeight;
-    const measuredOffset = Math.min(0, Math.max(-heightLoss, Math.round(targetTop - baseTop)));
-    setDockStyleValue(dock, "--mobile-tag-y", `${measuredOffset}px`);
-    dock.dataset.mobileTagMode = "ipad-split-measured";
-  } else {
-    setDockStyleValue(dock, "--mobile-tag-y", keyboardOverlap ? `-${keyboardOverlap}px` : "0px");
-  }
+  // Measure where fixed positioning actually landed: Safari can already move
+  // fixed elements when its keyboard pans a split-screen window. Correct in
+  // either direction rather than assuming another negative keyboard offset.
+  setDockStyleValue(dock, "--mobile-tag-y", "0px");
+  const baseTop = dock.getBoundingClientRect().top;
+  const targetTop = visualTop + visualHeight - marginBottom - dockHeight;
+  setDockStyleValue(dock, "--mobile-tag-y", `${Math.round(targetTop - baseTop)}px`);
 }
 
 function setDockStyleValue(dock, property, value) {
