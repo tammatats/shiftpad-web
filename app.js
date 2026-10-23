@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-22-ipad-split";
+const APP_BUILD = "2026-10-23-keyboard-dock";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -212,6 +212,8 @@ const uiState = {
   suppressWardHandleClick: false,
   lastViewportDebugAt: 0,
   caretScrollRaf: 0,
+  mobileTagPositionRaf: 0,
+  mobileTagPositionUntil: 0,
   lastCaretAutoScrollAt: 0,
   lastCaretAutoScrollTop: 0,
   pendingEditorInputDebug: null,
@@ -334,7 +336,7 @@ function initMobileViewportDock() {
     window.cancelAnimationFrame(rafId);
     rafId = window.requestAnimationFrame(() => {
       updateViewportOffset();
-      positionMobileTagDock();
+      queueMobileTagDockPosition();
     });
   };
 
@@ -374,7 +376,7 @@ function initMobileViewportDock() {
       uiState.editorTapScroll = null;
       syncMobileTagDock();
     }
-    positionMobileTagDock();
+    queueMobileTagDockPosition();
     updateDesktopTagBarOffset();
     clampCompactShortNoteScrollPosition();
     if (staleIpadPan) {
@@ -424,6 +426,7 @@ function initMobileViewportDock() {
   });
   window.addEventListener("focus", scheduleKeyboardHiddenViewportSettle);
   document.addEventListener("visibilitychange", () => {
+    queueMobileTagDockPosition();
     if (document.visibilityState === "visible") {
       scheduleKeyboardHiddenViewportSettle();
     }
@@ -5544,7 +5547,32 @@ function syncMobileTagDock() {
     toggle.classList.toggle("is-cancel", isOpen);
     toggle.textContent = isOpen ? "X" : "Tags";
   }
-  window.requestAnimationFrame(positionMobileTagDock);
+  queueMobileTagDockPosition();
+}
+
+function queueMobileTagDockPosition() {
+  const dock = refs.mobileTagRoot?.querySelector("[data-mobile-tag-dock]");
+  if (document.hidden || !isCompactMobileLayout() || !dock?.classList.contains("is-visible")) {
+    window.cancelAnimationFrame(uiState.mobileTagPositionRaf);
+    uiState.mobileTagPositionRaf = 0;
+    return;
+  }
+
+  // iPadOS can finish its keyboard/fixed-layer animation after the last resize
+  // notification. Track through focus and a short settle period after blur;
+  // never require a user scroll to discover the final geometry.
+  uiState.mobileTagPositionUntil = performance.now() + 1200;
+  if (uiState.mobileTagPositionRaf) return;
+  const update = () => {
+    uiState.mobileTagPositionRaf = 0;
+    if (document.hidden || !isCompactMobileLayout() ||
+      !refs.mobileTagRoot?.querySelector(".mobile-tag-dock.is-visible")) return;
+    positionMobileTagDock();
+    if (uiState.editorFocused || performance.now() < uiState.mobileTagPositionUntil) {
+      uiState.mobileTagPositionRaf = window.requestAnimationFrame(update);
+    }
+  };
+  uiState.mobileTagPositionRaf = window.requestAnimationFrame(update);
 }
 
 function positionMobileTagDock() {
@@ -5578,13 +5606,13 @@ function positionMobileTagDock() {
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
   setDockStyleValue(dock, "--mobile-tag-tray-max-height", `${trayMaxHeight}px`);
 
-  // Measure where fixed positioning actually landed: Safari can already move
-  // fixed elements when its keyboard pans a split-screen window. Correct in
-  // either direction rather than assuming another negative keyboard offset.
-  setDockStyleValue(dock, "--mobile-tag-y", "0px");
-  const baseTop = dock.getBoundingClientRect().top;
+  // Correct from the currently rendered position. Resetting the transform to
+  // zero on every frame can put the layer behind the keyboard during Safari's
+  // asynchronous fixed-layer updates.
+  const currentTop = dock.getBoundingClientRect().top;
+  const currentOffset = Number.parseFloat(dock.style.getPropertyValue("--mobile-tag-y")) || 0;
   const targetTop = visualTop + visualHeight - marginBottom - dockHeight;
-  setDockStyleValue(dock, "--mobile-tag-y", `${Math.round(targetTop - baseTop)}px`);
+  setDockStyleValue(dock, "--mobile-tag-y", `${Math.round(currentOffset + targetTop - currentTop)}px`);
 }
 
 function setDockStyleValue(dock, property, value) {

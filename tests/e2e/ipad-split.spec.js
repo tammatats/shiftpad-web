@@ -87,6 +87,56 @@ for (const width of [683, 507, 375, 320]) {
     expect(await editor.locator('[data-tag="io"]').evaluate(token => token.nextSibling?.textContent)).toContain("typed");
   });
 
+  test(`iPad ${width}px: keyboard opening keeps Tags tappable without scrolling`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 960 });
+    await page.addInitScript(() => {
+      window.testVisualViewport = { height: 960, offsetTop: 0 };
+      for (const key of ["height", "offsetTop"]) {
+        Object.defineProperty(visualViewport, key, { get: () => window.testVisualViewport[key] });
+      }
+    });
+    await page.goto("/?e2e=1&workspace=shift");
+    const editor = page.locator("#notepad-editor");
+    const toggle = page.locator("[data-mobile-tag-toggle]");
+    await expect(toggle).toBeVisible();
+    await page.evaluate(() => {
+      document.querySelector("#notepad-editor").addEventListener("focus", () => {
+        // Reproduce Safari reporting the start of keyboard animation before
+        // its final viewport/fixed-layer geometry settles. No user scroll and
+        // no second resize event are allowed to rescue the final position.
+        window.testVisualViewport.height = 760;
+        visualViewport.dispatchEvent(new Event("resize"));
+        setTimeout(() => {
+          window.testVisualViewport.height = 520;
+          const keyboard = document.createElement("div");
+          keyboard.id = "simulated-ipad-keyboard";
+          keyboard.setAttribute("aria-label", "Simulated iPad keyboard for regression test");
+          keyboard.innerHTML = '<p>Simulated iPad keyboard · WebKit test</p><div>Q　W　E　R　T　Y　U　I　O　P</div><div>A　S　D　F　G　H　J　K　L</div><div>⇧　Z　X　C　V　B　N　M　⌫</div><div>123　　　　　space　　　　　return</div>';
+          Object.assign(keyboard.style, {
+            position: "fixed", top: "520px", bottom: "0", left: "0", right: "0", zIndex: "9999",
+            background: "#d1d3d9", color: "#242529", padding: "16px 6px", font: "14px system-ui",
+            display: "grid", alignContent: "start", gap: "30px", textAlign: "center", borderTop: "1px solid #a9acb3"
+          });
+          document.body.appendChild(keyboard);
+        }, 180);
+      }, { once: true });
+    });
+    await editor.tap({ position: { x: 20, y: 20 } });
+    await expect(page.locator("#simulated-ipad-keyboard")).toBeVisible();
+    await expect.poll(async () => {
+      const rect = await toggle.boundingBox();
+      return Math.round(rect.y + rect.height);
+    }).toBe(520 - (width > 560 ? 8 : 6));
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    await toggle.tap();
+    await expect(page.locator(".mobile-tag-tray")).toHaveCSS("opacity", "1");
+    await page.screenshot({ path: testInfo.outputPath(`ipad-${width}-keyboard.png`), scale: "css" });
+    await page.locator('[data-mobile-tag="todo"]').tap();
+    await page.keyboard.type("tag above keyboard");
+    await expect(editor).toContainText("tag above keyboard");
+    await expect(editor.locator('[data-tag="todo"]')).toHaveCount(1);
+  });
+
   test(`iPad ${width}px: Tags follows keyboard resizing and viewport panning`, async ({ page }) => {
     await page.setViewportSize({ width, height: 960 });
     await page.addInitScript(() => {
