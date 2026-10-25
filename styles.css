@@ -2300,7 +2300,7 @@ button:disabled {
   white-space: nowrap;
 }
 
-html.editor-is-active .sticky-ward-actions > * {
+html.editor-is-active .sticky-ward-actions > :not([data-sort-beds]) {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
