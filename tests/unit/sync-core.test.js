@@ -29,6 +29,28 @@ test("offline status reports durable unsaved work", () => {
   assert.equal(status.tone, "offline");
 });
 
+test("pending reminders are distinct from unsaved notes", () => {
+  const status = sync.buildSyncStatus({ configured: true, signedIn: true, pendingReminders: true });
+  assert.equal(status.label, "Scheduling");
+  assert.equal(status.detail, "Notes saved. Updating reminders");
+  assert.equal(status.unsavedCount, 0);
+});
+
+test("pending writes do not mask sync failures as normal saving", () => {
+  const status = sync.buildSyncStatus({ configured: true, signedIn: true, pendingNotes: 1, error: "Cloud save retrying" });
+  assert.equal(status.label, "1 unsaved");
+  assert.equal(status.tone, "error");
+  assert.match(status.detail, /Cloud save retrying/);
+  assert.match(status.detail, /kept on this device/);
+});
+
+test("offline reminder work does not imply note loss", () => {
+  const status = sync.buildSyncStatus({ configured: true, signedIn: true, online: false, pendingReminders: true });
+  assert.equal(status.label, "Offline");
+  assert.equal(status.unsavedCount, 0);
+  assert.match(status.detail, /Reminders waiting for connection/);
+});
+
 test("a clean focused reader can display a remote note immediately", () => {
   assert.equal(sync.shouldQueueRemoteNoteDocument({
     saveInFlight: false,

@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-25-iphone-fixed-tags";
+const APP_BUILD = "2026-10-25-sync-status";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -137,9 +137,11 @@ const authState = {
   noteDocuments: new Map(),
   noteDocumentSaveTimers: new Map(),
   noteDocumentSaveInFlight: new Set(),
+  noteDocumentSaveErrors: new Set(),
   reminderIndexSaveTimer: null,
   reminderIndexPending: false,
   reminderIndexSaving: false,
+  reminderIndexError: "",
   pendingRemoteNoteDocuments: new Map(),
   noteDocumentFetchInFlight: false,
   suppressNoteDocumentSave: false,
@@ -2817,9 +2819,11 @@ function getSyncStatusModel() {
     online: navigator.onLine,
     hydrating: authState.isHydrating,
     saving: Boolean(authState.isSaving || authState.saveTimer || authState.noteDocumentSaveInFlight.size),
-    pendingState: authState.stateCloudPending || authState.reminderIndexPending,
+    pendingState: authState.stateCloudPending,
+    pendingReminders: authState.reminderIndexPending,
     pendingNotes,
-    error: authState.lastSyncError,
+    error: (pendingNotes && authState.noteDocumentSaveErrors.size ? "Cloud save retrying" : "") ||
+      (authState.reminderIndexPending ? authState.reminderIndexError : "") || authState.lastSyncError,
     realtimeStatus: authState.realtimeStatus
   }) || { tone: "local", label: "Local", detail: "Local only", unsavedCount: 0 };
 }
@@ -3970,7 +3974,9 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
     window.clearTimeout(authState.debugLogUploadTimer);
     authState.debugLogUploadTimer = null;
   }
-  if (authState.reminderIndexSaveTimer) {
+  // Reconnecting the realtime subscription must not cancel queued writes.
+  // Hydration queues the reminder index immediately before starting live sync.
+  if (!keepStatus && authState.reminderIndexSaveTimer) {
     window.clearTimeout(authState.reminderIndexSaveTimer);
     authState.reminderIndexSaveTimer = null;
   }
@@ -3984,6 +3990,8 @@ function stopCloudLiveSync({ keepStatus = false } = {}) {
     authState.noteDocumentSaveTimers.forEach((timer) => window.clearTimeout(timer));
     authState.noteDocumentSaveTimers.clear();
     authState.noteDocumentSaveInFlight.clear();
+    authState.noteDocumentSaveErrors.clear();
+    authState.reminderIndexError = "";
     authState.pendingRemoteNoteDocuments.clear();
     authState.noteDocumentFetchInFlight = false;
     authState.cloudRefreshPromise = null;
@@ -4189,6 +4197,7 @@ function applyCloudNoteDocumentToLocation(row, location) {
     }
     note.cloudRevision = row.revision;
     note.cloudPending = false;
+    authState.noteDocumentSaveErrors.delete(getNoteDocumentKey(row.workspace_key, row.note_id));
   } finally {
     authState.suppressNoteDocumentSave = previousSuppress;
   }
@@ -4357,6 +4366,7 @@ async function saveNoteDocumentNow(workspaceKey, noteId) {
     const status = String((Array.isArray(data) ? data[0] : data)?.status || "");
 
     if (status === "saved" && result) {
+      authState.noteDocumentSaveErrors.delete(key);
       authState.noteDocuments.set(key, result);
       note.cloudRevision = result.revision;
       note.cloudPending = getNoteDocumentHtml(note) !== snapshotHtml;
@@ -4406,6 +4416,7 @@ async function saveNoteDocumentNow(workspaceKey, noteId) {
     throw new Error("The note revision server returned an invalid response.");
   } catch (error) {
     note.cloudPending = true;
+    authState.noteDocumentSaveErrors.add(key);
     scheduleLocalStateSave();
     if (navigator.onLine) scheduleNoteDocumentSave(location, NOTE_DOCUMENT_RETRY_MS);
     authState.lastSyncError = navigator.onLine ? "Cloud save retrying" : "";
@@ -4535,6 +4546,7 @@ function applyPendingNoteDocumentsIfReady() {
       });
       note.cloudRevision = row.revision;
       note.cloudPending = shouldSaveMergedDocument;
+      if (!note.cloudPending) authState.noteDocumentSaveErrors.delete(key);
     } finally {
       authState.suppressNoteDocumentSave = previousSuppress;
     }
@@ -9799,10 +9811,12 @@ async function saveReminderIndexNow() {
     if (error) throw error;
 
     authState.reminderIndexPending = false;
+    authState.reminderIndexError = "";
     authState.lastSyncError = "";
     authState.lastCloudSavedAt = Date.now();
   } catch (error) {
     authState.reminderIndexPending = true;
+    authState.reminderIndexError = "Reminder schedule retrying";
     throw error;
   } finally {
     authState.reminderIndexSaving = false;
