@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-23-keyboard-dock";
+const APP_BUILD = "2026-10-25-iphone-fixed-tags";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -5605,6 +5605,19 @@ function positionMobileTagDock() {
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
   setDockStyleValue(dock, "--mobile-tag-tray-max-height", `${trayMaxHeight}px`);
+
+  if (isLikelyIphoneDevice()) {
+    // Let Safari's compositor keep the fixed button pinned during page scroll.
+    // Its fixed-layer rect can lag scrolling; feeding that rect back into the
+    // transform makes the button chase the page and accumulate corrections.
+    // Small viewport differences belong to browser chrome/overscroll, not the
+    // keyboard. For keyboard or pinch zoom, use viewport geometry directly.
+    const keyboardOrZoom = window.innerHeight - visualHeight > 120 || (viewport?.scale || 1) > 1.01;
+    const offset = keyboardOrZoom ? visualTop + visualHeight - window.innerHeight : 0;
+    dock.dataset.mobileTagMode = keyboardOrZoom ? "visual-viewport" : "native-fixed";
+    setDockStyleValue(dock, "--mobile-tag-y", `${Math.round(offset)}px`);
+    return;
+  }
 
   // Correct from the currently rendered position. Resetting the transform to
   // zero on every frame can put the layer behind the keyboard during Safari's
