@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-25-sync-status";
+const APP_BUILD = "2026-10-25-device-sync";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -114,6 +114,7 @@ const refs = {
   timelineRoot: document.getElementById("timeline-root"),
   workspace: document.querySelector(".workspace"),
   syncIndicator: document.getElementById("sync-indicator"),
+  syncRecoveryNotice: document.getElementById("sync-recovery-notice"),
   syncIndicatorLabel: document.getElementById("sync-indicator-label")
 };
 
@@ -557,6 +558,19 @@ function bindEvents() {
     uiState.drawerOpen = true;
     uiState.wardOptionsOpen = false;
     renderDrawer({ animateSide: "left" });
+  });
+
+  refs.syncRecoveryNotice?.querySelector("button")?.addEventListener("click", () => {
+    state.recoveryHistory.forEach((entry) => {
+      if (entry.reason === "Concurrent edit") entry.reviewed = true;
+    });
+    scheduleLocalStateSave();
+    clearDrawerCloseTimer();
+    uiState.drawerSections.add("history");
+    uiState.drawerOpen = true;
+    uiState.wardOptionsOpen = false;
+    renderDrawer({ animateSide: "left" });
+    renderAuthUi();
   });
 
   refs.wardOptionsBtn?.addEventListener("click", () => {
@@ -2387,7 +2401,7 @@ function renderSettingsMenu() {
 }
 
 function renderWorkspaceHistory() {
-  const recoveries = Array.isArray(state.recoveryHistory) ? state.recoveryHistory.slice(0, 6) : [];
+  const recoveries = Array.isArray(state.recoveryHistory) ? state.recoveryHistory : [];
   const workspaceKey = getActiveWorkspaceKey();
   const archives = appState.archives.filter((entry) => entry.sourceWorkspace === workspaceKey);
   const note = getCurrentNote();
@@ -3503,6 +3517,12 @@ function renderTimeline() {
 }
 
 function renderAuthUi() {
+  const hideRecoveryNotice = !authState.user || isArchivedPadMode() ||
+    !state.recoveryHistory?.some((entry) => entry.reason === "Concurrent edit" && !entry.reviewed);
+  if (refs.syncRecoveryNotice && refs.syncRecoveryNotice.classList.contains("hidden") !== hideRecoveryNotice) {
+    refs.syncRecoveryNotice.classList.toggle("hidden", hideRecoveryNotice);
+    requestAnimationFrame(updateDesktopTagBarOffset);
+  }
   const hasUser = Boolean(authState.user);
   document.body.classList.toggle("auth-locked", !hasUser);
   refs.authGate?.classList.toggle("hidden", hasUser);
@@ -4186,6 +4206,7 @@ async function fetchLatestNoteDocuments({ source = "poll" } = {}) {
 function applyCloudNoteDocumentToLocation(row, location) {
   if (!row || !location?.note) return false;
   const note = location.note;
+  if (row.revision < getNoteCloudRevision(note)) return false;
   const changed = getNoteDocumentHtml(note) !== row.document_html;
   const previousSuppress = authState.suppressNoteDocumentSave;
   authState.suppressNoteDocumentSave = true;
@@ -4197,6 +4218,7 @@ function applyCloudNoteDocumentToLocation(row, location) {
     }
     note.cloudRevision = row.revision;
     note.cloudPending = false;
+    delete note.cloudBase;
     authState.noteDocumentSaveErrors.delete(getNoteDocumentKey(row.workspace_key, row.note_id));
   } finally {
     authState.suppressNoteDocumentSave = previousSuppress;
@@ -4295,6 +4317,7 @@ function scheduleChangedNoteDocumentSaves() {
           cloud.document_html !== html ||
           cloud.ward_id !== ward.id
         ) {
+          rememberPendingNoteBase(note, cloud);
           note.cloudPending = true;
           if (navigator.onLine) scheduleNoteDocumentSave({ workspaceKey, workspace, ward, note });
         }
@@ -4303,8 +4326,20 @@ function scheduleChangedNoteDocumentSaves() {
   });
 }
 
+function rememberPendingNoteBase(note, row) {
+  if (note.cloudBase || !row || row.revision !== getNoteCloudRevision(note)) return;
+  note.cloudBase = { revision: row.revision, documentHtml: row.document_html };
+}
+
+function getPendingNoteBase(note) {
+  const base = note?.cloudBase;
+  if (!base || base.revision !== getNoteCloudRevision(note) || typeof base.documentHtml !== "string") return null;
+  return { revision: base.revision, document_html: base.documentHtml };
+}
+
 function scheduleNoteDocumentSave(location, delay = NOTE_DOCUMENT_SAVE_DEBOUNCE_MS) {
   if (!location?.note?.id || authState.suppressNoteDocumentSave) return;
+  rememberPendingNoteBase(location.note, authState.noteDocuments.get(getNoteDocumentKey(location.workspaceKey, location.note.id)));
   location.note.cloudPending = true;
   scheduleLocalStateSave();
   if (!navigator.onLine) {
@@ -4366,13 +4401,23 @@ async function saveNoteDocumentNow(workspaceKey, noteId) {
     const status = String((Array.isArray(data) ? data[0] : data)?.status || "");
 
     if (status === "saved" && result) {
+      // A metadata refresh can replace the note object while this request is
+      // in flight. Acknowledge the current note, never a detached old object.
+      const currentLocation = findNoteLocation(appState, workspaceKey, noteId);
+      if (!currentLocation) return;
+      const currentNote = currentLocation.note;
+      const known = authState.noteDocuments.get(key);
+      if (getNoteCloudRevision(currentNote) > result.revision) return;
       authState.noteDocumentSaveErrors.delete(key);
-      authState.noteDocuments.set(key, result);
-      note.cloudRevision = result.revision;
-      note.cloudPending = getNoteDocumentHtml(note) !== snapshotHtml;
+      if (!known || known.revision <= result.revision) authState.noteDocuments.set(key, result);
+      currentNote.cloudRevision = result.revision;
+      currentNote.cloudPending = getNoteDocumentHtml(currentNote) !== snapshotHtml;
+      delete currentNote.cloudBase;
+      if (currentNote.cloudPending) rememberPendingNoteBase(currentNote, result);
+      if (known?.revision > result.revision) authState.pendingRemoteNoteDocuments.set(key, known);
       scheduleLocalStateSave();
-      if (note.cloudPending) {
-        scheduleNoteDocumentSave(location);
+      if (currentNote.cloudPending) {
+        scheduleNoteDocumentSave(currentLocation);
       } else {
         setAuthMessage("");
       }
@@ -4496,8 +4541,14 @@ function applyPendingNoteDocumentsIfReady() {
       row.workspace_key === getActiveWorkspaceKey() &&
       row.note_id === getCurrentNote()?.id;
     const note = location.note;
+    const cached = authState.noteDocuments.get(key);
+    // Realtime notifications and save responses can arrive out of order.
+    if (row.revision < Math.max(getNoteCloudRevision(note), cached?.revision || 0)) {
+      authState.pendingRemoteNoteDocuments.delete(key);
+      return;
+    }
     const localHtml = getNoteDocumentHtml(note);
-    const base = authState.noteDocuments.get(key);
+    const base = getPendingNoteBase(note) || (cached?.revision === getNoteCloudRevision(note) ? cached : null);
     const localDirty = Boolean(note.cloudPending || (base && localHtml !== base.document_html));
     const shouldWait = window.ShiftPadSyncCore?.shouldWaitToResolveQueuedNoteDocument?.({
       saveInFlight: authState.noteDocumentSaveInFlight.has(key),
@@ -4546,6 +4597,8 @@ function applyPendingNoteDocumentsIfReady() {
       });
       note.cloudRevision = row.revision;
       note.cloudPending = shouldSaveMergedDocument;
+      delete note.cloudBase;
+      if (note.cloudPending) rememberPendingNoteBase(note, row);
       if (!note.cloudPending) authState.noteDocumentSaveErrors.delete(key);
     } finally {
       authState.suppressNoteDocumentSave = previousSuppress;
@@ -4742,6 +4795,11 @@ function mergeRemoteStatePreservingLocalView(remoteInput, localViewInput = appSt
 
   WORKSPACE_KEYS.forEach((workspaceKey) => {
     preserveWorkspaceView(nextAppState.workspaces[workspaceKey], localViewState.workspaces?.[workspaceKey]);
+    nextAppState.workspaces[workspaceKey].recoveryHistory = mergeHistoryCollections(
+      localViewState.workspaces[workspaceKey]?.recoveryHistory,
+      nextAppState.workspaces[workspaceKey].recoveryHistory,
+      RECOVERY_HISTORY_LIMIT
+    );
   });
   return nextAppState;
 }
@@ -4785,7 +4843,9 @@ function mergeRemoteStatePreservingNewerLocalEntities(remoteInput, localInput = 
         const remoteNoteUpdatedAt = getNoteUpdatedAt(remoteNote);
         const localRevision = getNoteCloudRevision(localNote);
         const remoteRevision = getNoteCloudRevision(remoteNote);
-        if (compareNoteSyncPriority(localNote, remoteNote) <= 0) return remoteNote;
+        // Pending edits belong to this device. Resolve them against the note
+        // revision endpoint before letting a newer account snapshot replace them.
+        if (!localNote.cloudPending && compareNoteSyncPriority(localNote, remoteNote) <= 0) return remoteNote;
 
         preservedEntities.push({
           type: "note",
@@ -4799,6 +4859,20 @@ function mergeRemoteStatePreservingNewerLocalEntities(remoteInput, localInput = 
         });
         return localNote;
       });
+      const knownNoteIds = new Set(nextWard.notes.map((note) => note.id));
+      localWard.notes.forEach((note) => {
+        if (!knownNoteIds.has(note.id) && note.cloudPending && hasMeaningfulNoteHtml(getNoteDocumentHtml(note))) {
+          nextWard.notes.push(note);
+          preservedEntities.push({ type: "offline-note", workspace: workspaceKey, noteId: note.id });
+        }
+      });
+    });
+    const knownWardIds = new Set(nextWorkspace.wards.map((ward) => ward.id));
+    localWorkspace.wards.forEach((ward) => {
+      if (!knownWardIds.has(ward.id) && ward.notes.some((note) => note.cloudPending && hasMeaningfulNoteHtml(getNoteDocumentHtml(note)))) {
+        nextWorkspace.wards.push(ward);
+        preservedEntities.push({ type: "offline-ward", workspace: workspaceKey, wardId: ward.id });
+      }
     });
   });
 
@@ -4880,7 +4954,7 @@ function mergeWorkspaceStateForSave(localInput, remoteInput) {
 
           const localUpdatedAt = getNoteUpdatedAt(localNote);
           const remoteUpdatedAt = getNoteUpdatedAt(remoteNote);
-          if (compareNoteSyncPriority(localNote, remoteNote) >= 0) {
+          if (localNote.cloudPending || compareNoteSyncPriority(localNote, remoteNote) >= 0) {
             localWardHasNewestNote = localWardHasNewestNote || compareNoteSyncPriority(localNote, remoteNote) > 0;
             return localNote;
           }
@@ -7473,8 +7547,8 @@ function hasRecoverableCloudData(remoteInput) {
 }
 
 function addRecoverySnapshot({ note, ward, documentHtml, reason, createdAt = Date.now(), targetState = state }) {
-  if (!note || !ward || !hasMeaningfulNoteHtml(documentHtml)) return;
-  const html = String(documentHtml).slice(0, RECOVERY_SNAPSHOT_MAX_HTML);
+  if (!note || !ward || (reason !== "Concurrent edit" && !hasMeaningfulNoteHtml(documentHtml))) return;
+  const html = reason === "Concurrent edit" ? String(documentHtml) : String(documentHtml).slice(0, RECOVERY_SNAPSHOT_MAX_HTML);
   if (!targetState || !Array.isArray(targetState.recoveryHistory)) return;
   if (targetState.recoveryHistory.some((entry) => entry.noteId === note.id && entry.documentHtml === html)) return;
   targetState.recoveryHistory.unshift({
@@ -8616,6 +8690,9 @@ function normalizeWorkspaceState(input, { blankFallback = false, preserveAllWard
             updatedAt: Number(note.updatedAt) || Number(note.createdAt) || Date.now(),
             cloudRevision: Math.max(0, Number(note.cloudRevision) || 0),
             cloudPending: Boolean(note.cloudPending),
+            cloudBase: note.cloudPending && note.cloudBase?.revision === Number(note.cloudRevision) && typeof note.cloudBase?.documentHtml === "string"
+              ? { revision: note.cloudBase.revision, documentHtml: note.cloudBase.documentHtml }
+              : undefined,
             documentHtml:
               typeof note.documentHtml === "string" && note.documentHtml.trim()
                 ? note.documentHtml
@@ -8679,13 +8756,14 @@ function normalizeRecoveryHistory(input) {
       id: typeof entry.id === "string" ? entry.id : createId("recovery"),
       createdAt: Number(entry.createdAt) || Date.now(),
       reason: typeof entry.reason === "string" ? entry.reason.slice(0, 60) : "Auto recovery",
+      reviewed: Boolean(entry.reviewed),
       wardId: typeof entry.wardId === "string" ? entry.wardId : "",
       wardName: typeof entry.wardName === "string" ? entry.wardName.slice(0, 80) : "",
       wardColor: typeof entry.wardColor === "string" ? entry.wardColor : "",
       noteId: typeof entry.noteId === "string" ? entry.noteId : "",
       noteTitle: typeof entry.noteTitle === "string" ? entry.noteTitle.slice(0, 120) : "",
       noteCreatedAt: Number(entry.noteCreatedAt) || Date.now(),
-      documentHtml: entry.documentHtml.slice(0, RECOVERY_SNAPSHOT_MAX_HTML)
+      documentHtml: entry.reason === "Concurrent edit" ? entry.documentHtml : entry.documentHtml.slice(0, RECOVERY_SNAPSHOT_MAX_HTML)
     }))
     .sort((left, right) => right.createdAt - left.createdAt)
     .slice(0, RECOVERY_HISTORY_LIMIT);
@@ -10059,6 +10137,11 @@ function serializeAppStateForCloud(input) {
   WORKSPACE_KEYS.forEach((workspaceKey) => {
     if (payload.workspaces?.[workspaceKey]) {
       payload.workspaces[workspaceKey].shiftArchives = [];
+      payload.workspaces[workspaceKey].wards.forEach((ward) => ward.notes.forEach((note) => {
+        // These are this device's outbox bookkeeping, not another device's edits.
+        delete note.cloudBase;
+        note.cloudPending = false;
+      }));
     }
   });
   return payload;

@@ -19,7 +19,7 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='8' y='8' width='48' height='48' rx='14' fill='%23e67d59'/%3E%3Cpath d='M20 22h24M20 32h24M20 42h16' stroke='white' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E"
     />
-    <link rel="stylesheet" href="styles.css?v=20261025-sync-status" />
+    <link rel="stylesheet" href="styles.css?v=20261025-device-sync" />
   </head>
   <body>
     <div id="auth-gate" class="auth-gate hidden">
@@ -109,9 +109,12 @@
             </button>
           </nav>
 
+          <div id="sync-recovery-notice" class="sync-recovery-notice hidden" role="status">
+            <span>Another device changed the same note. Your conflicting edit is saved in History.</span>
+            <button class="ghost-btn" type="button">Review saved copy</button>
+          </div>
           <div id="sticky-ward-root" class="sticky-ward-root"></div>
         </div>
-
         <div class="workspace">
           <section class="content-shell">
             <section id="notes-view" class="view-panel">
@@ -146,6 +149,6 @@
     <script src="/api/public-config.js" defer></script>
     <script src="lib/sync-core.js?v=20261025-sync-status" defer></script>
     <script src="lib/diagnostics-core.js?v=20260823-reliability" defer></script>
-    <script src="app.js?v=20261025-sync-status" defer></script>
+    <script src="app.js?v=20261025-device-sync" defer></script>
   </body>
 </html>
