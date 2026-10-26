@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-25-bed-index";
+const APP_BUILD = "2026-10-26-tag-selection";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -169,6 +169,8 @@ const uiState = {
   mobileTagsOpen: false,
   savedSelection: null,
   savedSelectionBookmark: null,
+  mobileTagSelection: null,
+  editorSelectionRestoring: false,
   bedIndexVisible: false,
   bedIndexTimer: null,
   bedIndexScrollRaf: 0,
@@ -1246,26 +1248,44 @@ function bindEvents() {
   });
 
   let mobileTagTouchStart = null;
+  const cancelMobileTagPress = () => {
+    mobileTagTouchStart = null;
+    uiState.mobileTagSelection = null;
+  };
+  const rememberMobileTagSelection = () => {
+    if (uiState.mobileTagSelection) return;
+    rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
+    uiState.mobileTagSelection = {
+      noteId: getCurrentNote()?.id,
+      range: uiState.savedSelection?.cloneRange() || null,
+      bookmark: uiState.savedSelectionBookmark
+    };
+  };
   refs.mobileTagRoot?.addEventListener("pointerdown", (event) => {
     if (!event.target.closest("[data-mobile-tag-dock]")) return;
-    rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
+    rememberMobileTagSelection();
     event.preventDefault();
   });
   refs.mobileTagRoot?.addEventListener("touchstart", (event) => {
     mobileTagTouchStart = getEditorPointerPoint(event);
-    rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
+    rememberMobileTagSelection();
   }, { passive: true });
   refs.mobileTagRoot?.addEventListener("touchend", (event) => {
     const start = mobileTagTouchStart;
     mobileTagTouchStart = null;
     const end = getEditorPointerPoint(event);
-    if (event.touches.length || !start || !end || Math.hypot(end.x - start.x, end.y - start.y) > 10) return;
-    if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag]")) return;
+    if (event.touches.length || !start || !end || Math.hypot(end.x - start.x, end.y - start.y) > 10 ||
+      !event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag]")) {
+      uiState.mobileTagSelection = null;
+      return;
+    }
     event.preventDefault();
     handleMobileTagDockAction(event);
   }, { passive: false });
-  refs.mobileTagRoot?.addEventListener("touchcancel", () => {
-    mobileTagTouchStart = null;
+  refs.mobileTagRoot?.addEventListener("touchcancel", cancelMobileTagPress);
+  refs.mobileTagRoot?.addEventListener("pointercancel", cancelMobileTagPress);
+  window.addEventListener("pointerup", (event) => {
+    if (event.pointerType !== "touch" && !refs.mobileTagRoot?.contains(event.target)) uiState.mobileTagSelection = null;
   });
   refs.mobileTagRoot?.addEventListener("click", handleMobileTagDockAction);
 
@@ -1424,12 +1444,14 @@ function bindEvents() {
   });
 
   window.addEventListener("blur", () => {
+    cancelMobileTagPress();
     freezeEditorSelectionForScreenSwitch("window-blur");
   });
   window.addEventListener("focus", () => {
     scheduleScreenSwitchSelectionRestore("window-focus");
   });
   window.addEventListener("pagehide", () => {
+    cancelMobileTagPress();
     freezeEditorSelectionForScreenSwitch("pagehide");
     flushLocalStateSave();
     flushPendingEditorDebugLogsForLifecycle("pagehide");
@@ -1440,6 +1462,7 @@ function bindEvents() {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
+      cancelMobileTagPress();
       freezeEditorSelectionForScreenSwitch("hidden");
       flushLocalStateSave();
       flushPendingEditorDebugLogsForLifecycle("hidden");
@@ -5546,6 +5569,12 @@ function focusEditorFromTap(editor, target) {
 }
 
 function handleMobileTagDockAction(event) {
+  const saved = uiState.mobileTagSelection;
+  uiState.mobileTagSelection = null;
+  if (saved?.noteId === getCurrentNote()?.id) {
+    uiState.savedSelection = saved.range;
+    uiState.savedSelectionBookmark = saved.bookmark;
+  }
   const toggle = event.target.closest("[data-mobile-tag-toggle]");
   if (toggle) {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
@@ -5567,7 +5596,6 @@ function handleMobileTagDockAction(event) {
   }
   const tagButton = event.target.closest("[data-mobile-tag]");
   if (tagButton) {
-    restoreEditorFocusAndSelection();
     handleQuickTag(tagButton.dataset.mobileTag);
     uiState.mobileTagsOpen = false;
     syncMobileTagDock();
@@ -5586,9 +5614,7 @@ function handleQuickTag(tag) {
     tag
   });
 
-  editor.focus({ preventScroll: true });
-  restoreSavedEditorSelection(editor);
-  clearScreenSwitchSelectionRestore();
+  restoreEditorFocusAndSelection();
   insertTagIntoEditor(editor, tag);
 
   ensureEditorLineIdentities(editor, note.id);
@@ -6032,9 +6058,17 @@ function logShortNoteScrollGesture(gesture, result, settleStartY, metrics = null
 function restoreEditorFocusAndSelection() {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!editor) return null;
-  editor.focus({ preventScroll: true });
-  restoreSavedEditorSelection(editor);
-  clearScreenSwitchSelectionRestore();
+  const previousRestoring = uiState.editorSelectionRestoring;
+  uiState.editorSelectionRestoring = true;
+  try {
+    // focusin fires synchronously on iOS and may expose Safari's temporary
+    // default range. Restore our saved range before remembering a new one.
+    editor.focus({ preventScroll: true });
+    restoreSavedEditorSelection(editor);
+    clearScreenSwitchSelectionRestore();
+  } finally {
+    uiState.editorSelectionRestoring = previousRestoring;
+  }
   uiState.editorFocused = true;
   rememberEditorSelection(editor);
   return editor;
@@ -6055,6 +6089,7 @@ function rememberEditorSelection(editor, options = {}) {
 
 function isEditorSelectionMemoryFrozen() {
   return Boolean(
+    uiState.mobileTagSelection || uiState.editorSelectionRestoring ||
     uiState.restoreSelectionAfterScreenSwitch ||
       (uiState.selectionMemoryFrozenUntil && Date.now() < uiState.selectionMemoryFrozenUntil)
   );
@@ -6497,6 +6532,7 @@ function getTextBoundaryWithinLine(line, targetOffset) {
 }
 
 function clearSavedEditorSelection() {
+  uiState.mobileTagSelection = null;
   uiState.savedSelection = null;
   uiState.savedSelectionBookmark = null;
 }
