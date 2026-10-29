@@ -1,11 +1,20 @@
-const CACHE_NAME = "shiftpad-shell-v70";
+const CACHE_NAME = "shiftpad-shell-v71";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
   "/styles.css",
   "/app.js",
+  "/public-config.js",
+  "/lib/vendor/supabase-js-2.118.0.js",
   "/lib/sync-core.js",
   "/lib/diagnostics-core.js",
+  "/lib/editor-history.js",
+  "/lib/mobile-editor-ui.js",
+  "/lib/navigation-ui.js",
+  "/lib/sync-details-ui.js",
+  "/styles/editor-controls.css",
+  "/styles/navigation.css",
+  "/styles/sync-details.css",
   "/manifest.webmanifest",
   "/icons/icon-180.png",
   "/icons/icon-192.png",
@@ -19,14 +28,28 @@ const CACHE_FIRST_PATHS = new Set([
 ]);
 const NETWORK_FIRST_PATHS = new Set([
   "/app.js",
+  "/public-config.js",
+  "/lib/vendor/supabase-js-2.118.0.js",
   "/styles.css",
   "/lib/sync-core.js",
-  "/lib/diagnostics-core.js"
+  "/lib/diagnostics-core.js",
+  "/lib/editor-history.js",
+  "/lib/mobile-editor-ui.js",
+  "/lib/navigation-ui.js",
+  "/lib/sync-details-ui.js",
+  "/styles/editor-controls.css",
+  "/styles/navigation.css",
+  "/styles/sync-details.css"
 ]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)).catch(() => undefined)
+    Promise.all([
+      caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)),
+      // This endpoint contains public browser configuration only. Warm it on
+      // first install because the initial page request may precede SW control.
+      fetch("/api/public-config.js", { cache: "no-store" }).then((response) => putInCache("/api/public-config.js", response)).catch(() => undefined)
+    ])
   );
   self.skipWaiting();
 });
@@ -44,7 +67,13 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname === "/api/public-config.js") {
+    event.respondWith(networkFirst(request, "/api/public-config.js"));
+    return;
+  }
+  // Never cache authenticated API responses or writes.
+  if (url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith(networkFirst(request, "/index.html"));
@@ -57,7 +86,7 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (NETWORK_FIRST_PATHS.has(url.pathname)) {
-    event.respondWith(networkFirst(request));
+    event.respondWith(networkFirst(request, url.pathname));
     return;
   }
 

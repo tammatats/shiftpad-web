@@ -40,7 +40,7 @@ async function scrollAndMeasure(page, y) {
 test("iPhone Tags stays pinned while scrolling with Safari chrome changing", async ({ page }, testInfo) => {
   const toggle = page.locator("[data-mobile-tag-toggle]");
   await expect(toggle).toBeVisible();
-  const initial = await toggle.boundingBox();
+  const initial = await page.locator('[data-mobile-tag-dock]').boundingBox();
   for (const y of [200, 700, 350, 0]) {
     // Browser chrome/overscroll can briefly disagree with the layout viewport;
     // this is not a keyboard and must not move an already fixed button.

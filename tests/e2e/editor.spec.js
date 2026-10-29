@@ -210,3 +210,16 @@ test("long desktop notes extend the document and scroll to their final line", as
   expect(after.scrollY).toBeGreaterThan(0);
   expect(after.lastLineBottom).toBeLessThanOrEqual(after.viewportHeight + 1);
 });
+
+test('desktop typing stays visible beneath the fixed header and tag toolbar', async ({ page }, info) => {
+  test.skip(info.project.name === 'iphone-webkit', 'Desktop fixed toolbar coverage.');
+  const editor = page.locator('#notepad-editor');
+  await editor.click();
+  await page.keyboard.insertText('Visible desktop editing');
+  await expect.poll(() => editor.evaluate(el => {
+    const range = document.createRange(); range.selectNodeContents(el.firstElementChild);
+    const text = range.getBoundingClientRect();
+    return text.top - document.querySelector('.quick-tags').getBoundingClientRect().bottom;
+  })).toBeGreaterThanOrEqual(0);
+  await page.screenshot({ path: info.outputPath('desktop-editor-visible.png'), scale: 'css' });
+});

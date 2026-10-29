@@ -124,7 +124,7 @@ for (const width of [683, 507, 375, 320]) {
     await editor.tap({ position: { x: 20, y: 20 } });
     await expect(page.locator("#simulated-ipad-keyboard")).toBeVisible();
     await expect.poll(async () => {
-      const rect = await toggle.boundingBox();
+      const rect = await page.locator('.mobile-editor-toolbar').boundingBox();
       return Math.round(rect.y + rect.height);
     }).toBe(520 - (width > 560 ? 8 : 6));
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
@@ -160,7 +160,7 @@ for (const width of [683, 507, 375, 320]) {
         visualViewport.dispatchEvent(new Event("resize"));
       }, viewport);
       await expect.poll(async () => {
-        const rect = await toggle.boundingBox();
+        const rect = await page.locator('.mobile-editor-toolbar').boundingBox();
         return Math.round(rect.y + rect.height);
       }).toBe(viewport.offsetTop + viewport.height - (width > 560 ? 8 : 6));
       await toggle.tap();

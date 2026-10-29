@@ -28,7 +28,7 @@ const PUSH_SUBSCRIPTION_ENDPOINT = "/api/push-subscriptions";
 const PUSH_ENABLED_STORAGE_KEY = "shiftpad-push-enabled-v1";
 const PUSH_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const BED_SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
+const SUPABASE_JS_URL = "/lib/vendor/supabase-js-2.118.0.js";
 const EDITOR_DEBUG_NAMESPACE = "shiftpad-editor-debug-v1";
 const EDITOR_DEBUG_ENABLED_KEY = `${EDITOR_DEBUG_NAMESPACE}:enabled`;
 const EDITOR_DEBUG_LIMIT = 100;
@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-29-tag-insertion";
+const APP_BUILD = "2026-10-29-workflow";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -171,6 +171,7 @@ const uiState = {
   savedSelectionBookmark: null,
   mobileTagSelection: null,
   mobileTagMenuSelection: null,
+  pendingTagChoice: null,
   editorSelectionRestoring: false,
   bedIndexVisible: false,
   bedIndexTimer: null,
@@ -230,6 +231,7 @@ const uiState = {
   restoreEditorFocusAfterScreenSwitch: false,
   searchOpen: false,
   searchQuery: "",
+  searchScope: "all",
   searchReturnFocus: null,
   recoveryBaselines: new Map(),
   recoveryLastSavedAt: new Map(),
@@ -254,6 +256,12 @@ const uiState = {
 };
 const noteDocumentModelTimers = new Map();
 const noteParseCache = new Map();
+let syncDetailsController = null;
+const editorHistory = window.ShiftPadEditorHistory?.createHistory({ limit: 60 });
+const editorHistoryPending = new Map();
+let editorHistoryOwner = "";
+let editorHistoryAction = null;
+let editorHistoryReplaying = false;
 applyUrlOverrides();
 
 init();
@@ -261,6 +269,7 @@ init();
 async function init() {
   document.documentElement.classList.toggle("is-ipad-device", isLikelyIpadDevice());
   bindEvents();
+  initSyncDetails();
   initMobileViewportDock();
   registerShiftPadServiceWorker();
   await initAuth();
@@ -501,6 +510,7 @@ function syncDrawerControlPositions() {
 }
 
 function bindEvents() {
+  initEditorHistoryEvents();
   refs.authForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
     await signInWithPassword();
@@ -525,6 +535,15 @@ function bindEvents() {
   refs.searchRoot?.addEventListener("click", (event) => {
     if (event.target.closest("[data-search-close]")) {
       closeWorkspaceSearch();
+      return;
+    }
+    const scope = event.target.closest("[data-search-scope]");
+    if (scope) {
+      uiState.searchScope = scope.dataset.searchScope === "ward" ? "ward" : "all";
+      refs.searchRoot.querySelectorAll("[data-search-scope]").forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.searchScope === uiState.searchScope));
+      });
+      renderWorkspaceSearchResults();
       return;
     }
     const result = event.target.closest("[data-search-result]");
@@ -564,16 +583,8 @@ function bindEvents() {
   });
 
   refs.syncRecoveryNotice?.querySelector("button")?.addEventListener("click", () => {
-    state.recoveryHistory.forEach((entry) => {
-      if (entry.reason === "Concurrent edit") entry.reviewed = true;
-    });
-    scheduleLocalStateSave();
-    clearDrawerCloseTimer();
-    uiState.drawerSections.add("history");
-    uiState.drawerOpen = true;
-    uiState.wardOptionsOpen = false;
-    renderDrawer({ animateSide: "left" });
-    renderAuthUi();
+    const conflict = state.recoveryHistory.find(entry => entry.reason === "Concurrent edit" && !entry.reviewed);
+    openSyncDetails(conflict?.id || "");
   });
 
   refs.wardOptionsBtn?.addEventListener("click", () => {
@@ -1231,6 +1242,7 @@ function bindEvents() {
     const editor = getEditorFromEventTarget(event.target);
     if (editor) {
       if (!canCommitEditorToCurrentNote(editor, "keydown")) return;
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) dismissMobileTagMenu();
       restoreEditorSelectionAfterScreenSwitch("keydown");
       hideBedIndex();
       handleNotepadKeydown(event);
@@ -1248,6 +1260,7 @@ function bindEvents() {
     restoreEditorSelectionAfterScreenSwitch("beforeinput");
     if (handleNotepadBeforeInput(event)) {
       event.preventDefault();
+      queueEditorCaretVisibilityCheck(editor, event.inputType || "beforeinput");
     }
   });
 
@@ -1271,11 +1284,12 @@ function bindEvents() {
     };
   };
   refs.mobileTagRoot?.addEventListener("pointerdown", (event) => {
-    if (!event.target.closest("[data-mobile-tag-dock]")) return;
+    if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag], [data-mobile-direct-tag]")) return;
     rememberMobileTagSelection();
     event.preventDefault();
   });
   refs.mobileTagRoot?.addEventListener("touchstart", (event) => {
+    if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag], [data-mobile-direct-tag]")) return;
     mobileTagTouchStart = getEditorPointerPoint(event);
     rememberMobileTagSelection();
   }, { passive: true });
@@ -1284,7 +1298,7 @@ function bindEvents() {
     mobileTagTouchStart = null;
     const end = getEditorPointerPoint(event);
     if (event.touches.length || !start || !end || Math.hypot(end.x - start.x, end.y - start.y) > 10 ||
-      !event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag]")) {
+      !event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag], [data-mobile-direct-tag]")) {
       uiState.mobileTagSelection = null;
       return;
     }
@@ -1297,6 +1311,24 @@ function bindEvents() {
     if (event.pointerType !== "touch" && !refs.mobileTagRoot?.contains(event.target)) uiState.mobileTagSelection = null;
   });
   refs.mobileTagRoot?.addEventListener("click", handleMobileTagDockAction);
+
+  const tagChoiceRoot = document.getElementById("tag-choice-root");
+  tagChoiceRoot?.addEventListener("pointerdown", event => event.preventDefault());
+  tagChoiceRoot?.addEventListener("touchend", event => {
+    if (event.touches.length || !event.target.closest("[data-tag-choice]")) return;
+    event.preventDefault();
+    resolveTagChoice(event.target.closest("[data-tag-choice]").dataset.tagChoice);
+  }, { passive: false });
+  tagChoiceRoot?.addEventListener("click", event => {
+    const button = event.target.closest("[data-tag-choice]");
+    if (button) resolveTagChoice(button.dataset.tagChoice);
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && uiState.pendingTagChoice) {
+      event.preventDefault();
+      resolveTagChoice("cancel");
+    }
+  });
 
   refs.bedActionRoot?.addEventListener("click", (event) => {
     const close = event.target.closest?.("[data-bed-action-close]");
@@ -2011,9 +2043,10 @@ function renderArchiveDialog() {
   }
 }
 
-function openWorkspaceSearch() {
+function openWorkspaceSearch({ scope = "all" } = {}) {
   syncEditorDocument();
   uiState.searchOpen = true;
+  uiState.searchScope = scope === "ward" ? "ward" : "all";
   uiState.searchReturnFocus = document.activeElement;
   renderWorkspaceSearch();
   window.requestAnimationFrame(() => {
@@ -2072,6 +2105,10 @@ function renderWorkspaceSearch() {
           <span class="sr-only">Search ward and note text</span>
           <input type="search" data-search-input="true" value="${escapeAttribute(uiState.searchQuery)}" placeholder="Search beds, tasks, or text" autocomplete="off" />
         </label>
+        <div class="search-scopes" role="group" aria-label="Search scope">
+          <button type="button" data-search-scope="ward" aria-pressed="${uiState.searchScope === "ward"}">Current ward</button>
+          <button type="button" data-search-scope="all" aria-pressed="${uiState.searchScope !== "ward"}">All wards</button>
+        </div>
         <div class="search-results" data-search-results="true" aria-live="polite"></div>
       </section>
     </div>
@@ -2084,7 +2121,8 @@ function renderWorkspaceSearchResults() {
   if (!root) return;
   const query = uiState.searchQuery.trim();
   if (query.length < 2) {
-    root.innerHTML = `<p class="search-empty">Type at least two characters to search every ward in ${escapeHtml(getActiveWorkspaceMeta().title)}.</p>`;
+    const scopeLabel = uiState.searchScope === "ward" ? (getCurrentWard()?.name || "the current ward") : `every ward in ${getActiveWorkspaceMeta().title}`;
+    root.innerHTML = `<p class="search-empty">Type at least two characters to search ${escapeHtml(scopeLabel)}.</p>`;
     return;
   }
 
@@ -2119,6 +2157,7 @@ function buildWorkspaceSearchResults(query) {
   const needle = query.toLocaleLowerCase();
   const results = [];
   state.wards.some((ward) => {
+    if (uiState.searchScope === "ward" && ward.id !== getCurrentWard()?.id) return false;
     return ward.notes.some((note) => {
       const parsed = getCachedTaggedLines(note);
       parsed.lines.forEach((line) => {
@@ -2724,10 +2763,19 @@ function renderDrawerWardButton(ward) {
 }
 
 function focusEditingWardInput() {
-  if (!uiState.editingWardId) return;
+  if (!uiState.editingWardId || !uiState.wardOptionsOpen) return;
+  const wardId = uiState.editingWardId;
+  const previousFocus = document.activeElement;
   window.requestAnimationFrame(() => {
-    const input = refs.drawerRoot?.querySelector(`[data-ward-name-input="${cssEscape(uiState.editingWardId)}"]`);
-    input?.focus();
+    // A deferred rename must not steal typing from the notepad after the
+    // drawer closes, another ward is selected, or the user focuses elsewhere.
+    if (!uiState.wardOptionsOpen || uiState.editingWardId !== wardId) return;
+    const input = refs.drawerRoot?.querySelector(`[data-ward-name-input="${cssEscape(wardId)}"]`);
+    const layer = input?.closest('[data-drawer-side="right"]');
+    const currentFocus = document.activeElement;
+    if (!input || layer?.getAttribute('aria-hidden') !== 'false' || !input.getClientRects().length) return;
+    if (currentFocus !== previousFocus && currentFocus !== document.body && currentFocus !== input) return;
+    input.focus({ preventScroll: true });
     input?.select();
   });
 }
@@ -2889,9 +2937,96 @@ function renderSyncIndicator() {
   if (refs.syncIndicator) {
     refs.syncIndicator.dataset.tone = status.tone;
     refs.syncIndicator.title = status.detail;
-    refs.syncIndicator.setAttribute("aria-label", `${status.label}. ${status.detail}`);
+    refs.syncIndicator.setAttribute("aria-label", `${status.label}. ${status.detail}. Open sync details`);
   }
   if (refs.syncIndicatorLabel) refs.syncIndicatorLabel.textContent = status.label;
+  syncDetailsController?.refresh();
+}
+
+function getSyncDetailsPlainText(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html || "";
+  template.content.querySelectorAll("[data-caret-marker], [data-pending-tag-marker]").forEach(node => node.remove());
+  template.content.querySelectorAll(".tag-token").forEach(token => {
+    const tag = token.dataset.tag;
+    let label = token.textContent || "";
+    if (tag === "todo") label = token.dataset.done === "true" ? "[x]" : "[ ]";
+    else if (tag === "io") label = `${label} [14: ${token.getAttribute("data-done-14") === "true" ? "done" : "pending"}; 22: ${token.getAttribute("data-done-22") === "true" ? "done" : "pending"}]`;
+    else if (token.hasAttribute("data-done")) label = `${label} [${token.dataset.done === "true" ? "done" : "pending"}]`;
+    token.replaceWith(document.createTextNode(label));
+  });
+  template.content.querySelectorAll("br").forEach(node => node.replaceWith(document.createTextNode("\n")));
+  return Array.from(template.content.childNodes).map(node => node.textContent || "").join("\n").replace(/\u200b/g, "");
+}
+
+function getSyncDetailsModel() {
+  const status = getSyncStatusModel();
+  const note = getCurrentNote();
+  const row = note ? authState.noteDocuments.get(getNoteDocumentKey(getActiveWorkspaceKey(), note.id)) : null;
+  const cloudAvailable = Boolean(authState.configured && authState.user && authState.client);
+  const pendingNotes = window.ShiftPadSyncCore?.getPendingNoteCount?.(appState) || 0;
+  return {
+    label: status.label,
+    detail: status.detail,
+    online: navigator.onLine,
+    cloudAvailable,
+    lastConfirmedAt: cloudAvailable ? authState.lastCloudSavedAt : 0,
+    lastReceivedAt: cloudAvailable ? authState.lastRemoteAppliedAt : 0,
+    pendingNotes,
+    pendingReminders: authState.reminderIndexPending,
+    pendingState: authState.stateCloudPending,
+    revision: note ? getNoteCloudRevision(note) : 0,
+    otherDevice: Boolean(row?.client_id && row.client_id !== authState.noteDocumentClientId),
+    canRetry: cloudAvailable && navigator.onLine && !authState.isHydrating &&
+      Boolean(pendingNotes || authState.reminderIndexPending || authState.stateCloudPending || authState.lastSyncError || authState.realtimeStatus === "error"),
+    conflicts: (state.recoveryHistory || []).filter(entry => entry.reason === "Concurrent edit").map(entry => {
+      const current = findNoteLocation(appState, getActiveWorkspaceKey(), entry.noteId, entry.wardId)?.note;
+      return {
+        id: entry.id,
+        title: entry.wardName || "Saved note",
+        createdAt: entry.createdAt,
+        reviewed: Boolean(entry.reviewed),
+        localText: getSyncDetailsPlainText(entry.documentHtml),
+        currentText: current ? getSyncDetailsPlainText(getNoteDocumentHtml(current)) : null,
+        currentRevision: current ? getNoteCloudRevision(current) : 0
+      };
+    })
+  };
+}
+
+function initSyncDetails() {
+  if (syncDetailsController || !refs.syncIndicator || !window.ShiftPadSyncDetails) return;
+  syncDetailsController = window.ShiftPadSyncDetails.create({
+    trigger: refs.syncIndicator,
+    getModel: getSyncDetailsModel,
+    onOpen: () => {
+      rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
+      dismissMobileTagMenu();
+    },
+    onRetry: async () => {
+      flushPendingCloudWrites();
+      await fetchLatestCloudState({ reason: "sync-details-retry", force: true });
+    },
+    onReview: id => {
+      const entry = state.recoveryHistory.find(item => item.id === id && item.reason === "Concurrent edit");
+      if (!entry) return;
+      entry.reviewed = true;
+      scheduleLocalStateSave();
+      renderAuthUi();
+    },
+    onHistory: () => {
+      clearDrawerCloseTimer();
+      uiState.drawerSections.add("history");
+      uiState.drawerOpen = true;
+      uiState.wardOptionsOpen = false;
+      renderDrawer({ animateSide: "left" });
+    }
+  });
+}
+
+function openSyncDetails(conflictId = "") {
+  initSyncDetails();
+  syncDetailsController?.open(conflictId);
 }
 
 function formatLiveSyncStatus() {
@@ -2969,6 +3104,7 @@ function renderEditor() {
       <section class="note-pad-card">
         <div class="quick-tags">
           ${getAvailableQuickTags().map((tag) => renderQuickChip(tag.key, tag.label, tag.className, tag.color)).join("")}
+          ${typeof renderEditorHistoryControls === "function" ? renderEditorHistoryControls() : ""}
         </div>
 
         <div class="smart-pad-surface document-pad">
@@ -2997,7 +3133,8 @@ function renderEditor() {
 
   requestAnimationFrame(() => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
-    if (!isTouchEditorDevice()) {
+    if (!isTouchEditorDevice() && state.activeView === "notes" &&
+        !uiState.drawerOpen && !uiState.wardOptionsOpen && !uiState.searchOpen && !uiState.bedAction) {
       editor?.focus({ preventScroll: true });
     }
     syncMobileTagDock();
@@ -3019,7 +3156,10 @@ function renderStickyWardBar() {
   const canSortBeds = getBedIndexForNote(note).length > 0;
   refs.stickyWardRoot.innerHTML = `
     <div class="sticky-ward-bar">
-      <p class="section-kicker">Main notepad</p>
+      <div class="ward-navigation" aria-label="Note navigation">
+        <select class="current-bed-control" data-current-bed aria-label="Current bed and jump to bed" title="Current bed · choose to jump" disabled><option value="">Beds</option></select>
+        <button class="ghost-btn tiny-btn ward-find-btn" type="button" data-find-in-ward>Find in ward</button>
+      </div>
       ${renderNotepadWardTitle(ward)}
       <div class="sticky-ward-actions">
         <small>Updated ${escapeHtml(formatClock(note.updatedAt || note.createdAt))}</small>
@@ -3044,6 +3184,13 @@ function renderStickyWardBar() {
       </div>
     </div>
   `;
+  window.ShiftPadNavigation?.mount({
+    root: refs.stickyWardRoot,
+    editorRoot: refs.editorRoot,
+    onChooseWard: () => refs.wardOptionsBtn?.click(),
+    onFind: () => openWorkspaceSearch({ scope: "ward" }),
+    onBed: (label) => jumpToBedInEditor(label, { behavior: prefersReducedMotion() ? "auto" : "smooth" })
+  });
 }
 
 function shouldShowWardSwitcher() {
@@ -3052,8 +3199,9 @@ function shouldShowWardSwitcher() {
 
 function renderNotepadWardTitle(ward, showSwitcher = shouldShowWardSwitcher()) {
   const title = escapeHtml(ward?.name || "Current ward");
+  const titleMarkup = isArchivedPadMode() ? title : `<button class="ward-title-choice" type="button" data-choose-ward aria-label="Choose ward">${title}</button>`;
   if (!showSwitcher) {
-    return `<h2>${title}</h2>`;
+    return `<h2>${titleMarkup}</h2>`;
   }
 
   return `
@@ -3063,7 +3211,7 @@ function renderNotepadWardTitle(ward, showSwitcher = shouldShowWardSwitcher()) {
           <path d="M15 18l-6-6 6-6"></path>
         </svg>
       </button>
-      <h2>${title}</h2>
+      <h2>${titleMarkup}</h2>
       <button class="ward-switch-btn" type="button" data-ward-switch="next" aria-label="Next ward">
         <svg class="ward-switch-icon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M9 6l6 6-6 6"></path>
@@ -3335,6 +3483,8 @@ function renameSelectedBed(value) {
   const label = String(value || "").replace(/^Bed\s*/i, "").trim();
   if (!context || !label) return;
 
+  beginEditorHistoryAction("Rename bed");
+
   context.token.textContent = `Bed ${label}`;
   setNoteDocumentHtml(context.note, context.root.innerHTML);
   clearSavedEditorSelection();
@@ -3360,6 +3510,8 @@ function deleteSelectedBedSection() {
   if (!context) return;
   const sectionLines = getSelectedBedSectionLines(context);
   if (!sectionLines.length) return;
+
+  beginEditorHistoryAction("Delete bed");
 
   addRecoverySnapshot({
     note: context.note,
@@ -3388,6 +3540,7 @@ function moveBedSectionToWard(targetWardId) {
   const targetNote = targetWard.notes[0];
   const sectionLines = getSelectedBedSectionLines(context);
   if (!sectionLines.length) return;
+  beginEditorHistoryAction("Move bed");
   while (sectionLines.length > 1 && isEditorLineEmpty(sectionLines[sectionLines.length - 1])) {
     sectionLines.pop()?.remove();
   }
@@ -3443,6 +3596,7 @@ function sortCurrentWardBedSections() {
   const editor = refs.editorRoot.querySelector("#notepad-editor");
   if (!note || !editor) return;
   if (!canCommitEditorToCurrentNote(editor, "sort-beds")) return;
+  beginEditorHistoryAction("Sort beds");
 
   normalizeEditorBlocks(editor);
   const lines = Array.from(editor.children).filter((line) => ["DIV", "P"].includes(line.tagName));
@@ -3851,6 +4005,37 @@ async function hydrateStateFromCloud({ authEvent = "UNKNOWN" } = {}) {
   authState.suppressCloudSave = true;
   authState.suppressNoteDocumentSave = true;
 
+  if (!navigator.onLine) {
+    // initAuth has already recovered a usable persisted SDK session. Open only
+    // that user's scoped local copy without waiting for network retry delays.
+    appState = normalizeAppState(fallback);
+    state = getActiveWorkspaceState(appState);
+    authState.noteDocuments.clear();
+    WORKSPACE_KEYS.forEach(workspaceKey => {
+      appState.workspaces[workspaceKey]?.wards?.forEach(ward => {
+        ward.notes?.forEach(note => {
+          const revision = getNoteCloudRevision(note);
+          // Clean local copies retain their last acknowledged revision. Dirty
+          // copies may supply only their matching persisted merge base.
+          const documentHtml = note.cloudPending ? getPendingNoteBase(note)?.document_html : getNoteDocumentHtml(note);
+          if (!revision || typeof documentHtml !== "string") return;
+          authState.noteDocuments.set(getNoteDocumentKey(workspaceKey, note.id), {
+            user_id: authState.user.id, workspace_key: workspaceKey,
+            ward_id: ward.id, note_id: note.id, revision,
+            document_html: documentHtml, note_updated_at: note.updatedAt || note.createdAt,
+            client_id: "", updated_at: ""
+          });
+        });
+      });
+    });
+    authState.isHydrating = false;
+    authState.suppressCloudSave = false;
+    authState.suppressNoteDocumentSave = false;
+    applyUrlOverrides();
+    render();
+    return;
+  }
+
   let data = null;
   let error = null;
   let preservedEntities = [];
@@ -4250,6 +4435,9 @@ function applyCloudNoteDocumentToLocation(row, location) {
   const note = location.note;
   if (row.revision < getNoteCloudRevision(note)) return false;
   const changed = getNoteDocumentHtml(note) !== row.document_html;
+  if (changed || (row.revision > getNoteCloudRevision(note) && row.client_id !== authState.noteDocumentClientId)) {
+    invalidateEditorHistoryForNote(location.workspaceKey, note.id);
+  }
   const previousSuppress = authState.suppressNoteDocumentSave;
   authState.suppressNoteDocumentSave = true;
   try {
@@ -4270,6 +4458,7 @@ function applyCloudNoteDocumentToLocation(row, location) {
 }
 
 function patchCurrentNoteEditorFromModel(location, { source = "realtime", merged = false } = {}) {
+  if (source !== "editor-history") invalidateEditorHistoryForNote(location?.workspaceKey, location?.note?.id);
   const editor = refs.editorRoot?.querySelector?.('#notepad-editor[data-live-editor="true"]');
   if (
     !editor ||
@@ -5373,22 +5562,10 @@ function renderQuickChip(key, label, extraClass = "", color = "") {
 }
 
 function renderMobileTagDock() {
-  const expanded = uiState.mobileTagsOpen ? "true" : "false";
-  return `
-    <div class="mobile-tag-dock" data-mobile-tag-dock="true" aria-hidden="true">
-      <div class="mobile-tag-tray" role="menu" aria-label="Insert tag">
-        ${getAvailableQuickTags()
-          .map((tag) => {
-            const style = renderCustomTagStyle(tag);
-            return `<button class="mobile-tag-option ${escapeHtml(tag.className || "")}" type="button" role="menuitem" data-mobile-tag="${escapeHtml(tag.key)}" ${style}>${escapeHtml(tag.label)}</button>`;
-          })
-          .join("")}
-      </div>
-      <button class="mobile-tag-fab ${uiState.mobileTagsOpen ? "is-cancel" : ""}" type="button" data-mobile-tag-toggle="true" aria-expanded="${expanded}" aria-label="${uiState.mobileTagsOpen ? "Close tag menu" : "Open tag menu"}">
-        ${uiState.mobileTagsOpen ? "X" : "Tags"}
-      </button>
-    </div>
-  `;
+  return window.ShiftPadMobileEditorUI.renderDock(
+    getAvailableQuickTags().map(tag => ({ ...tag, style: renderCustomTagStyle(tag) })),
+    typeof renderEditorHistoryControls === "function" ? renderEditorHistoryControls() : ""
+  );
 }
 
 function renderEntryChip(label, extraClass = "") {
@@ -5613,15 +5790,22 @@ function handleMobileTagDockAction(event) {
     });
     return;
   }
-  const tagButton = event.target.closest("[data-mobile-tag]");
+  const tagButton = event.target.closest("[data-mobile-tag], [data-mobile-direct-tag]");
   if (tagButton) {
-    handleQuickTag(tagButton.dataset.mobileTag);
+    handleQuickTag(tagButton.dataset.mobileTag || tagButton.dataset.mobileDirectTag);
     uiState.mobileTagsOpen = false;
     syncMobileTagDock();
   }
 }
 
+function clearPendingTagChoice() {
+  uiState.pendingTagChoice = null;
+  const choiceRoot = document.getElementById("tag-choice-root");
+  if (choiceRoot) choiceRoot.innerHTML = "";
+}
+
 function dismissMobileTagMenu() {
+  clearPendingTagChoice();
   uiState.mobileTagSelection = null;
   uiState.mobileTagMenuSelection = null;
   if (!uiState.mobileTagsOpen) return;
@@ -5629,7 +5813,20 @@ function dismissMobileTagMenu() {
   syncMobileTagDock();
 }
 
-function handleQuickTag(tag) {
+function resolveTagChoice(mode) {
+  const choice = uiState.pendingTagChoice;
+  if (!choice) return;
+  const editor = refs.editorRoot.querySelector("#notepad-editor");
+  const line = editor?.querySelector(`[data-line-id="${cssEscape(choice.lineId)}"]`);
+  dismissMobileTagMenu();
+  if (getCurrentNote()?.id !== choice.noteId || !line || line.innerHTML !== choice.lineHtml) return;
+  uiState.savedSelection = null;
+  uiState.savedSelectionBookmark = choice.bookmark;
+  restoreEditorFocusAndSelection();
+  if (mode !== "cancel") handleQuickTag(choice.tag, { mode });
+}
+
+function handleQuickTag(tag, { mode = "" } = {}) {
   const note = getCurrentNote();
   if (!note) return;
   const editor = refs.editorRoot.querySelector("#notepad-editor");
@@ -5642,6 +5839,24 @@ function handleQuickTag(tag) {
   });
 
   restoreEditorFocusAndSelection();
+  const line = getCurrentEditorLine();
+  if (!["bed", "hn"].includes(tag) && line?.querySelector(".tag-token") && !mode) {
+    uiState.pendingTagChoice = {
+      tag, noteId: note.id, lineId: line.dataset.lineId,
+      lineHtml: line.innerHTML, bookmark: uiState.savedSelectionBookmark
+    };
+    document.getElementById("tag-choice-root").innerHTML = window.ShiftPadMobileEditorUI.renderChoice(
+      getAvailableQuickTags().find(item => item.key === tag)?.label || tag
+    );
+    return;
+  }
+  if (mode === "replace") prepareLineForSingleTagInsertion(editor);
+  if (mode === "new-line" && line) {
+    const nextLine = document.createElement("div");
+    nextLine.innerHTML = "<br>";
+    line.after(nextLine);
+    placeCaretInsideLine(nextLine);
+  }
   insertTagIntoEditor(editor, tag);
 
   ensureEditorLineIdentities(editor, note.id);
@@ -5679,7 +5894,10 @@ function syncMobileTagDock() {
   // Keep a way into tag entry even after blur, a pad switch, or keyboard dismissal.
   const shouldShow = compact && !isArchivedPadMode() && state.activeView === "notes" &&
     !uiState.drawerOpen && !uiState.wardOptionsOpen && !uiState.searchOpen && !uiState.bedAction;
-  if (!shouldShow) uiState.mobileTagsOpen = false;
+  if (!shouldShow) {
+    uiState.mobileTagsOpen = false;
+    clearPendingTagChoice();
+  }
   const isOpen = shouldShow && uiState.mobileTagsOpen;
   if (!isOpen) uiState.mobileTagMenuSelection = null;
   dock.classList.toggle("is-visible", shouldShow);
@@ -5694,9 +5912,9 @@ function syncMobileTagDock() {
   const toggle = dock.querySelector("[data-mobile-tag-toggle]");
   if (toggle) {
     toggle.setAttribute("aria-expanded", String(isOpen));
-    toggle.setAttribute("aria-label", isOpen ? "Close tag menu" : "Open tag menu");
+    toggle.setAttribute("aria-label", isOpen ? "Close tag menu" : "More tags");
     toggle.classList.toggle("is-cancel", isOpen);
-    toggle.textContent = isOpen ? "X" : "Tags";
+    toggle.textContent = isOpen ? "Close" : "More";
   }
   queueMobileTagDockPosition();
 }
@@ -6118,7 +6336,7 @@ function rememberEditorSelection(editor, options = {}) {
 
 function isEditorSelectionMemoryFrozen() {
   return Boolean(
-    uiState.mobileTagSelection || uiState.mobileTagMenuSelection || uiState.editorSelectionRestoring ||
+    uiState.mobileTagSelection || uiState.mobileTagMenuSelection || uiState.pendingTagChoice || uiState.editorSelectionRestoring ||
     uiState.restoreSelectionAfterScreenSwitch ||
       (uiState.selectionMemoryFrozenUntil && Date.now() < uiState.selectionMemoryFrozenUntil)
   );
@@ -6561,6 +6779,7 @@ function getTextBoundaryWithinLine(line, targetOffset) {
 }
 
 function clearSavedEditorSelection() {
+  clearPendingTagChoice();
   uiState.mobileTagSelection = null;
   uiState.mobileTagMenuSelection = null;
   uiState.savedSelection = null;
@@ -6577,24 +6796,40 @@ function isSavedSelectionUsable(editor, range) {
 }
 
 function queueEditorCaretVisibilityCheck(editor, reason = "input") {
-  if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
+  if (!editor || !uiState.editorFocused) return;
   window.cancelAnimationFrame(uiState.caretScrollRaf);
+  window.clearTimeout(uiState.caretVisibilityTimer);
   uiState.caretScrollRaf = window.requestAnimationFrame(() => {
     uiState.caretScrollRaf = 0;
     keepEditorCaretVisible(editor, { reason });
   });
+  // Desktop WebKit may scroll its large contenteditable after the first frame
+  // of a handled beforeinput. Recheck once it settles, without changing focus.
+  if (!isCompactMobileLayout()) {
+    uiState.caretVisibilityTimer = window.setTimeout(() => {
+      const selection = window.getSelection();
+      if (editor === refs.editorRoot.querySelector("#notepad-editor") &&
+          editor.contains(document.activeElement) && isNodeInsideEditor(editor, selection?.anchorNode)) {
+        keepEditorCaretVisible(editor, { reason });
+      }
+    }, 100);
+  }
 }
 
 function keepEditorCaretVisible(editor, { reason = "input", force = false } = {}) {
-  if (!editor || !isCompactMobileLayout() || !uiState.editorFocused) return;
+  if (!editor || !uiState.editorFocused) return;
 
   const viewport = window.visualViewport;
   const keyboardVisible = getVisualKeyboardOffset() >= 24;
   const rect = getCaretRect() || getCurrentEditorLine()?.getBoundingClientRect() || editor.getBoundingClientRect();
   const viewportTop = keyboardVisible ? viewport?.offsetTop || 0 : 0;
   const viewportHeight = keyboardVisible ? viewport?.height || window.innerHeight : window.innerHeight;
-  const visibleTop = viewportTop + 72;
-  const visibleBottom = viewportTop + viewportHeight - 132;
+  const compact = isCompactMobileLayout();
+  const desktopTags = refs.editorRoot.querySelector(".quick-tags");
+  const visibleTop = compact ? Math.max(viewportTop + 12, (refs.topControlStack?.getBoundingClientRect().bottom || 0) + 8) :
+    Math.max(refs.topControlStack?.getBoundingClientRect().bottom || 0,
+      desktopTags?.getBoundingClientRect().bottom || 0) + 12;
+  const visibleBottom = viewportTop + viewportHeight - (compact ? 132 : 24);
   const deadZone = force ? 8 : 32;
   const padding = force ? 8 : 18;
   const topOverflow = visibleTop - rect.top;
@@ -9016,6 +9251,7 @@ function renderWorkspaceIdentity() {
   if (refs.workspaceTagline) refs.workspaceTagline.textContent = current.tagline;
   refs.workspaceSwitcher?.setAttribute("aria-label", `Switch to ${next.title}`);
   refs.workspaceSwitcher?.setAttribute("title", `Switch to ${next.title}`);
+  refs.workspaceSwitcher?.setAttribute("data-switch-label", `To ${next.title}`);
 }
 
 function switchWorkspace(targetKey = "") {
@@ -9111,6 +9347,7 @@ function updateWorkspaceUrl(workspaceKey) {
 }
 
 function saveState({ skipCloud = false, markDirty = true, skipRecovery = false } = {}) {
+  commitEditorHistoryChanges();
   if (!skipRecovery) {
     captureAutomaticRecoverySnapshot();
   }
@@ -11118,6 +11355,7 @@ function getNoteDocumentHtml(note) {
 
 function setNoteDocumentHtml(note, html, { updatedAt = Date.now(), deferModel = false } = {}) {
   if (!note) return "<div><br></div>";
+  rememberEditorHistoryBeforeMutation(note);
   const nextUpdatedAt = Number(updatedAt) || Date.now();
   if (deferModel) {
     note.documentHtml = String(html || "").trim() || "<div><br></div>";
@@ -12041,6 +12279,7 @@ function deleteAdjacentFinalizedTag(token) {
 }
 
 function insertTagIntoEditor(editor, tag) {
+  beginEditorHistoryAction("Insert tag");
   const selection = window.getSelection();
   const hasEditorSelection =
     selection &&
@@ -12055,7 +12294,6 @@ function insertTagIntoEditor(editor, tag) {
     selection?.addRange(range);
   }
 
-  prepareLineForSingleTagInsertion(editor);
   const insertionPoint = getEditorSelectionPoint(editor);
 
   if (tag === "bed") {
@@ -14813,4 +15051,218 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value);
+}
+
+// The history engine is isolated in lib/editor-history.js. These adapters own
+// document binding, selections, and cloud-safe application of local changes.
+function ensureEditorHistoryOwner() {
+  const owner = authState.user?.id || '';
+  if (owner === editorHistoryOwner) return;
+  editorHistory?.clear();
+  editorHistoryPending.clear();
+  editorHistoryAction = null;
+  editorHistoryOwner = owner;
+}
+
+function editorHistoryNoteKey(workspaceKey, noteId) {
+  return `${workspaceKey}:${noteId}`;
+}
+
+function captureEditorHistoryBookmark(note) {
+  if (note?.id !== getCurrentNote()?.id) return null;
+  const editor = refs.editorRoot?.querySelector('#notepad-editor');
+  const selection = window.getSelection();
+  if (editor && selection?.rangeCount && isNodeInsideEditor(editor, selection.anchorNode)) {
+    return createEditorSelectionBookmark(editor, selection.getRangeAt(0));
+  }
+  return uiState.savedSelectionBookmark?.noteId === note.id ? uiState.savedSelectionBookmark : null;
+}
+
+function beginEditorHistoryAction(label = 'Edit note', group = '') {
+  ensureEditorHistoryOwner();
+  if (editorHistoryReplaying) return;
+  editorHistoryAction = { label, group, bookmark: captureEditorHistoryBookmark(getCurrentNote()) };
+}
+
+function rememberEditorHistoryBeforeMutation(note) {
+  if (!editorHistory || editorHistoryReplaying) return;
+  ensureEditorHistoryOwner();
+  const location = findNoteLocationByReference(note);
+  if (!location) return;
+  const key = editorHistoryNoteKey(location.workspaceKey, note.id);
+  if (authState.suppressCloudSave || authState.suppressNoteDocumentSave || authState.isHydrating) {
+    invalidateEditorHistoryForNote(location.workspaceKey, note.id);
+    return;
+  }
+  if (!editorHistoryPending.has(key)) {
+    editorHistoryPending.set(key, {
+      key, workspaceKey: location.workspaceKey, noteId: note.id,
+      before: { html: note.documentHtml || '<div><br></div>', bookmark: editorHistoryAction?.bookmark || uiState.savedSelectionBookmark }
+    });
+  }
+}
+
+function commitEditorHistoryChanges() {
+  if (!editorHistory || editorHistoryReplaying || !editorHistoryPending.size) return;
+  ensureEditorHistoryOwner();
+  if (authState.suppressCloudSave || authState.suppressNoteDocumentSave || authState.isHydrating) {
+    editorHistoryPending.clear();
+    editorHistoryAction = null;
+    return;
+  }
+  const changes = [];
+  for (const change of editorHistoryPending.values()) {
+    const note = findNoteLocation(appState, change.workspaceKey, change.noteId)?.note;
+    if (note) changes.push({ ...change, after: { html: note.documentHtml, bookmark: captureEditorHistoryBookmark(note) } });
+  }
+  editorHistoryPending.clear();
+  editorHistory.record(changes, editorHistoryAction || {});
+  editorHistoryAction = null;
+  syncEditorHistoryControls();
+}
+
+function invalidateEditorHistoryForNote(workspaceKey, noteId) {
+  if (!editorHistory || !workspaceKey || !noteId || editorHistoryReplaying) return;
+  const key = editorHistoryNoteKey(workspaceKey, noteId);
+  editorHistory.invalidate([key]);
+  editorHistoryPending.delete(key);
+  syncEditorHistoryControls();
+}
+
+function getEditorHistoryState() {
+  ensureEditorHistoryOwner();
+  if (isArchivedPadMode()) return { canUndo: false, canRedo: false, undoLabel: '', redoLabel: '' };
+  return editorHistory?.state(editorHistoryNoteKey(getActiveWorkspaceKey(), getCurrentNote()?.id || '')) ||
+    { canUndo: false, canRedo: false, undoLabel: '', redoLabel: '' };
+}
+
+function renderEditorHistoryControls() {
+  const history = getEditorHistoryState();
+  return `<div class="editor-history-controls" role="group" aria-label="Edit history"><button type="button" data-editor-undo="true" aria-label="Undo${history.undoLabel ? `: ${escapeAttribute(history.undoLabel)}` : ''}" title="Undo (⌘/Ctrl Z)" ${history.canUndo ? '' : 'disabled'}>↶<span class="sr-only"> Undo</span></button><button type="button" data-editor-redo="true" aria-label="Redo${history.redoLabel ? `: ${escapeAttribute(history.redoLabel)}` : ''}" title="Redo (⌘/Ctrl Shift Z)" ${history.canRedo ? '' : 'disabled'}>↷<span class="sr-only"> Redo</span></button></div>`;
+}
+
+function syncEditorHistoryControls() {
+  const history = getEditorHistoryState();
+  for (const [action, enabled, label] of [['undo', history.canUndo, history.undoLabel], ['redo', history.canRedo, history.redoLabel]]) {
+    document.querySelectorAll(`[data-editor-${action}]`).forEach(button => {
+      button.disabled = !enabled;
+      button.setAttribute('aria-label', `${action === 'undo' ? 'Undo' : 'Redo'}${label ? `: ${label}` : ''}`);
+    });
+  }
+}
+
+function replayEditorHistory(direction) {
+  const note = getCurrentNote();
+  const editor = refs.editorRoot?.querySelector('#notepad-editor');
+  if (!editorHistory || !note || !editor || isArchivedPadMode() || uiState.editorCompositionActive ||
+      !canCommitEditorToCurrentNote(editor, `history-${direction}`)) return false;
+  commitEditorHistoryChanges();
+  const key = editorHistoryNoteKey(getActiveWorkspaceKey(), note.id);
+  const result = editorHistory[direction](key, change => findNoteLocation(appState, change.workspaceKey, change.noteId)?.note?.documentHtml);
+  if (!result) { syncEditorHistoryControls(); return false; }
+  editorHistoryReplaying = true;
+  try {
+    dismissMobileTagMenu();
+    clearSavedEditorSelection();
+    clearBedFinalizeTimer();
+    uiState.pendingTagInsertions.clear();
+    uiState.lastInsertedTagTokenId = '';
+    for (const change of result.changes) {
+      const target = findNoteLocation(appState, change.workspaceKey, change.noteId)?.note;
+      setNoteDocumentHtml(target, change.snapshot.html);
+    }
+    const activeChange = result.changes.find(change => change.key === key);
+    editor.innerHTML = getNoteDocumentHtml(note);
+    applyCustomTagColors(editor);
+    applyEditorCompletionClasses(editor);
+    syncEditorEmptyState(editor);
+    markEditorCommittedToNote(editor, note);
+    refreshEditorBedIndex(note);
+    updateSortBedsButtonFromEditor(editor);
+    uiState.savedSelectionBookmark = activeChange?.snapshot.bookmark || null;
+    restoreEditorFocusAndSelection();
+    saveState({ skipCloud: true });
+    renderStickyWardBar();
+    refreshWardDrawerMetricsIfOpen();
+    queueEditorCaretVisibilityCheck(editor, direction);
+  } finally {
+    editorHistoryReplaying = false;
+    syncEditorHistoryControls();
+  }
+  return true;
+}
+
+function undoEditorAction() { return replayEditorHistory('undo'); }
+function redoEditorAction() { return replayEditorHistory('redo'); }
+
+function initEditorHistoryEvents() {
+  const control = event => event.target.closest?.('[data-editor-undo], [data-editor-redo]');
+  let touchPress = null;
+  const touchPoint = (touches, identifier) => Array.from(touches || []).find(touch => touch.identifier === identifier);
+  const activate = button => {
+    if (!button || button.disabled) return;
+    if (button.hasAttribute('data-editor-undo')) undoEditorAction();
+    else redoEditorAction();
+  };
+  document.addEventListener('pointerdown', event => {
+    if (!control(event)) return;
+    rememberEditorSelection(refs.editorRoot.querySelector('#notepad-editor'));
+    event.preventDefault();
+  }, true);
+  document.addEventListener('touchstart', event => {
+    const button = control(event);
+    if (event.touches.length !== 1) touchPress = null;
+    if (!button) return;
+    event.preventDefault();
+    if (button.disabled || event.touches.length !== 1) return;
+    const touch = event.changedTouches[0] || event.touches[0];
+    touchPress = { button, identifier: touch.identifier, x: touch.clientX, y: touch.clientY, moved: false };
+  }, { capture: true, passive: false });
+  document.addEventListener('touchmove', event => {
+    if (!touchPress) return;
+    const touch = touchPoint(event.touches, touchPress.identifier);
+    if (event.touches.length !== 1 || !touch) { touchPress = null; return; }
+    if (Math.hypot(touch.clientX - touchPress.x, touch.clientY - touchPress.y) > 10) touchPress.moved = true;
+  }, { capture: true, passive: true });
+  document.addEventListener('touchend', event => {
+    const button = control(event);
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const press = touchPress;
+    touchPress = null;
+    const touch = press && touchPoint(event.changedTouches, press.identifier);
+    if (!event.touches.length && touch && press.button === button && !press.moved &&
+        Math.hypot(touch.clientX - press.x, touch.clientY - press.y) <= 10) activate(button);
+  }, { capture: true, passive: false });
+  document.addEventListener('touchcancel', () => { touchPress = null; }, { capture: true, passive: true });
+  window.addEventListener('blur', () => { touchPress = null; });
+  document.addEventListener('click', event => {
+    const button = control(event);
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activate(button);
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (!getEditorFromEventTarget(event.target) || event.isComposing) return;
+    const command = (event.metaKey || event.ctrlKey) && !event.altKey;
+    if (command && (event.key.toLowerCase() === 'z' || (!event.metaKey && event.key.toLowerCase() === 'y'))) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (event.shiftKey || event.key.toLowerCase() === 'y') redoEditorAction(); else undoEditorAction();
+      return;
+    }
+    if (!command && (event.key.length === 1 || ['Enter', 'Backspace', 'Delete'].includes(event.key))) {
+      beginEditorHistoryAction('Edit note', ['Enter'].includes(event.key) ? '' : 'typing');
+    }
+  }, true);
+  document.addEventListener('beforeinput', event => {
+    if (!getEditorFromEventTarget(event.target)) return;
+    if (['historyUndo', 'historyRedo'].includes(event.inputType)) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (event.inputType === 'historyUndo') undoEditorAction(); else redoEditorAction();
+      return;
+    }
+    beginEditorHistoryAction('Edit note', event.inputType === 'insertText' || event.inputType === 'insertCompositionText' ? 'typing' : '');
+  }, true);
 }

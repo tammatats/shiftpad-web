@@ -78,7 +78,10 @@ test('same-line conflicts keep the server note and preserve offline work through
   }
   await pair.ipad.page.setViewportSize({ width: 683, height: 960 });
   await pair.ipad.page.getByRole('button', { name: 'Review saved copy', exact: true }).click();
-  await expect(pair.ipad.page.locator('.history-recovery-row').filter({ hasText: 'Offline conflicting iPad wording' })).toBeVisible();
+  await expect(pair.ipad.page.locator('[data-sync-local-copy]')).toContainText('Offline conflicting iPad wording');
+  await expect(pair.ipad.page.locator('[data-sync-current-copy]')).toContainText('Saved iPhone wording');
+  await pair.ipad.page.locator('[data-review-conflict]:not([disabled])').first().click();
+  await pair.ipad.page.getByRole('button', { name: 'Close sync details', exact: true }).click();
   await expect(pair.ipad.page.locator('#sync-recovery-notice')).toBeHidden();
   await pair.ipad.page.evaluate(() => {
     const remote = cloneJson(appState);
@@ -121,6 +124,9 @@ test('new notes made offline survive reopening against a cloud account without t
   await pair.ipad.context.setOffline(true);
   await pair.ipad.page.evaluate(() => addWard());
   await pair.ipad.page.locator('#notepad-editor').fill('A new ward created offline');
+  // Confirm the text reached the note rather than a delayed ward-rename focus.
+  await expect(pair.ipad.page.locator('#notepad-editor')).toContainText('A new ward created offline');
+  expect(await pair.ipad.page.evaluate(() => getCurrentNote().documentHtml.includes('A new ward created offline'))).toBe(true);
   await checkpoint(pair.ipad);
   await pair.ipad.page.close();
   await pair.ipad.context.setOffline(false);

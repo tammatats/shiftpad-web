@@ -194,6 +194,7 @@ for (const [name, profile] of [
       });
       await page.locator('[data-mobile-tag-toggle]').tap();
       await page.locator('[data-mobile-tag="todo"]').tap();
+      await page.locator('[data-tag-choice="replace"]').tap();
       await page.keyboard.insertText('X');
       await expect(page.locator('[data-line-id="sample-b"]')).toContainText('Review Xsample item');
       await expect(page.locator('[data-line-id="sample-b"] .tag-token')).toHaveCount(1);
