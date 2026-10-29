@@ -3719,7 +3719,9 @@ select:focus {
 
   html.uses-mobile-tag-dock .document-pad {
     margin-top: 0;
-    padding-bottom: 64px;
+    /* Safari shrinks its visual viewport while the document keeps its height.
+       Leave enough scroll space to bring the last edited line above the keyboard. */
+    padding-bottom: calc(64px + var(--keyboard-offset));
   }
 
   .mobile-tag-dock {

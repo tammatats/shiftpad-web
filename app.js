@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-26-tag-selection";
+const APP_BUILD = "2026-10-29-tag-insertion";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -170,6 +170,7 @@ const uiState = {
   savedSelection: null,
   savedSelectionBookmark: null,
   mobileTagSelection: null,
+  mobileTagMenuSelection: null,
   editorSelectionRestoring: false,
   bedIndexVisible: false,
   bedIndexTimer: null,
@@ -816,6 +817,7 @@ function bindEvents() {
     }
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
+    dismissMobileTagMenu();
     clearScreenSwitchSelectionRestore();
     beginEditorTapDebug(editor, event);
     rememberEditorTapScroll(event);
@@ -875,6 +877,7 @@ function bindEvents() {
     }
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
+    dismissMobileTagMenu();
     clearScreenSwitchSelectionRestore();
     beginEditorTapDebug(editor, event);
     rememberEditorTapScroll(event);
@@ -1241,6 +1244,7 @@ function bindEvents() {
       event.preventDefault();
       return;
     }
+    dismissMobileTagMenu();
     restoreEditorSelectionAfterScreenSwitch("beforeinput");
     if (handleNotepadBeforeInput(event)) {
       event.preventDefault();
@@ -1251,9 +1255,14 @@ function bindEvents() {
   const cancelMobileTagPress = () => {
     mobileTagTouchStart = null;
     uiState.mobileTagSelection = null;
+    uiState.mobileTagMenuSelection = null;
   };
   const rememberMobileTagSelection = () => {
     if (uiState.mobileTagSelection) return;
+    if (uiState.mobileTagMenuSelection) {
+      uiState.mobileTagSelection = uiState.mobileTagMenuSelection;
+      return;
+    }
     rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
     uiState.mobileTagSelection = {
       noteId: getCurrentNote()?.id,
@@ -5569,10 +5578,13 @@ function focusEditorFromTap(editor, target) {
 }
 
 function handleMobileTagDockAction(event) {
-  const saved = uiState.mobileTagSelection;
+  const saved = uiState.mobileTagMenuSelection || uiState.mobileTagSelection;
   uiState.mobileTagSelection = null;
+  uiState.mobileTagMenuSelection = null;
   if (saved?.noteId === getCurrentNote()?.id) {
-    uiState.savedSelection = saved.range;
+    // DOM replacement collapses a live Range to the editor's start while it
+    // still appears connected. Stable line bookmarks survive that replacement.
+    uiState.savedSelection = saved.bookmark ? null : saved.range;
     uiState.savedSelectionBookmark = saved.bookmark;
   }
   const toggle = event.target.closest("[data-mobile-tag-toggle]");
@@ -5585,6 +5597,13 @@ function handleMobileTagDockAction(event) {
     });
     uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
     restoreEditorFocusAndSelection();
+    if (uiState.mobileTagsOpen) {
+      uiState.mobileTagMenuSelection = {
+        noteId: getCurrentNote()?.id,
+        range: uiState.savedSelection?.cloneRange() || null,
+        bookmark: uiState.savedSelectionBookmark
+      };
+    }
     syncMobileTagDock();
     finishEditorDebugAction(debugEntry, {
       success: true,
@@ -5600,6 +5619,14 @@ function handleMobileTagDockAction(event) {
     uiState.mobileTagsOpen = false;
     syncMobileTagDock();
   }
+}
+
+function dismissMobileTagMenu() {
+  uiState.mobileTagSelection = null;
+  uiState.mobileTagMenuSelection = null;
+  if (!uiState.mobileTagsOpen) return;
+  uiState.mobileTagsOpen = false;
+  syncMobileTagDock();
 }
 
 function handleQuickTag(tag) {
@@ -5623,6 +5650,7 @@ function handleQuickTag(tag) {
   saveState({ skipCloud: true });
   updateSortBedsButtonFromEditor(editor);
   rememberEditorSelection(editor);
+  queueEditorCaretVisibilityCheck(editor, "quick-tag");
   finishEditorDebugAction(debugEntry, {
     success: true,
     handledBy: "insertTagIntoEditor",
@@ -5653,6 +5681,7 @@ function syncMobileTagDock() {
     !uiState.drawerOpen && !uiState.wardOptionsOpen && !uiState.searchOpen && !uiState.bedAction;
   if (!shouldShow) uiState.mobileTagsOpen = false;
   const isOpen = shouldShow && uiState.mobileTagsOpen;
+  if (!isOpen) uiState.mobileTagMenuSelection = null;
   dock.classList.toggle("is-visible", shouldShow);
   dock.classList.toggle("is-open", isOpen);
   dock.setAttribute("aria-hidden", String(!shouldShow));
@@ -6089,7 +6118,7 @@ function rememberEditorSelection(editor, options = {}) {
 
 function isEditorSelectionMemoryFrozen() {
   return Boolean(
-    uiState.mobileTagSelection || uiState.editorSelectionRestoring ||
+    uiState.mobileTagSelection || uiState.mobileTagMenuSelection || uiState.editorSelectionRestoring ||
     uiState.restoreSelectionAfterScreenSwitch ||
       (uiState.selectionMemoryFrozenUntil && Date.now() < uiState.selectionMemoryFrozenUntil)
   );
@@ -6533,6 +6562,7 @@ function getTextBoundaryWithinLine(line, targetOffset) {
 
 function clearSavedEditorSelection() {
   uiState.mobileTagSelection = null;
+  uiState.mobileTagMenuSelection = null;
   uiState.savedSelection = null;
   uiState.savedSelectionBookmark = null;
 }
@@ -12118,9 +12148,17 @@ function prepareLineForSingleTagInsertion(editor) {
   if (!tokens.length) return;
 
   const activeToken = getActiveTagToken();
-  const referenceToken = activeToken && line.contains(activeToken) ? activeToken : tokens[0];
-  const marker = document.createTextNode("");
-  line.insertBefore(marker, referenceToken);
+  // Replacing the line's tag must not pull a caret in its text back to the
+  // old chip. Keep a marker outside any chip that is about to be removed.
+  let marker;
+  if (activeToken && line.contains(activeToken)) {
+    marker = document.createElement("span");
+    marker.dataset.caretMarker = "true";
+    line.insertBefore(marker, activeToken);
+  } else {
+    marker = insertSelectionMarker(editor);
+  }
+  if (!marker) return;
 
   tokens.forEach((token) => {
     consumePendingTagInsertion(token);
@@ -12152,10 +12190,10 @@ function prepareLineForSingleTagInsertion(editor) {
 }
 
 function insertTodoTagIntoLine(editor, insertionPoint) {
-  const selection = window.getSelection();
   const tokenId = createId("tag");
   const tokenHtml = renderTodoTokenHtml(tokenId);
   let line = getCurrentEditorLine();
+  const caretMarker = line && !isEditorLineEmpty(line) ? insertSelectionMarker(editor) : null;
 
   if (!line || !isNodeInsideEditor(editor, line)) {
     line = insertEditorLine(editor, `${tokenHtml}&nbsp;`);
@@ -12178,8 +12216,8 @@ function insertTodoTagIntoLine(editor, insertionPoint) {
   const inserted = editor.querySelector(`[data-token-id="${cssEscape(tokenId)}"]`);
   rememberPendingTagInsertion(tokenId, editor, insertionPoint, { finalized: true });
 
-  if (selection && line) {
-    placeCaretAtEndOfLine(line);
+  if (caretMarker?.isConnected) {
+    restoreCaretFromMarker(caretMarker, editor);
     rememberEditorSelection(editor);
   } else {
     placeCaretAfterNode(inserted, true);

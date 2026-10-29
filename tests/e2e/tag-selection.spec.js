@@ -120,5 +120,103 @@ for (const [name, profile] of [
       await page.locator('[data-mobile-tag="io"]').tap();
       await expect(page.locator('[data-line-id="sample-b"] [data-tag="io"]')).toHaveCount(1);
     });
+
+    test('the insertion point survives delayed selection changes while the menu is open', async ({ page }) => {
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      // Keyboard/selection settling can occur after touchend, rather than
+      // during the button press covered above.
+      await page.evaluate(() => {
+        const range = document.createRange();
+        range.selectNodeContents(document.querySelector('#notepad-editor'));
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection.removeAllRanges(); selection.addRange(range);
+        document.dispatchEvent(new Event('selectionchange'));
+      });
+      await page.waitForTimeout(200);
+      await page.locator('[data-mobile-tag="io"]').tap();
+      await page.keyboard.insertText('X');
+      await expect(page.locator('[data-line-id="sample-b"]')).toContainText('Review I/O Xsample item');
+      await expect(page.locator('[data-line-id="sample-a"]')).toHaveText('First sample line');
+    });
+
+    test('To-do keeps typing at the chosen text position instead of jumping to the line end', async ({ page }) => {
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      await page.locator('[data-mobile-tag="todo"]').tap();
+      await page.keyboard.insertText('X');
+      await expect(page.locator('[data-line-id="sample-b"]')).toContainText('Review Xsample item');
+      await expect(page.locator('[data-line-id="sample-b"] [data-tag="todo"]')).toHaveCount(1);
+    });
+
+    test('a note refresh between press and release does not collapse the saved range to line one', async ({ page }) => {
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      await page.locator('[data-mobile-tag="io"]').evaluate(button => {
+        button.addEventListener('touchstart', () => {
+          const note = getCurrentNote();
+          setNoteDocumentHtml(note, document.querySelector('#notepad-editor').innerHTML);
+          patchCurrentNoteEditorFromModel({ workspaceKey: getActiveWorkspaceKey(), ward: getCurrentWard(), note }, { source: 'e2e' });
+        }, { once: true });
+      });
+      await page.locator('[data-mobile-tag="io"]').tap();
+      await page.keyboard.insertText('X');
+      await expect(page.locator('[data-line-id="sample-b"]')).toContainText('Review I/O Xsample item');
+    });
+
+    test('tapping another editor line dismisses Tags and uses the new caret next time', async ({ page }) => {
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      await page.locator('[data-line-id="sample-c"]').tap({ position: { x: 30, y: 10 } });
+      await expect(page.locator('[data-mobile-tag-toggle]')).toHaveAttribute('aria-expanded', 'false');
+      expect((await caret(page)).line).toBe('sample-c');
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      await page.locator('[data-mobile-tag="io"]').tap();
+      await expect(page.locator('[data-line-id="sample-c"] [data-tag="io"]')).toHaveCount(1);
+      await expect(page.locator('[data-line-id="sample-b"]')).toHaveText('Review sample item');
+    });
+
+    test('typing with Tags open dismisses the menu and advances the next insertion point', async ({ page }) => {
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      await page.keyboard.insertText('Y');
+      await expect(page.locator('[data-mobile-tag-toggle]')).toHaveAttribute('aria-expanded', 'false');
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      await page.locator('[data-mobile-tag="io"]').tap();
+      await page.keyboard.insertText('X');
+      await expect(page.locator('[data-line-id="sample-b"]')).toContainText('Review YI/O Xsample item');
+    });
+
+    test('replacing a line tag keeps the chosen position in the text', async ({ page }) => {
+      await page.locator('#notepad-editor').evaluate(el => {
+        const line = el.querySelector('[data-line-id="sample-b"]');
+        line.innerHTML = '<span class="tag-token tag-io" data-tag="io" data-token-id="old-io" contenteditable="false">I/O</span> Review sample item';
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+        const range = document.createRange(); range.setStart(line.lastChild, 8); range.collapse(true);
+        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        rememberEditorSelection(el, { force: true });
+      });
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      await page.locator('[data-mobile-tag="todo"]').tap();
+      await page.keyboard.insertText('X');
+      await expect(page.locator('[data-line-id="sample-b"]')).toContainText('Review Xsample item');
+      await expect(page.locator('[data-line-id="sample-b"] .tag-token')).toHaveCount(1);
+    });
+
+    test('a physical tap in a scrolled long note inserts on that line', async ({ page }, info) => {
+      await page.locator('#notepad-editor').evaluate(el => {
+        el.innerHTML = Array.from({ length: 80 }, (_, i) => `<div data-line-id="long-${i}">Review sample item ${i}</div>`).join('');
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+      });
+      const line = page.locator('[data-line-id="long-60"]');
+      await line.tap({ position: { x: 56, y: 10 } });
+      const position = await caret(page);
+      expect(position.line).toBe('long-60');
+      const text = await line.textContent();
+      await page.locator('[data-mobile-tag-toggle]').tap();
+      await page.waitForTimeout(800);
+      expect(await caret(page)).toEqual(position);
+      await page.locator('[data-mobile-tag="io"]').tap();
+      await page.keyboard.insertText('X');
+      await expect(line).toContainText(`${text.slice(0, position.offset)}I/O X${text.slice(position.offset)}`);
+      await expect(page.locator('#notepad-editor .tag-token')).toHaveCount(1);
+      await page.screenshot({ path: info.outputPath('tag-in-scrolled-note.png'), scale: 'css' });
+    });
   });
 }
