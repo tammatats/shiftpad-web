@@ -15,3 +15,5 @@
 .tag-choice-card button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: white; font: inherit; font-size: 14px; font-weight: 700; color: var(--ink); touch-action: manipulation; }
 .tag-choice-card button:first-child { background: var(--accent-soft); }
 @media (min-width: 861px) { #tag-choice-root { bottom: 24px; right: max(24px, calc((100vw - 1240px) / 2)); } }
+
+[data-startup-status] a { display: inline-flex; align-items: center; min-height: 44px; margin-top: 8px; text-decoration: none; }

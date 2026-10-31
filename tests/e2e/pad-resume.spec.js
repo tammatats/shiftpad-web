@@ -33,5 +33,9 @@ test('startup shows a useful opening state even if app JavaScript cannot load', 
   await page.goto('/?e2e=1&workspace=shift');
   await expect(page.locator('[data-startup-status]')).toContainText('Opening your pad…');
   await expect(page.getByRole('link', { name: 'Reload pad' })).toBeVisible();
+  const status = await page.locator('[data-startup-status] [role="status"]').boundingBox();
+  const reload = await page.getByRole('link', { name: 'Reload pad' }).boundingBox();
+  expect(reload.y).toBeGreaterThanOrEqual(status.y + status.height);
+  expect(reload.height).toBeGreaterThanOrEqual(44);
   await page.screenshot({ path: info.outputPath('opening-state.png'), scale: 'css' });
 });

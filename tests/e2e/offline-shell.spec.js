@@ -59,3 +59,31 @@ test('temporary server errors reopen the cached working app instead of a blank r
   await page.keyboard.insertText(' still works');
   await expect(editor).toContainText('Preserved sample note still works');
 });
+
+test('a stalled navigation opens the cached app after the shell timeout', async ({ page, context, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Service-worker lifecycle coverage uses Chromium; native Safari/PWA remains a device check.');
+  let stall = false, release;
+  await context.route('**/api/public-config.js', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
+  await context.route('http://127.0.0.1:4173/**', async route => {
+    const url = new URL(route.request().url());
+    if (stall && url.pathname === '/' && url.searchParams.get('e2e') === '1') {
+      await new Promise(resolve => { release = resolve; });
+      return route.abort().catch(() => {});
+    }
+    return route.fallback();
+  });
+  await page.goto('/?e2e=1&workspace=shift');
+  const editor = page.locator('#notepad-editor');
+  await expect(editor).toBeVisible();
+  await editor.fill('Sample note through stalled connection');
+  await page.evaluate(() => flushLocalStateSave());
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  stall = true;
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 12000 });
+    await expect(editor).toContainText('Sample note through stalled connection');
+  } finally {
+    release?.();
+  }
+});

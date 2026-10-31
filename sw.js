@@ -1,4 +1,4 @@
-const CACHE_NAME = "shiftpad-shell-v72";
+const CACHE_NAME = "shiftpad-shell-v73";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
@@ -115,13 +115,21 @@ async function cacheFirst(request) {
 }
 
 async function networkFirst(request, fallbackPath) {
+  // A suspended/resumed iOS connection can stall without rejecting fetch.
+  // Bound shell requests so an installed working copy can still open.
+  const cached = await matchCached(request, fallbackPath);
+  const controller = new AbortController();
+  // First-time requests with no fallback keep the normal network lifetime.
+  const timeout = cached ? setTimeout(() => controller.abort(), 4000) : null;
   try {
-    const response = await fetch(request);
-    if (!response.ok) return (await matchCached(request, fallbackPath)) || response;
+    const response = await fetch(request, { signal: controller.signal });
+    if (!response.ok) return cached || response;
     await putInCache(request, response.clone());
     return response;
   } catch {
-    return matchCached(request, fallbackPath);
+    return cached || matchCached(request, fallbackPath);
+  } finally {
+    if (timeout !== null) clearTimeout(timeout);
   }
 }
 

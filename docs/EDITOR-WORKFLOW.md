@@ -27,6 +27,8 @@ A touch toolbar action guards its resulting selection for 200 ms against delayed
 
 On foreground/pageshow, only a missing editor surface is rebuilt from the current model. An existing empty editor is never interpreted as a missing surface, and recovery does not save the DOM over the note model. Startup has a visible opening/reload state and catches initialization failures.
 
-Runtime service-worker caching is best effort: quota/security failures cannot discard a successful network response. Temporary HTTP errors use a working cached response when available. Critical shell installation still requires all assets, and authenticated API responses remain excluded.
+Runtime service-worker caching is best effort: quota/security failures cannot discard a successful network response. Temporary HTTP errors and shell requests stalled beyond four seconds use a working cached response when available. Critical shell installation still requires all assets, and authenticated API responses remain excluded.
 
 Regression coverage: `ios-toolbar-regressions.spec.js`, `pad-resume.spec.js`, `offline-shell.spec.js`, and `service-worker.test.js`. Synthetic selection resets/cache failures demonstrate the fixed code paths; they do not establish the cause of every physical-iOS white screen.
+
+Desktop caret correction bypasses the compact keyboard-scroll cooldown: a browser can repeat its own scroll immediately after an earlier correction, and the same target must remain eligible for repair.

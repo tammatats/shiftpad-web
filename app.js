@@ -6955,7 +6955,7 @@ function keepEditorCaretVisible(editor, { reason = "input", force = false } = {}
   if (Math.abs(nextScrollTop - currentScrollTop) < 16) return;
 
   const now = performance.now();
-  if (now - uiState.lastCaretAutoScrollAt < 220 && Math.abs(nextScrollTop - uiState.lastCaretAutoScrollTop) < 48) {
+  if (compact && now - uiState.lastCaretAutoScrollAt < 220 && Math.abs(nextScrollTop - uiState.lastCaretAutoScrollTop) < 48) {
     return;
   }
 

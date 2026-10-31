@@ -223,3 +223,22 @@ test('desktop typing stays visible beneath the fixed header and tag toolbar', as
   })).toBeGreaterThanOrEqual(0);
   await page.screenshot({ path: info.outputPath('desktop-editor-visible.png'), scale: 'css' });
 });
+
+test('a native desktop scroll reset can be corrected during the caret-scroll cooldown', async ({ page }, info) => {
+  test.skip(info.project.name === 'iphone-webkit', 'Desktop fixed toolbar coverage.');
+  const editor = page.locator('#notepad-editor');
+  await editor.click();
+  await page.keyboard.insertText('Visible after native scroll reset');
+  await editor.evaluate(el => {
+    // Reproduce a browser scrolling again after the first caret correction.
+    window.scrollTo(0, 0);
+    uiState.lastCaretAutoScrollAt = performance.now();
+    uiState.lastCaretAutoScrollTop = 0;
+    window.scrollTo(0, 84);
+    keepEditorCaretVisible(el, { reason: 'native-post-input-scroll' });
+  });
+  await expect.poll(() => editor.evaluate(el => {
+    const range = document.createRange(); range.selectNodeContents(el.firstElementChild);
+    return range.getBoundingClientRect().top - document.querySelector('.quick-tags').getBoundingClientRect().bottom;
+  })).toBeGreaterThanOrEqual(0);
+});
