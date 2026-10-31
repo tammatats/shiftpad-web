@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-29-workflow";
+const APP_BUILD = "2026-10-31-ios-caret";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -172,6 +172,8 @@ const uiState = {
   mobileTagSelection: null,
   mobileTagMenuSelection: null,
   pendingTagChoice: null,
+  toolbarCaretSettle: null,
+  appInitialized: false,
   editorSelectionRestoring: false,
   bedIndexVisible: false,
   bedIndexTimer: null,
@@ -264,7 +266,13 @@ let editorHistoryAction = null;
 let editorHistoryReplaying = false;
 applyUrlOverrides();
 
-init();
+init().catch((error) => {
+  console.error("Pad startup failed:", error);
+  if (!refs.editorRoot.querySelector("#notepad-editor")) {
+    refs.editorRoot.innerHTML = '<div class="empty-card" role="alert"><h3>Your pad could not open</h3><p>Reload to try again. Your saved local notes are kept.</p><button type="button" data-retry-startup>Reload pad</button></div>';
+    refs.editorRoot.querySelector('[data-retry-startup]').addEventListener('click', () => window.location.reload());
+  }
+});
 
 async function init() {
   document.documentElement.classList.toggle("is-ipad-device", isLikelyIpadDevice());
@@ -274,6 +282,7 @@ async function init() {
   registerShiftPadServiceWorker();
   await initAuth();
   render();
+  uiState.appInitialized = true;
   refreshPushSubscriptionIfEnabled().catch((error) => {
     console.warn("Notification subscription refresh failed:", error);
   });
@@ -828,6 +837,7 @@ function bindEvents() {
     }
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
+    cancelToolbarCaretSettle();
     dismissMobileTagMenu();
     clearScreenSwitchSelectionRestore();
     beginEditorTapDebug(editor, event);
@@ -888,6 +898,7 @@ function bindEvents() {
     }
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
+    cancelToolbarCaretSettle();
     dismissMobileTagMenu();
     clearScreenSwitchSelectionRestore();
     beginEditorTapDebug(editor, event);
@@ -1076,6 +1087,8 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("compositionstart", (event) => {
     if (!getEditorFromEventTarget(event.target)) return;
+    settleToolbarCaret();
+    cancelToolbarCaretSettle();
     uiState.editorCompositionActive = true;
   });
 
@@ -1095,6 +1108,7 @@ function bindEvents() {
     const note = getCurrentNote();
     if (!note) return;
     if (!canCommitEditorToCurrentNote(editor, "input")) return;
+    cancelToolbarCaretSettle();
     clearEditorTapScrollForInput();
     syncEditorEmptyState(editor);
 
@@ -1242,6 +1256,7 @@ function bindEvents() {
     const editor = getEditorFromEventTarget(event.target);
     if (editor) {
       if (!canCommitEditorToCurrentNote(editor, "keydown")) return;
+      cancelToolbarCaretSettle();
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) dismissMobileTagMenu();
       restoreEditorSelectionAfterScreenSwitch("keydown");
       hideBedIndex();
@@ -1256,6 +1271,8 @@ function bindEvents() {
       event.preventDefault();
       return;
     }
+    settleToolbarCaret();
+    cancelToolbarCaretSettle();
     dismissMobileTagMenu();
     restoreEditorSelectionAfterScreenSwitch("beforeinput");
     if (handleNotepadBeforeInput(event)) {
@@ -1272,6 +1289,8 @@ function bindEvents() {
   };
   const rememberMobileTagSelection = () => {
     if (uiState.mobileTagSelection) return;
+    settleToolbarCaret();
+    cancelToolbarCaretSettle();
     if (uiState.mobileTagMenuSelection) {
       uiState.mobileTagSelection = uiState.mobileTagMenuSelection;
       return;
@@ -1478,6 +1497,7 @@ function bindEvents() {
   document.addEventListener("selectionchange", () => {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
     if (!editor) return;
+    if (settleToolbarCaret()) return;
     if (isEditorSelectionMemoryFrozen()) return;
     if (document.visibilityState !== "visible" || !document.hasFocus()) return;
     rememberEditorSelection(editor);
@@ -1485,6 +1505,7 @@ function bindEvents() {
   });
 
   window.addEventListener("blur", () => {
+    cancelToolbarCaretSettle();
     cancelMobileTagPress();
     freezeEditorSelectionForScreenSwitch("window-blur");
   });
@@ -1503,6 +1524,7 @@ function bindEvents() {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
+      cancelToolbarCaretSettle();
       cancelMobileTagPress();
       freezeEditorSelectionForScreenSwitch("hidden");
       flushLocalStateSave();
@@ -1544,9 +1566,22 @@ function bindEvents() {
     authState.lastSyncError = "";
     renderAuthUi();
   });
+  const recoverOnReturn = () => window.requestAnimationFrame(recoverMissingPadSurface);
+  window.addEventListener("pageshow", recoverOnReturn);
+  window.addEventListener("focus", recoverOnReturn);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) recoverOnReturn(); });
   window.addEventListener("resize", syncMobileTagDock, { passive: true });
   window.addEventListener("resize", updateDesktopTagBarOffset, { passive: true });
   window.addEventListener("scroll", showBedIndexDuringScroll, { passive: true });
+}
+
+function recoverMissingPadSurface() {
+  if (!uiState.appInitialized || document.hidden || !authState.user || authState.isHydrating ||
+      isArchivedPadMode() || state.activeView !== "notes" || refs.editorRoot.querySelector("#notepad-editor")) return;
+  // Rebuild only a missing surface. Never infer deletion from an empty/white
+  // editor or write a recovered DOM back over the current note model.
+  clearSavedEditorSelection();
+  render();
 }
 
 function render() {
@@ -5792,6 +5827,7 @@ function handleMobileTagDockAction(event) {
   }
   const tagButton = event.target.closest("[data-mobile-tag], [data-mobile-direct-tag]");
   if (tagButton) {
+    cancelToolbarCaretSettle();
     handleQuickTag(tagButton.dataset.mobileTag || tagButton.dataset.mobileDirectTag);
     uiState.mobileTagsOpen = false;
     syncMobileTagDock();
@@ -5850,6 +5886,8 @@ function handleQuickTag(tag, { mode = "" } = {}) {
     );
     return;
   }
+  // Capture history before replacement/new-line changes the original selection.
+  beginEditorHistoryAction("Insert tag");
   if (mode === "replace") prepareLineForSingleTagInsertion(editor);
   if (mode === "new-line" && line) {
     const nextLine = document.createElement("div");
@@ -5865,6 +5903,7 @@ function handleQuickTag(tag, { mode = "" } = {}) {
   saveState({ skipCloud: true });
   updateSortBedsButtonFromEditor(editor);
   rememberEditorSelection(editor);
+  guardToolbarCaret(editor);
   queueEditorCaretVisibilityCheck(editor, "quick-tag");
   finishEditorDebugAction(debugEntry, {
     success: true,
@@ -6321,6 +6360,52 @@ function restoreEditorFocusAndSelection() {
   return editor;
 }
 
+function cancelToolbarCaretSettle() {
+  const pending = uiState.toolbarCaretSettle;
+  if (pending) window.clearTimeout(pending.timer);
+  uiState.toolbarCaretSettle = null;
+}
+
+function guardToolbarCaret(editor) {
+  cancelToolbarCaretSettle();
+  if (!isTouchEditorDevice() || uiState.pendingTagChoice) return;
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || !isNodeInsideEditor(editor, selection.anchorNode)) return;
+  const bookmark = createEditorSelectionBookmark(editor, selection.getRangeAt(0));
+  if (!bookmark) return;
+  const pending = { editor, noteId: getCurrentNote()?.id, version: getNoteUpdatedAt(getCurrentNote()), bookmark };
+  // Safari can reset the native range after touchend/focus while its keyboard
+  // animation settles. This short guard ends immediately on a fresh gesture.
+  pending.timer = window.setTimeout(() => {
+    if (uiState.toolbarCaretSettle !== pending) return;
+    settleToolbarCaret();
+    cancelToolbarCaretSettle();
+  }, 200);
+  uiState.toolbarCaretSettle = pending;
+}
+
+function settleToolbarCaret() {
+  const pending = uiState.toolbarCaretSettle;
+  if (!pending || uiState.editorSelectionRestoring) return false;
+  if (document.hidden || !document.hasFocus() || document.activeElement !== pending.editor ||
+      !pending.editor.isConnected || getCurrentNote()?.id !== pending.noteId ||
+      getNoteUpdatedAt(getCurrentNote()) !== pending.version || uiState.editorCompositionActive) {
+    cancelToolbarCaretSettle(); return false;
+  }
+  const selection = window.getSelection();
+  const current = selection?.rangeCount && createEditorSelectionBookmark(pending.editor, selection.getRangeAt(0));
+  if (JSON.stringify(current) === JSON.stringify(pending.bookmark)) return false;
+  const restoring = uiState.editorSelectionRestoring;
+  uiState.editorSelectionRestoring = true;
+  try {
+    uiState.savedSelection = null;
+    uiState.savedSelectionBookmark = pending.bookmark;
+    return restoreEditorSelectionBookmark(pending.editor);
+  } finally {
+    uiState.editorSelectionRestoring = restoring;
+  }
+}
+
 function rememberEditorSelection(editor, options = {}) {
   const force = Boolean(options.force);
   if (!force && isEditorSelectionMemoryFrozen()) return false;
@@ -6683,7 +6768,7 @@ function createEditorSelectionBoundary(editor, container, offset) {
       lineId: line.dataset.lineId,
       path: [],
       offset: atLineStart ? 0 : line.childNodes.length,
-      textOffset: atLineStart ? 0 : String(line.textContent || "").length
+      textOffset: atLineStart ? 0 : getBookmarkText(line.textContent).length
     };
   }
   const line = findEditorLine(container);
@@ -6716,10 +6801,15 @@ function getTextOffsetForSelectionBoundary(line, container, offset) {
     const range = document.createRange();
     range.selectNodeContents(line);
     range.setEnd(container, Math.max(0, Number(offset) || 0));
-    return range.toString().length;
+    return getBookmarkText(range.toString()).length;
   } catch {
     return 0;
   }
+}
+
+function getBookmarkText(text) {
+  // Caret sentinels are regenerated by normalization and are not user text.
+  return String(text || "").replace(/[\u200b\ufeff]/g, "");
 }
 
 function restoreEditorSelectionBookmark(editor) {
@@ -6761,7 +6851,10 @@ function resolveEditorSelectionBoundary(editor, boundary) {
   }
   if (node) {
     const maxOffset = node.nodeType === Node.TEXT_NODE ? node.textContent.length : node.childNodes.length;
-    return { node, offset: Math.max(0, Math.min(boundary.offset, maxOffset)) };
+    const offset = Math.max(0, Math.min(boundary.offset, maxOffset));
+    // A valid DOM path can now point at a different node after sentinels are
+    // added or adjacent text nodes merge. Verify its logical text position.
+    if (getTextOffsetForSelectionBoundary(line, node, offset) === boundary.textOffset) return { node, offset };
   }
   return getTextBoundaryWithinLine(line, boundary.textOffset);
 }
@@ -6771,14 +6864,28 @@ function getTextBoundaryWithinLine(line, targetOffset) {
   const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
   let node = walker.nextNode();
   while (node) {
-    if (remaining <= node.textContent.length) return { node, offset: remaining };
-    remaining -= node.textContent.length;
+    const text = node.textContent;
+    const length = getBookmarkText(text).length;
+    if (remaining <= length && length) {
+      let offset = 0, logicalOffset = 0;
+      while (offset < text.length && (logicalOffset < remaining || /[\u200b\ufeff]/.test(text[offset]))) {
+        if (!/[\u200b\ufeff]/.test(text[offset])) logicalOffset++;
+        offset++;
+      }
+      // At a chip's trailing boundary, put the caret outside the noneditable
+      // token so the next keystroke cannot land in its label.
+      const token = node.parentElement?.closest('.tag-token[contenteditable="false"]');
+      if (token && (remaining === 0 || remaining === length)) return { node: token.parentNode, offset: Array.prototype.indexOf.call(token.parentNode.childNodes, token) + (remaining === length ? 1 : 0) };
+      return { node, offset };
+    }
+    remaining -= length;
     node = walker.nextNode();
   }
   return { node: line, offset: line.childNodes.length };
 }
 
 function clearSavedEditorSelection() {
+  cancelToolbarCaretSettle();
   clearPendingTagChoice();
   uiState.mobileTagSelection = null;
   uiState.mobileTagMenuSelection = null;
@@ -12279,7 +12386,6 @@ function deleteAdjacentFinalizedTag(token) {
 }
 
 function insertTagIntoEditor(editor, tag) {
-  beginEditorHistoryAction("Insert tag");
   const selection = window.getSelection();
   const hasEditorSelection =
     selection &&
@@ -15181,6 +15287,7 @@ function replayEditorHistory(direction) {
     updateSortBedsButtonFromEditor(editor);
     uiState.savedSelectionBookmark = activeChange?.snapshot.bookmark || null;
     restoreEditorFocusAndSelection();
+    guardToolbarCaret(editor);
     saveState({ skipCloud: true });
     renderStickyWardBar();
     refreshWardDrawerMetricsIfOpen();
@@ -15206,6 +15313,8 @@ function initEditorHistoryEvents() {
   };
   document.addEventListener('pointerdown', event => {
     if (!control(event)) return;
+    settleToolbarCaret();
+    cancelToolbarCaretSettle();
     rememberEditorSelection(refs.editorRoot.querySelector('#notepad-editor'));
     event.preventDefault();
   }, true);
@@ -15246,6 +15355,8 @@ function initEditorHistoryEvents() {
   }, true);
   document.addEventListener('keydown', event => {
     if (!getEditorFromEventTarget(event.target) || event.isComposing) return;
+    settleToolbarCaret();
+    cancelToolbarCaretSettle();
     const command = (event.metaKey || event.ctrlKey) && !event.altKey;
     if (command && (event.key.toLowerCase() === 'z' || (!event.metaKey && event.key.toLowerCase() === 'y'))) {
       event.preventDefault(); event.stopImmediatePropagation();
@@ -15258,6 +15369,8 @@ function initEditorHistoryEvents() {
   }, true);
   document.addEventListener('beforeinput', event => {
     if (!getEditorFromEventTarget(event.target)) return;
+    settleToolbarCaret();
+    cancelToolbarCaretSettle();
     if (['historyUndo', 'historyRedo'].includes(event.inputType)) {
       event.preventDefault(); event.stopImmediatePropagation();
       if (event.inputType === 'historyUndo') undoEditorAction(); else redoEditorAction();

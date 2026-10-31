@@ -18,3 +18,15 @@ Opening More preserves the insertion bookmark through native focus and viewport 
 ## Verification
 
 Run `npm test`, JavaScript syntax checks, and rendered visual inspection. Include normal authenticated offline bootstrap (not only `?e2e=1`), stale remote revision rejection, same-line conflict preservation, and multi-ward Undo. Native keyboard, dictation, selection handles, physical scrolling performance, and Safari/PWA cold-start checks remain in [the iOS device matrix](IOS-RELEASE-CHECKS.md).
+
+## iOS caret and app return safeguards
+
+Tag history begins before Replace/New line mutates the DOM. Bookmarks count visible text without regenerated zero-width caret sentinels and validate DOM paths against that text position; a connected path alone does not prove it still addresses the same text.
+
+A touch toolbar action guards its resulting selection for 200 ms against delayed native focus/keyboard resets. A fresh editor touch, keyboard input/navigation, composition, note/version change, or app blur ends the guard. Undo/Redo uses the same guard. This is bounded settling, not a persistent lock on user selection.
+
+On foreground/pageshow, only a missing editor surface is rebuilt from the current model. An existing empty editor is never interpreted as a missing surface, and recovery does not save the DOM over the note model. Startup has a visible opening/reload state and catches initialization failures.
+
+Runtime service-worker caching is best effort: quota/security failures cannot discard a successful network response. Temporary HTTP errors use a working cached response when available. Critical shell installation still requires all assets, and authenticated API responses remain excluded.
+
+Regression coverage: `ios-toolbar-regressions.spec.js`, `pad-resume.spec.js`, `offline-shell.spec.js`, and `service-worker.test.js`. Synthetic selection resets/cache failures demonstrate the fixed code paths; they do not establish the cause of every physical-iOS white screen.

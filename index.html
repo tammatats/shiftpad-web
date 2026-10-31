@@ -19,10 +19,10 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='8' y='8' width='48' height='48' rx='14' fill='%23e67d59'/%3E%3Cpath d='M20 22h24M20 32h24M20 42h16' stroke='white' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E"
     />
-    <link rel="stylesheet" href="styles.css?v=20261029-workflow" />
-    <link rel="stylesheet" href="styles/editor-controls.css?v=20261029-workflow" />
-    <link rel="stylesheet" href="styles/navigation.css?v=20261029-workflow" />
-    <link rel="stylesheet" href="styles/sync-details.css?v=20261029-workflow" />
+    <link rel="stylesheet" href="styles.css?v=20261031-ios-caret" />
+    <link rel="stylesheet" href="styles/editor-controls.css?v=20261031-ios-caret" />
+    <link rel="stylesheet" href="styles/navigation.css?v=20261031-ios-caret" />
+    <link rel="stylesheet" href="styles/sync-details.css?v=20261031-ios-caret" />
   </head>
   <body>
     <div id="auth-gate" class="auth-gate hidden">
@@ -122,7 +122,7 @@
           <section class="content-shell">
             <section id="notes-view" class="view-panel">
               <section class="editor-panel notes-editor-panel">
-                <div id="editor-root"></div>
+                <div id="editor-root"><div class="empty-card" data-startup-status><p role="status">Opening your pad…</p><a class="ghost-btn" href="">Reload pad</a></div></div>
               </section>
             </section>
 
@@ -153,10 +153,10 @@
     <script src="/api/public-config.js" defer></script>
     <script src="lib/sync-core.js?v=20261025-sync-status" defer></script>
     <script src="lib/diagnostics-core.js?v=20260823-reliability" defer></script>
-    <script src="lib/editor-history.js?v=20261029-workflow" defer></script>
-    <script src="lib/mobile-editor-ui.js?v=20261029-workflow" defer></script>
-    <script src="lib/navigation-ui.js?v=20261029-workflow" defer></script>
-    <script src="lib/sync-details-ui.js?v=20261029-workflow" defer></script>
-    <script src="app.js?v=20261029-workflow" defer></script>
+    <script src="lib/editor-history.js?v=20261031-ios-caret" defer></script>
+    <script src="lib/mobile-editor-ui.js?v=20261031-ios-caret" defer></script>
+    <script src="lib/navigation-ui.js?v=20261031-ios-caret" defer></script>
+    <script src="lib/sync-details-ui.js?v=20261031-ios-caret" defer></script>
+    <script src="app.js?v=20261031-ios-caret" defer></script>
   </body>
 </html>

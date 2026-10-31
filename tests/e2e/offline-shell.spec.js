@@ -35,3 +35,27 @@ test('the refactored editor controls and cached app reopen and accept edits offl
   await expect(editor).toContainText('still editable');
   expect(errors).toEqual([]);
 });
+
+test('temporary server errors reopen the cached working app instead of a blank response', async ({ page, context, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Service-worker lifecycle coverage uses Chromium; native Safari/PWA remains a device check.');
+  let unavailable = false;
+  await context.route('**/api/public-config.js', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
+  await context.route('http://127.0.0.1:4173/**', route => {
+    if (unavailable && !route.request().url().includes('/api/')) return route.fulfill({ status: 503, body: 'Temporarily unavailable' });
+    return route.fallback();
+  });
+  await page.goto('/?e2e=1&workspace=shift');
+  const editor = page.locator('#notepad-editor');
+  await expect(editor).toBeVisible();
+  await editor.fill('Preserved sample note');
+  await page.evaluate(() => flushLocalStateSave());
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  unavailable = true;
+  await page.reload();
+  await expect(editor).toContainText('Preserved sample note');
+  await editor.click();
+  await page.keyboard.press('ControlOrMeta+End');
+  await page.keyboard.insertText(' still works');
+  await expect(editor).toContainText('Preserved sample note still works');
+});

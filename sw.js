@@ -1,4 +1,4 @@
-const CACHE_NAME = "shiftpad-shell-v71";
+const CACHE_NAME = "shiftpad-shell-v72";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
@@ -93,8 +93,18 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(networkFirst(request, "/index.html"));
 });
 
+// Cache storage is optional at runtime (iOS can evict it or reject writes).
+// A cache failure must never turn a successful network response into a blank app.
+async function matchCached(request, fallbackPath) {
+  try {
+    return (await caches.match(request)) || (fallbackPath ? await caches.match(fallbackPath) : undefined);
+  } catch {
+    return undefined;
+  }
+}
+
 async function cacheFirst(request) {
-  const cached = await caches.match(request);
+  const cached = await matchCached(request);
   if (cached) {
     refreshCache(request);
     return cached;
@@ -107,10 +117,11 @@ async function cacheFirst(request) {
 async function networkFirst(request, fallbackPath) {
   try {
     const response = await fetch(request);
+    if (!response.ok) return (await matchCached(request, fallbackPath)) || response;
     await putInCache(request, response.clone());
     return response;
   } catch {
-    return (await caches.match(request)) || (fallbackPath ? caches.match(fallbackPath) : undefined);
+    return matchCached(request, fallbackPath);
   }
 }
 
@@ -122,8 +133,12 @@ function refreshCache(request) {
 
 async function putInCache(request, response) {
   if (!response || !response.ok) return;
-  const cache = await caches.open(CACHE_NAME);
-  await cache.put(request, response);
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(request, response);
+  } catch {
+    // Keep the fetched response usable when storage is full/unavailable.
+  }
 }
 
 self.addEventListener("push", (event) => {

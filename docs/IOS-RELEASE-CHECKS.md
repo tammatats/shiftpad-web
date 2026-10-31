@@ -29,3 +29,10 @@ Use disposable sample notes, never patient information, for this checklist. Reco
 6. Close/reopen the installed app with pending offline edits. Confirm they survive and sync when connection returns.
 
 Do not report the physical-device matrix as passed based on automated emulation alone.
+
+## Caret/white-screen regression follow-up (2026-10-31)
+
+- With the keyboard open at 50% and 25% iPad widths and iPhone portrait, replace an existing tag from the middle of its text, Undo, Redo, and type. Undo must restore the original text position.
+- Choose New line on an existing tagged line, then Undo. The caret must return to the original line and text position.
+- Immediately after a tag/Undo/Redo, tap a different line or move with native selection handles/keyboard trackpad. The new intentional position must win over settling.
+- Return from another app and from the lock screen with the keyboard open/closed. If white content recurs, record whether header/toolbar remains visible and whether rotating or tapping restores paint. Browser-process/compositor failures cannot be proved resolved by simulated DOM/cache failure tests.
