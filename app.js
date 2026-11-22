@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-10-31-ios-caret";
+const APP_BUILD = "2026-11-22-shiftbook";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -259,6 +259,7 @@ const uiState = {
 const noteDocumentModelTimers = new Map();
 const noteParseCache = new Map();
 let syncDetailsController = null;
+let shiftbookDialog = null;
 const editorHistory = window.ShiftPadEditorHistory?.createHistory({ limit: 60 });
 const editorHistoryPending = new Map();
 let editorHistoryOwner = "";
@@ -278,6 +279,8 @@ async function init() {
   document.documentElement.classList.toggle("is-ipad-device", isLikelyIpadDevice());
   bindEvents();
   initSyncDetails();
+  initShiftbookSetup();
+  bindPadSwipes();
   initMobileViewportDock();
   registerShiftPadServiceWorker();
   await initAuth();
@@ -980,6 +983,10 @@ function bindEvents() {
   });
 
   refs.editorRoot.addEventListener("click", (event) => {
+    if (event.target.closest("[data-shiftbook-entry]")) {
+      openShiftbookSetup();
+      return;
+    }
     if (isArchivedPadMode()) {
       const bedJump = event.target.closest?.("[data-bed-jump]");
       if (bedJump) {
@@ -2510,6 +2517,7 @@ function renderSettingsMenu() {
       ${renderDrawerSectionToggle("reset", "Reset", resetOpen)}
       <div class="drawer-panel">
         <p class="drawer-help">The complete current ${escapeHtml(padTitle)} is saved in ArchivedPad before it is cleared.</p>
+        ${getFreshShiftWard() ? '<button class="ghost-btn" type="button" data-drawer-action="shiftbook-setup">Set up from Shiftbook</button>' : ""}
         <button class="ghost-btn danger-btn" type="button" data-drawer-action="reset-notes">Archive ${escapeHtml(padTitle)} and reset</button>
       </div>
     </section>
@@ -3143,6 +3151,9 @@ function renderEditor() {
         </div>
 
         <div class="smart-pad-surface document-pad">
+          ${state.wardSetupNoteId === note.id && getFreshShiftWard()
+            ? '<button class="ghost-btn shiftbook-entry" type="button" data-shiftbook-entry>Set up from Shiftbook</button>'
+            : ""}
           <div
             id="notepad-editor"
             class="notepad-editor ${noteIsEmpty ? "is-empty-document" : ""}"
@@ -3884,6 +3895,7 @@ function loadSupabaseClient() {
 async function applySession(session, { event = "UNKNOWN" } = {}) {
   const previousUserId = authState.user?.id || "";
   const nextUserId = session?.user?.id || "";
+  if (previousUserId !== nextUserId) shiftbookDialog?.close();
   authState.session = session || null;
   authState.user = session?.user || null;
   authState.ready = true;
@@ -7494,6 +7506,11 @@ async function handleDrawerAction(action, dataset = {}) {
     return;
   }
 
+  if (action === "shiftbook-setup") {
+    openShiftbookSetup();
+    return;
+  }
+
   if (action === "reset-notes") {
     await resetAllNotes();
   }
@@ -7858,6 +7875,62 @@ async function changeCurrentPassword() {
   renderAuthUi();
 }
 
+function getFreshShiftWard() {
+  if (!authState.user || isArchivedPadMode() || getActiveWorkspaceKey() !== "shift" ||
+      state.wards.length !== 1 || authState.isHydrating) return null;
+  const ward = state.wards[0];
+  const note = ward.notes[0];
+  if (ward.name !== "Ward A" || ward.notes.length !== 1 || note?.title !== "Ward A handover" ||
+      note.entries?.length || note.patientFocus || note.summary) return null;
+  const root = parseHtmlRoot(note.documentHtml);
+  if (!root || root.querySelector(".tag-token") || root.textContent.replace(/[​﻿]/g, "").trim()) return null;
+  return ward;
+}
+
+function initShiftbookSetup() {
+  const dialog = document.getElementById("shiftbook-setup");
+  if (!dialog || !window.createShiftbookDialog) return;
+  shiftbookDialog = window.createShiftbookDialog({
+    dialog,
+    getSession: () => ({ userId: authState.user?.id, accessToken: authState.session?.access_token }),
+    applyWards(names, pad) {
+      syncEditorDocument();
+      const first = getFreshShiftWard();
+      if (authState.user?.id !== pad.userId || first?.id !== pad.wardId || first.notes[0].id !== pad.noteId) {
+        throw new Error("This pad changed. Close setup and review the current ward list.");
+      }
+      // Keep the original blank note's identity so ordinary cloud syncing
+      // can merge additions without deleting or replacing any note.
+      first.name = names[0];
+      first.updatedAt = Date.now();
+      first.notes[0].title = `${first.name} handover`;
+      names.slice(1).forEach((name, index) => {
+        const ward = createWard(name, WARD_COLORS[(index + 1) % WARD_COLORS.length]);
+        ward.notes.push(createNote(`${name} handover`, ""));
+        state.wards.push(ward);
+      });
+      state.preferences.singleWardMode = false;
+      state.activeView = "notes";
+      state.timelineScope = "active";
+      delete state.wardSetupNoteId;
+      return () => {
+        resetEditorUiForWorkspaceSwitch();
+        saveState();
+        flushLocalStateSave();
+        render();
+      };
+    }
+  });
+}
+
+function openShiftbookSetup() {
+  const ward = getFreshShiftWard();
+  if (!ward || uiState.archiveBusy || !shiftbookDialog) return;
+  closeDrawersWithAnimation();
+  dismissMobileTagMenu();
+  shiftbookDialog.open({ userId: authState.user.id, wardId: ward.id, noteId: ward.notes[0].id });
+}
+
 async function resetAllNotes() {
   if (uiState.archiveBusy) return;
   const workspaceName = getActiveWorkspaceMeta().title;
@@ -7870,6 +7943,7 @@ async function resetAllNotes() {
   const nextState = createBlankState();
   nextState.recoveryHistory = recoveryHistory;
   nextState.preferences = preferences;
+  if (workspaceKey === "shift") nextState.wardSetupNoteId = nextState.selectedNoteId;
   uiState.archiveBusy = true;
   setAuthMessage(`Saving ${workspaceName} archive...`);
   try {
@@ -9147,6 +9221,7 @@ function normalizeWorkspaceState(input, { blankFallback = false, preserveAllWard
     activeView: input.activeView === "timeline" ? "timeline" : "notes",
     selectedWardId: selectedWard.id,
     selectedNoteId: selectedNote?.id || "",
+    ...(input.wardSetupNoteId === selectedNote?.id && selectedNote ? { wardSetupNoteId: selectedNote.id } : {}),
     timelineScope: input.timelineScope === "active" ? "active" : "all",
     summaryTab: SUMMARY_TABS.includes(input.summaryTab) ? input.summaryTab : "reminders",
     preferences: normalizePreferences(input.preferences),
@@ -9361,6 +9436,75 @@ function renderWorkspaceIdentity() {
   refs.workspaceSwitcher?.setAttribute("data-switch-label", `To ${next.title}`);
 }
 
+function bindPadSwipes() {
+  const frame = document.querySelector(".phone-frame");
+  if (!frame) return;
+  let gesture = null;
+  const blocked = () => !authState.user || isArchivedPadMode() || uiState.archiveBusy ||
+    uiState.drawerOpen || uiState.wardOptionsOpen || uiState.searchOpen || uiState.bedAction ||
+    uiState.mobileTagsOpen || uiState.pendingTagChoice || uiState.editorCompositionActive ||
+    document.querySelector("dialog[open]");
+  document.addEventListener("touchstart", event => {
+    gesture = null;
+    if (event.touches.length !== 1 || blocked() || !frame.contains(event.target)) return;
+    const target = event.target;
+    const touch = event.touches[0];
+    if (touch.clientX < 24 || touch.clientX > window.innerWidth - 24 || window.visualViewport?.scale > 1.01) return;
+    const title = target.closest(".app-title");
+    const wardTitle = target.closest("[data-choose-ward]");
+    if (!title && !wardTitle && target.closest("button, a, select, input, textarea, [role=button], .tag-token, .bed-index-rail")) return;
+    const inWard = target.closest("#sticky-ward-root, #notepad-editor");
+    const selection = window.getSelection();
+    if (!title && (!inWard || state.activeView !== "notes" || !shouldShowWardSwitcher() ||
+        (getEditorFromEventTarget(target) && isEditorActivelyFocused()) || (selection && !selection.isCollapsed))) return;
+    gesture = {
+      area: title ? "pad" : "ward", pad: getPadMode(), wardId: state.selectedWardId,
+      identifier: touch.identifier, x: touch.clientX, y: touch.clientY, started: performance.now(),
+      horizontal: false
+    };
+  }, { passive: true });
+  document.addEventListener("touchmove", event => {
+    if (!gesture) return;
+    const touch = Array.from(event.touches).find(item => item.identifier === gesture.identifier);
+    if (event.touches.length !== 1 || !touch) {
+      gesture = null;
+      return;
+    }
+    const dx = Math.abs(touch.clientX - gesture.x);
+    const dy = Math.abs(touch.clientY - gesture.y);
+    if (!gesture.horizontal && Math.max(dx, dy) >= 12) {
+      if (dx < dy * 1.5 || !event.cancelable) {
+        gesture = null;
+        return;
+      }
+      gesture.horizontal = true;
+    }
+    if (gesture.horizontal && event.cancelable) event.preventDefault();
+  }, { passive: false });
+  document.addEventListener("touchend", event => {
+    const start = gesture;
+    gesture = null;
+    if (!start?.horizontal || event.touches.length || !event.cancelable || blocked() ||
+        getPadMode() !== start.pad || state.selectedWardId !== start.wardId ||
+        performance.now() - start.started > 700) return;
+    const touch = Array.from(event.changedTouches).find(item => item.identifier === start.identifier);
+    if (!touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    event.preventDefault();
+    if (start.area === "ward") {
+      syncEditorDocument();
+      switchWardFromEditor(dx < 0 ? "next" : "previous");
+    } else if (dx < 0 && start.pad === "shift") {
+      switchWorkspace("day");
+    } else if (dx > 0 && start.pad === "day") {
+      switchWorkspace("shift");
+    }
+  }, { passive: false });
+  document.addEventListener("touchcancel", () => { gesture = null; }, { passive: true });
+}
+
 function switchWorkspace(targetKey = "") {
   const currentKey = getPadMode();
   const nextKey = PAD_MODE_KEYS.includes(targetKey)
@@ -9368,6 +9512,7 @@ function switchWorkspace(targetKey = "") {
     : getNextTitleWorkspaceKey(currentKey);
   if (nextKey === currentKey) return;
 
+  shiftbookDialog?.close();
   if (!isArchivedPadMode()) syncEditorDocument();
   uiState.archiveOpen = nextKey === "archive";
   if (WORKSPACE_KEYS.includes(nextKey)) {
@@ -9454,6 +9599,10 @@ function updateWorkspaceUrl(workspaceKey) {
 }
 
 function saveState({ skipCloud = false, markDirty = true, skipRecovery = false } = {}) {
+  if (state.wardSetupNoteId && !isArchivedPadMode() && getActiveWorkspaceKey() === "shift" && !getFreshShiftWard()) {
+    delete state.wardSetupNoteId;
+    refs.editorRoot.querySelector("[data-shiftbook-entry]")?.remove();
+  }
   commitEditorHistoryChanges();
   if (!skipRecovery) {
     captureAutomaticRecoverySnapshot();

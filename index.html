@@ -23,6 +23,7 @@
     <link rel="stylesheet" href="styles/editor-controls.css?v=20261031-ios-caret" />
     <link rel="stylesheet" href="styles/navigation.css?v=20261031-ios-caret" />
     <link rel="stylesheet" href="styles/sync-details.css?v=20261031-ios-caret" />
+    <link rel="stylesheet" href="styles/shiftbook-setup.css?v=20261122-shiftbook" />
   </head>
   <body>
     <div id="auth-gate" class="auth-gate hidden">
@@ -149,6 +150,37 @@
     <div id="mobile-tag-root"></div>
     <div id="tag-choice-root"></div>
 
+    <dialog id="shiftbook-setup" class="shiftbook-dialog" aria-labelledby="shiftbook-setup-title">
+      <header class="sync-details-head">
+        <h2 id="shiftbook-setup-title">Set up shift wards</h2>
+        <button class="ghost-btn" type="button" data-shiftbook="close" autofocus>Close</button>
+      </header>
+      <form data-shiftbook="connect">
+        <p class="sync-details-copy">In <a href="https://shiftbook-tuh.vercel.app/" target="_blank" rel="noopener noreferrer">Shiftbook</a>, open Settings → Roster sync → Copy link code. Pair once in this browser to load your assignments.</p>
+        <label>Private link code
+          <input data-shiftbook="code" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="80" required />
+        </label>
+        <button class="accent-btn" data-shiftbook="load">Connect to Shiftbook</button>
+      </form>
+      <div class="shiftbook-dialog-actions" data-shiftbook="link-actions" hidden>
+        <button class="ghost-btn" type="button" data-shiftbook="refresh">Refresh roster</button>
+        <button class="ghost-btn" type="button" data-shiftbook="unlink">Disconnect</button>
+      </div>
+      <p role="status" class="sync-details-copy" data-shiftbook="status"></p>
+      <form data-shiftbook="wards" hidden>
+        <fieldset data-shiftbook="lookup">
+          <label>Shiftbook name <select data-shiftbook="person"></select></label>
+          <label>Shift date (Bangkok) <input type="date" data-shiftbook="date" /></label>
+          <button class="ghost-btn" type="button" data-shiftbook="next" hidden>Use next scheduled shift</button>
+        </fieldset>
+        <label>Ward names, one per line
+          <textarea data-shiftbook="ward-names" autocapitalize="off" rows="4" required></textarea>
+        </label>
+        <button class="accent-btn" data-shiftbook="apply">Create ward list</button>
+      </form>
+      <button class="ghost-btn" type="button" data-shiftbook="manual">Enter wards manually</button>
+      <button class="ghost-btn" type="button" data-shiftbook="back" hidden>Use Shiftbook</button>
+    </dialog>
     <script src="public-config.js" defer></script>
     <script src="/api/public-config.js" defer></script>
     <script src="lib/sync-core.js?v=20261025-sync-status" defer></script>
@@ -157,6 +189,8 @@
     <script src="lib/mobile-editor-ui.js?v=20261031-ios-caret" defer></script>
     <script src="lib/navigation-ui.js?v=20261031-ios-caret" defer></script>
     <script src="lib/sync-details-ui.js?v=20261031-ios-caret" defer></script>
-    <script src="app.js?v=20261031-ios-caret" defer></script>
+    <script src="lib/shiftbook-setup.js?v=20261122-shiftbook" defer></script>
+    <script src="lib/shiftbook-dialog.js?v=20261122-shiftbook" defer></script>
+    <script src="app.js?v=20261122-shiftbook" defer></script>
   </body>
 </html>

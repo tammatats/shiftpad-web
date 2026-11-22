@@ -1,4 +1,4 @@
-const CACHE_NAME = "shiftpad-shell-v73";
+const CACHE_NAME = "shiftpad-shell-v74";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
@@ -12,6 +12,9 @@ const SHELL_ASSETS = [
   "/lib/mobile-editor-ui.js",
   "/lib/navigation-ui.js",
   "/lib/sync-details-ui.js",
+  "/lib/shiftbook-setup.js",
+  "/lib/shiftbook-dialog.js",
+  "/styles/shiftbook-setup.css",
   "/styles/editor-controls.css",
   "/styles/navigation.css",
   "/styles/sync-details.css",
@@ -37,6 +40,9 @@ const NETWORK_FIRST_PATHS = new Set([
   "/lib/mobile-editor-ui.js",
   "/lib/navigation-ui.js",
   "/lib/sync-details-ui.js",
+  "/lib/shiftbook-setup.js",
+  "/lib/shiftbook-dialog.js",
+  "/styles/shiftbook-setup.css",
   "/styles/editor-controls.css",
   "/styles/navigation.css",
   "/styles/sync-details.css"
