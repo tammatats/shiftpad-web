@@ -158,7 +158,11 @@ test("standalone iPhone keeps the toolbar above an unreported input accessory", 
     sample.y === offset && Math.abs(sample.top - dockTop) <= 1
   )).toBe(true);
   await scrollAndMeasure(page, 0);
-  await toggle.tap();
+  const more = await toggle.boundingBox();
+  await editor.evaluate(el => el.blur());
+  await expect(editor).not.toBeFocused();
+  await toggle.dispatchEvent("click", { clientX: more.x + more.width / 2, clientY: more.y + more.height / 2 });
+  await expect(editor).toBeFocused();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator(".mobile-tag-tray")).toHaveCSS("opacity", "1");
   await page.screenshot({ path: info.outputPath("iphone-input-accessory.png"), scale: "css" });

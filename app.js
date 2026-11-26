@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-11-26-iphone-toolbar-bed-index";
+const APP_BUILD = "2026-11-26-iphone-touch-controls";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -171,6 +171,7 @@ const uiState = {
   savedSelectionBookmark: null,
   mobileTagSelection: null,
   mobileTagMenuSelection: null,
+  mobileTagBlur: null,
   pendingTagChoice: null,
   toolbarCaretSettle: null,
   appInitialized: false,
@@ -1074,6 +1075,7 @@ function bindEvents() {
     const editor = getEditorFromEventTarget(event.target);
     if (!editor) return;
     uiState.editorFocused = true;
+    uiState.mobileTagBlur = null;
     hideBedIndex();
     syncMobileTagDock();
     rememberEditorSelection(editor);
@@ -1082,6 +1084,11 @@ function bindEvents() {
 
   refs.editorRoot.addEventListener("focusout", (event) => {
     if (!getEditorFromEventTarget(event.target)) return;
+    const dock = refs.mobileTagRoot?.querySelector('[data-mobile-tag-mode="input-accessory"]');
+    const toggle = dock?.querySelector("[data-mobile-tag-toggle]");
+    if (toggle) {
+      uiState.mobileTagBlur = { noteId: getCurrentNote()?.id, rect: toggle.getBoundingClientRect(), time: performance.now() };
+    }
     window.setTimeout(() => {
       const wasFocused = uiState.editorFocused;
       uiState.editorFocused = Boolean(document.activeElement?.closest?.("#notepad-editor"));
@@ -1295,7 +1302,7 @@ function bindEvents() {
     uiState.mobileTagSelection = null;
     uiState.mobileTagMenuSelection = null;
   };
-  const rememberMobileTagSelection = () => {
+  const rememberMobileTagSelection = (event) => {
     if (uiState.mobileTagSelection) return;
     settleToolbarCaret();
     cancelToolbarCaretSettle();
@@ -1308,17 +1315,19 @@ function bindEvents() {
       range: uiState.savedSelection?.cloneRange() || null,
       bookmark: uiState.savedSelectionBookmark
     };
-    uiState.mobileTagSelection = { ...saved, editorWasFocused: Boolean(editor?.contains(document.activeElement)) };
+    uiState.mobileTagSelection = { ...saved, editorWasFocused: wasEditingAtMobileTagPress(editor, event) };
   };
-  refs.mobileTagRoot?.addEventListener("pointerdown", (event) => {
+  const startMobileTagPress = (event) => {
     if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag], [data-mobile-direct-tag]")) return;
-    rememberMobileTagSelection();
+    rememberMobileTagSelection(event);
     event.preventDefault();
-  });
+  };
+  refs.mobileTagRoot?.addEventListener("pointerdown", startMobileTagPress);
+  refs.mobileTagRoot?.addEventListener("mousedown", startMobileTagPress);
   refs.mobileTagRoot?.addEventListener("touchstart", (event) => {
     if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag], [data-mobile-direct-tag]")) return;
     mobileTagTouchStart = getEditorPointerPoint(event);
-    rememberMobileTagSelection();
+    rememberMobileTagSelection(event);
     if (event.target.closest("[data-mobile-tag-toggle]") && uiState.mobileTagSelection?.editorWasFocused) {
       event.preventDefault();
     }
@@ -5826,9 +5835,11 @@ function handleMobileTagDockAction(event) {
       open: !uiState.mobileTagsOpen
     });
     uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
+    const wasEditing = (press?.editorWasFocused && press.noteId === noteId) || wasEditingAtMobileTagPress(editor, event);
+    uiState.mobileTagBlur = null;
     // iOS can blur the editor between press and release. Restore its focus
     // only if the user was already editing when they pressed More.
-    if (editor?.contains(document.activeElement) || (press?.editorWasFocused && press.noteId === noteId)) {
+    if (wasEditing) {
       restoreEditorFocusAndSelection();
     } else {
       uiState.editorFocused = false;
@@ -5845,7 +5856,7 @@ function handleMobileTagDockAction(event) {
       success: true,
       handledBy: "toggleMobileTagMenu",
       editor,
-      extra: { open: uiState.mobileTagsOpen }
+      extra: { open: uiState.mobileTagsOpen, wasEditing: Boolean(wasEditing) }
     });
     return;
   }
@@ -5856,6 +5867,17 @@ function handleMobileTagDockAction(event) {
     uiState.mobileTagsOpen = false;
     syncMobileTagDock();
   }
+}
+
+function wasEditingAtMobileTagPress(editor, event) {
+  if (editor?.contains(document.activeElement)) return true;
+  const blur = uiState.mobileTagBlur;
+  if (!blur || performance.now() - blur.time > 320 || blur.noteId !== getCurrentNote()?.id) return false;
+  // Mirroring can blur the editor before delivering the button's pointer
+  // events. The lifted button's former bounds identify that same tap.
+  const point = getEditorPointerPoint(event);
+  return Boolean(point && point.x >= blur.rect.left && point.x <= blur.rect.right &&
+    point.y >= blur.rect.top && point.y <= blur.rect.bottom);
 }
 
 function clearPendingTagChoice() {
@@ -10927,6 +10949,8 @@ function updateBedIndexDuringScroll() {
   if (rail.dataset.scrubScrollY === undefined || Math.abs(window.scrollY - Number(rail.dataset.scrubScrollY)) > 2) {
     delete rail.dataset.scrubScrollY;
     updateBedIndexFromViewport(rail, editor);
+  } else {
+    syncBedIndexHeader(rail);
   }
   window.clearTimeout(uiState.bedIndexTimer);
   uiState.bedIndexTimer = window.setTimeout(() => setBedIndexVisible(false), 1100);
@@ -11232,6 +11256,7 @@ function finishBedIndexScrub(event) {
   scrub.rail.dataset.scrubScrollY = String(scrub.lastTargetScrollY);
   uiState.bedIndexScrub = null;
   scrub.rail.classList.remove("is-scrubbing");
+  syncBedIndexHeader(scrub.rail);
   safelyReleasePointerCapture(scrub.rail, scrub.pointerId);
   uiState.suppressNextBedIndexClick = true;
   window.clearTimeout(uiState.bedIndexClickSuppressTimer);
@@ -11255,6 +11280,7 @@ function finishBedIndexScrub(event) {
       pointerType: scrub.pointerType,
       selectedIndex: scrub.lastIndex,
       selectedBed: scrub.labels[scrub.lastIndex] || "",
+      headerBed: refs.stickyWardRoot?.querySelector("[data-current-bed]")?.value || "",
       startIndex: scrub.startIndex,
       startBed: scrub.labels[scrub.startIndex] || "",
       startScrollY: Math.round(scrub.startScrollY),
@@ -11523,7 +11549,7 @@ function setBedIndexActiveState(rail, index, { bubbleY = null, labels = null } =
   if (!label) return;
   rail.dataset.activeIndex = String(index);
   rail.dataset.activeBed = label.toUpperCase();
-  if (rail.classList.contains("is-scrubbing")) window.ShiftPadNavigation?.refreshCurrentBed?.();
+  if (rail.classList.contains("is-scrubbing")) syncBedIndexHeader(rail);
   const closestSampledIndex = getClosestSampledBedIndex(rail, index);
   rail.querySelectorAll("[data-bed-index]").forEach((button) => {
     button.classList.toggle("is-active", Number(button.dataset.bedIndex) === closestSampledIndex);
@@ -11532,6 +11558,13 @@ function setBedIndexActiveState(rail, index, { bubbleY = null, labels = null } =
   if (bubble) bubble.textContent = `Bed ${label}`;
   if (Number.isFinite(bubbleY)) {
     rail.style.setProperty("--bed-index-bubble-y", `${Math.round(bubbleY)}px`);
+  }
+}
+
+function syncBedIndexHeader(rail) {
+  const select = refs.stickyWardRoot?.querySelector("[data-current-bed]");
+  if (select && rail.dataset.activeBed && select.value !== rail.dataset.activeBed) {
+    select.value = rail.dataset.activeBed;
   }
 }
 
