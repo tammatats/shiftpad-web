@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-11-22-shiftbook";
+const APP_BUILD = "2026-11-26-ward-swipe";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -9454,9 +9454,11 @@ function bindPadSwipes() {
     const wardTitle = target.closest("[data-choose-ward]");
     if (!title && !wardTitle && target.closest("button, a, select, input, textarea, [role=button], .tag-token, .bed-index-rail")) return;
     const inWard = target.closest("#sticky-ward-root, #notepad-editor");
-    const selection = window.getSelection();
-    if (!title && (!inWard || state.activeView !== "notes" || !shouldShowWardSwitcher() ||
-        (getEditorFromEventTarget(target) && isEditorActivelyFocused()) || (selection && !selection.isCollapsed))) return;
+    const editor = getEditorFromEventTarget(target);
+    if (!title && (!inWard || state.activeView !== "notes" || !shouldShowWardSwitcher())) return;
+    // A lingering text selection should only block gestures in the editor.
+    // An explicit swipe across the ward bar is still navigation.
+    if (editor && (isEditorActivelyFocused() || window.getSelection()?.isCollapsed === false)) return;
     gesture = {
       area: title ? "pad" : "ward", pad: getPadMode(), wardId: state.selectedWardId,
       identifier: touch.identifier, x: touch.clientX, y: touch.clientY, started: performance.now(),
@@ -9484,7 +9486,7 @@ function bindPadSwipes() {
   document.addEventListener("touchend", event => {
     const start = gesture;
     gesture = null;
-    if (!start?.horizontal || event.touches.length || !event.cancelable || blocked() ||
+    if (!start?.horizontal || event.touches.length || blocked() ||
         getPadMode() !== start.pad || state.selectedWardId !== start.wardId ||
         performance.now() - start.started > 700) return;
     const touch = Array.from(event.changedTouches).find(item => item.identifier === start.identifier);
@@ -9492,7 +9494,8 @@ function bindPadSwipes() {
     const dx = touch.clientX - start.x;
     const dy = touch.clientY - start.y;
     if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    event.preventDefault();
+    // A claimed swipe can end without a cancelable default action.
+    if (event.cancelable) event.preventDefault();
     if (start.area === "ward") {
       syncEditorDocument();
       switchWardFromEditor(dx < 0 ? "next" : "previous");

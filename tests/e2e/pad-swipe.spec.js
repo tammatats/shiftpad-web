@@ -1,6 +1,6 @@
 const { test, expect, devices } = require("@playwright/test");
 
-async function swipe(page, selector, dx, dy = 0, { browserName, cancel = false } = {}) {
+async function swipe(page, selector, dx, dy = 0, { browserName, cancel = false, releaseCancelable = true } = {}) {
   const locator = page.locator(selector);
   const box = await locator.boundingBox();
   const x = Math.round(box.x + box.width / 2);
@@ -21,17 +21,17 @@ async function swipe(page, selector, dx, dy = 0, { browserName, cancel = false }
   } else {
     // Playwright WebKit exposes taps; dispatch its touch sequence to exercise
     // selection and cancellation paths with the same coordinates.
-    await locator.evaluate((target, { x, y, dx, dy, cancel }) => {
+    await locator.evaluate((target, { x, y, dx, dy, cancel, releaseCancelable }) => {
       for (const [type, fraction] of [["touchstart", 0], ["touchmove", 0.25], ["touchmove", 1], [cancel ? "touchcancel" : "touchend", 1]]) {
         const touch = { identifier: 4, clientX: x + dx * fraction, clientY: y + dy * fraction };
-        const event = new Event(type, { bubbles: true, cancelable: true });
+        const event = new Event(type, { bubbles: true, cancelable: type !== "touchend" || releaseCancelable });
         Object.defineProperties(event, {
           touches: { value: ["touchend", "touchcancel"].includes(type) ? [] : [touch] },
           changedTouches: { value: [touch] }
         });
         target.dispatchEvent(event);
       }
-    }, { x, y, dx, dy, cancel });
+    }, { x, y, dx, dy, cancel, releaseCancelable });
   }
 }
 
@@ -68,6 +68,14 @@ for (const [name, profile] of profiles) {
       await expect(editor).toContainText("Second ward sample");
       await swipe(page, "[data-choose-ward]", 72, 3, opts);
       await expect(editor).toContainText("First ward sample");
+      // A swipe already claimed on touchmove can end without a cancelable release.
+      await swipe(page, ".notepad-ward-title", -72, 3, { releaseCancelable: false });
+      await expect(editor).toContainText("Second ward sample");
+      // The ward bar is an explicit navigation target, even if iOS keeps an
+      // editor selection while the user moves their finger onto the bar.
+      await editor.evaluate(element => window.getSelection().selectAllChildren(element));
+      await swipe(page, "[data-choose-ward]", 72, 3, opts);
+      await expect(editor).toContainText("First ward sample");
       await swipe(page, "#workspace-switcher", -72, 3, { ...opts, cancel: true });
       await expect(page.locator("#workspace-title")).toHaveText("ShiftPad");
       await swipe(page, "#workspace-switcher", -10, 65, opts);
@@ -76,6 +84,7 @@ for (const [name, profile] of profiles) {
       await swipe(page, "#notepad-editor", -80, 3, opts);
       await expect(editor).toContainText("First ward sample");
       await expect(page.locator("#workspace-title")).toHaveText("ShiftPad");
+      await page.screenshot({ path: info.outputPath("ward-navigation.png"), scale: "css" });
     });
   });
 }

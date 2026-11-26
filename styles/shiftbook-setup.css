@@ -54,5 +54,3 @@
 .shiftbook-dialog [role="status"]:empty { display: none; }
 .shiftbook-dialog [hidden] { display: none !important; }
 .shiftbook-entry { margin: 0 0 10px; min-height: 44px; }
-
-.app-title, .ward-title-choice { touch-action: pan-y pinch-zoom; }

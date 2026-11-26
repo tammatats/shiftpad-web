@@ -1,4 +1,5 @@
 /* Shared navigation stays outside the editable document. */
+.app-title, .notepad-ward-title { touch-action: pan-y pinch-zoom; }
 .workspace-switcher {
   position: relative;
   padding-bottom: 13px;
