@@ -1,4 +1,4 @@
-const CACHE_NAME = "shiftpad-shell-v79";
+const CACHE_NAME = "shiftpad-shell-v80";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
@@ -51,7 +51,12 @@ const NETWORK_FIRST_PATHS = new Set([
 self.addEventListener("install", (event) => {
   event.waitUntil(
     Promise.all([
-      caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)),
+      caches.open(CACHE_NAME).then(async (cache) => {
+        await cache.addAll(SHELL_ASSETS);
+        if (!await isAppPage(await cache.match("/index.html"))) {
+          throw new Error("ShiftPad update is missing a complete app page.");
+        }
+      }),
       // This endpoint contains public browser configuration only. Warm it on
       // first install because the initial page request may precede SW control.
       fetch("/api/public-config.js", { cache: "no-store" }).then((response) => putInCache("/api/public-config.js", response)).catch(() => undefined)
@@ -82,7 +87,11 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
-    event.respondWith(networkFirst(request, "/index.html"));
+    const page = reopenAppPage(request);
+    event.waitUntil(page.then(({ response, fromNetwork }) => {
+      if (fromNetwork) return putInCache("/index.html", response.clone());
+    }));
+    event.respondWith(page.then(({ response }) => response));
     return;
   }
 
@@ -98,6 +107,64 @@ self.addEventListener("fetch", (event) => {
 
   event.respondWith(networkFirst(request, "/index.html"));
 });
+
+async function isAppPage(response) {
+  if (!response?.ok || !response.headers.get("content-type")?.includes("text/html")) return false;
+  try {
+    const html = await response.clone().text();
+    return html.includes("data-startup-status") && /<script\s+src="app\.js[?"]/.test(html);
+  } catch {
+    return false;
+  }
+}
+
+async function reopenAppPage(request) {
+  const controller = new AbortController();
+  const networkTimeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch(request, { signal: controller.signal });
+    // Even a successful status can deliver an empty or incomplete page.
+    if (await isAppPage(response)) return { response, fromNetwork: true };
+  } catch {
+    // Use the last working page if resuming the network stalls or fails.
+  } finally {
+    clearTimeout(networkTimeout);
+  }
+
+  let cacheTimeout;
+  try {
+    const cachedPage = matchCached("/index.html").then(async response => (await isAppPage(response)) ? response : null);
+    const response = await Promise.race([
+      cachedPage,
+      new Promise(resolve => { cacheTimeout = setTimeout(() => resolve(null), 1000); })
+    ]);
+    return { response: response || reopenFallback(), fromNetwork: false };
+  } finally {
+    clearTimeout(cacheTimeout);
+  }
+}
+
+function reopenFallback() {
+  return new Response(`<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f4efe7">
+<title>Reopen ShiftPad</title>
+<style>
+  body { margin: 0; background: #f4efe7; color: #241c16; font: 1rem/1.5 system-ui, sans-serif; }
+  main { max-width: 28rem; margin: max(3rem, 12vh) auto 0; padding: 0 1.25rem; }
+  h1 { font-size: 1.5rem; line-height: 1.2; }
+  a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 1rem;
+      border-radius: .75rem; background: #241c16; color: #fffaf4; font-weight: 600; }
+</style>
+<main>
+  <h1>ShiftPad couldn’t reopen</h1>
+  <p>Check your connection and try again.</p>
+  <a href="">Retry</a>
+</main>
+</html>`, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+}
 
 // Cache storage is optional at runtime (iOS can evict it or reject writes).
 // A cache failure must never turn a successful network response into a blank app.

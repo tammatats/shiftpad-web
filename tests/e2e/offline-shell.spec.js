@@ -87,3 +87,46 @@ test('a stalled navigation opens the cached app after the shell timeout', async 
     release?.();
   }
 });
+
+test('an empty navigation uses the last working page or offers a retry without losing notes', async ({ page, context, browserName }, info) => {
+  test.skip(browserName !== 'chromium', 'Service-worker navigation fault injection uses Chromium.');
+  let sendEmptyPage = false;
+  let emptyResponses = 0;
+  await context.route('**/api/public-config.js', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
+  await context.route('http://127.0.0.1:4173/**', route => {
+    const url = new URL(route.request().url());
+    if (sendEmptyPage && url.pathname === '/' && url.searchParams.get('e2e') === '1') {
+      emptyResponses += 1;
+      return route.fulfill({ status: 200, contentType: 'text/html', body: '' });
+    }
+    return route.fallback();
+  });
+  await page.goto('/?e2e=1&workspace=shift');
+  const editor = page.locator('#notepad-editor');
+  await editor.fill('Sample note before reopening');
+  await page.evaluate(() => flushLocalStateSave());
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+
+  sendEmptyPage = true;
+  await page.reload();
+  expect(emptyResponses).toBe(1);
+  await expect(editor).toContainText('Sample note before reopening');
+
+  // Simulate an OS eviction of the app-page cache. Indexed and local note data
+  // are separate from Cache Storage and remain available for the retry.
+  await page.evaluate(async () => {
+    for (const key of await caches.keys()) await caches.delete(key);
+  });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'ShiftPad couldn’t reopen' })).toBeVisible();
+  const retry = page.getByRole('link', { name: 'Retry' });
+  await expect(retry).toBeVisible();
+  await page.screenshot({ path: info.outputPath('reopen-recovery-desktop.png'), scale: 'css' });
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.screenshot({ path: info.outputPath('reopen-recovery-iphone-width.png'), scale: 'css' });
+
+  sendEmptyPage = false;
+  await retry.click();
+  await expect(editor).toContainText('Sample note before reopening');
+});
