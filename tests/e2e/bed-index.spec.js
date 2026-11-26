@@ -105,6 +105,9 @@ for (const profile of profiles) {
         await expect(page.locator('.bed-index-rail')).toHaveAttribute('data-active-index', String(index));
         await expect(page.locator('[data-current-bed]')).toHaveValue(p.label);
       }
+      await expect.poll(() => page.locator('.bed-index-rail').evaluate(rail =>
+        performance.now() >= Number(rail.dataset.scrubSettlingUntil)
+      )).toBe(true);
       await page.evaluate(() => window.scrollBy(0, innerHeight));
       await expect(page.locator('.bed-index-rail')).not.toHaveAttribute('data-active-index', '0');
     });
@@ -163,6 +166,14 @@ for (const profile of profiles) {
       expect(end.scrubbing).toBe(false);
       expect(end.tokenY).toBeGreaterThan(200);
       expect(end.tokenY).toBeLessThan(profile.options.viewport.height - 100);
+      await page.evaluate(async target => {
+        // WebKit can publish an older scroll position after releasing the rail.
+        window.scrollTo(0, target - 80);
+        await new Promise(requestAnimationFrame);
+        await new Promise(requestAnimationFrame);
+        window.scrollTo(0, target);
+      }, end.scroll);
+      await expect(page.locator('[data-current-bed]')).toHaveValue(to.label);
     });
 
     test('viewport changes, endpoints, cancellation and another drag keep matching the labels', async ({ page }) => {

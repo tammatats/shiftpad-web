@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-11-26-iphone-touch-controls";
+const APP_BUILD = "2026-11-26-iphone-touch-settle";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -278,6 +278,11 @@ init().catch((error) => {
 
 async function init() {
   document.documentElement.classList.toggle("is-ipad-device", isLikelyIpadDevice());
+  if (isLikelyIphoneDevice() && isStandaloneApp() && "scrollRestoration" in history) {
+    // The notepad is hydrated after the shell loads. A native reload should
+    // not restore a position measured against the previous, longer document.
+    history.scrollRestoration = "manual";
+  }
   bindEvents();
   initSyncDetails();
   initShiftbookSetup();
@@ -1087,7 +1092,10 @@ function bindEvents() {
     const dock = refs.mobileTagRoot?.querySelector('[data-mobile-tag-mode="input-accessory"]');
     const toggle = dock?.querySelector("[data-mobile-tag-toggle]");
     if (toggle) {
-      uiState.mobileTagBlur = { noteId: getCurrentNote()?.id, rect: toggle.getBoundingClientRect(), time: performance.now() };
+      uiState.mobileTagBlur = {
+        noteId: getCurrentNote()?.id, rect: toggle.getBoundingClientRect(),
+        time: performance.now(), menuWasOpen: uiState.mobileTagsOpen
+      };
     }
     window.setTimeout(() => {
       const wasFocused = uiState.editorFocused;
@@ -1315,7 +1323,12 @@ function bindEvents() {
       range: uiState.savedSelection?.cloneRange() || null,
       bookmark: uiState.savedSelectionBookmark
     };
-    uiState.mobileTagSelection = { ...saved, editorWasFocused: wasEditingAtMobileTagPress(editor, event) };
+    const blur = getMobileTagBlurForPress(event);
+    uiState.mobileTagSelection = {
+      ...saved,
+      editorWasFocused: Boolean(editor?.contains(document.activeElement) || blur),
+      menuWasOpen: blur?.menuWasOpen ?? uiState.mobileTagsOpen
+    };
   };
   const startMobileTagPress = (event) => {
     if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag], [data-mobile-direct-tag]")) return;
@@ -3248,7 +3261,8 @@ function renderStickyWardBar() {
     editorRoot: refs.editorRoot,
     onChooseWard: () => refs.wardOptionsBtn?.click(),
     onFind: () => openWorkspaceSearch({ scope: "ward" }),
-    onBed: (label) => jumpToBedInEditor(label, { behavior: prefersReducedMotion() ? "auto" : "smooth" })
+    onBed: (label) => jumpToBedInEditor(label, { behavior: prefersReducedMotion() ? "auto" : "smooth" }),
+    getPinnedBed: () => getPinnedBedIndexLabel(refs.editorRoot.querySelector(".bed-index-rail"))
   });
 }
 
@@ -5829,13 +5843,16 @@ function handleMobileTagDockAction(event) {
   const toggle = event.target.closest("[data-mobile-tag-toggle]");
   if (toggle) {
     const editor = refs.editorRoot.querySelector("#notepad-editor");
+    const blur = getMobileTagBlurForPress(event);
+    const pressedOnCurrentNote = press?.noteId === noteId;
+    const wasOpen = (pressedOnCurrentNote ? press?.menuWasOpen : undefined) ?? blur?.menuWasOpen ?? uiState.mobileTagsOpen;
     const debugEntry = beginEditorDebugAction(editor, {
       action: "mobile-tag-menu-toggle",
       source: "mobile-tag-dock",
-      open: !uiState.mobileTagsOpen
+      open: !wasOpen
     });
-    uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
-    const wasEditing = (press?.editorWasFocused && press.noteId === noteId) || wasEditingAtMobileTagPress(editor, event);
+    uiState.mobileTagsOpen = !wasOpen;
+    const wasEditing = (pressedOnCurrentNote && press?.editorWasFocused) || editor?.contains(document.activeElement) || blur;
     uiState.mobileTagBlur = null;
     // iOS can blur the editor between press and release. Restore its focus
     // only if the user was already editing when they pressed More.
@@ -5869,15 +5886,14 @@ function handleMobileTagDockAction(event) {
   }
 }
 
-function wasEditingAtMobileTagPress(editor, event) {
-  if (editor?.contains(document.activeElement)) return true;
+function getMobileTagBlurForPress(event) {
   const blur = uiState.mobileTagBlur;
-  if (!blur || performance.now() - blur.time > 320 || blur.noteId !== getCurrentNote()?.id) return false;
+  if (!blur || performance.now() - blur.time > 320 || blur.noteId !== getCurrentNote()?.id) return null;
   // Mirroring can blur the editor before delivering the button's pointer
   // events. The lifted button's former bounds identify that same tap.
   const point = getEditorPointerPoint(event);
-  return Boolean(point && point.x >= blur.rect.left && point.x <= blur.rect.right &&
-    point.y >= blur.rect.top && point.y <= blur.rect.bottom);
+  return point && point.x >= blur.rect.left && point.x <= blur.rect.right &&
+    point.y >= blur.rect.top && point.y <= blur.rect.bottom ? blur : null;
 }
 
 function clearPendingTagChoice() {
@@ -10946,8 +10962,9 @@ function updateBedIndexDuringScroll() {
   if (uiState.bedIndexScrub) return;
   // At the document edges a selected bed cannot always reach the reading line.
   // Keep the user's choice until the page actually moves away from that target.
-  if (rail.dataset.scrubScrollY === undefined || Math.abs(window.scrollY - Number(rail.dataset.scrubScrollY)) > 2) {
+  if (!getPinnedBedIndexLabel(rail)) {
     delete rail.dataset.scrubScrollY;
+    delete rail.dataset.scrubSettlingUntil;
     updateBedIndexFromViewport(rail, editor);
   } else {
     syncBedIndexHeader(rail);
@@ -11254,6 +11271,8 @@ function finishBedIndexScrub(event) {
     eventType: event?.type || ""
   }, { force: true });
   scrub.rail.dataset.scrubScrollY = String(scrub.lastTargetScrollY);
+  // Safari can briefly report an older page position after touch release.
+  scrub.rail.dataset.scrubSettlingUntil = String(performance.now() + 220);
   uiState.bedIndexScrub = null;
   scrub.rail.classList.remove("is-scrubbing");
   syncBedIndexHeader(scrub.rail);
@@ -11566,6 +11585,14 @@ function syncBedIndexHeader(rail) {
   if (select && rail.dataset.activeBed && select.value !== rail.dataset.activeBed) {
     select.value = rail.dataset.activeBed;
   }
+}
+
+function getPinnedBedIndexLabel(rail) {
+  if (!rail) return "";
+  const { activeBed, scrubScrollY, scrubSettlingUntil } = rail.dataset;
+  const isPinned = rail.classList.contains("is-scrubbing") || performance.now() < Number(scrubSettlingUntil) ||
+    Math.abs(window.scrollY - Number(scrubScrollY)) <= 2;
+  return isPinned ? activeBed || "" : "";
 }
 
 function getClosestSampledBedIndex(rail, targetIndex) {
