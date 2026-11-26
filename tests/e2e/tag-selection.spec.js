@@ -102,8 +102,9 @@ for (const [name, profile] of [
         });
       });
       await page.locator('[data-mobile-tag-toggle]').tap();
-      expect(await caret(page)).toEqual({ line: 'sample-b', offset: 7, focused: true });
+      await expect(page.locator('#notepad-editor')).not.toBeFocused();
       await page.locator('[data-mobile-tag="io"]').tap();
+      await expect(page.locator('#notepad-editor')).toBeFocused();
       await expect(page.locator('[data-line-id="sample-b"] [data-tag="io"]')).toHaveCount(1);
     });
 

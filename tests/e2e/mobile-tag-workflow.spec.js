@@ -54,12 +54,14 @@ for (const [name, profile, keyboardHeight] of [
         await page.waitForTimeout(800);
         await expect(toggle).toHaveAttribute('aria-expanded', 'true');
         const button = page.locator(`[data-mobile-tag="${tag}"]`);
+        const visibleHeight = await page.evaluate(() => visualViewport.height);
         const rect = await button.boundingBox();
         expect(rect.y).toBeGreaterThanOrEqual(0);
-        expect(rect.y + rect.height).toBeLessThanOrEqual(keyboardHeight);
+        expect(rect.y + rect.height).toBeLessThanOrEqual(visibleHeight);
         await button.tap();
         await expect(toggle).toHaveAttribute('aria-expanded', 'false');
         await expect(editor).toBeFocused();
+        await expect(page.locator('#test-keyboard')).toBeVisible();
       }
       async function softReturn() {
         // Native mobile keyboards can send beforeinput without a keydown.

@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-11-26-ward-swipe";
+const APP_BUILD = "2026-11-26-iphone-toolbar";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -398,8 +398,8 @@ function initMobileViewportDock() {
     document.documentElement.style.setProperty("--viewport-offset-top", "0px");
     document.documentElement.style.setProperty("--viewport-offset-left", "0px");
     if (!document.activeElement?.closest?.("#notepad-editor")) {
+      if (uiState.editorFocused) uiState.mobileTagsOpen = false;
       uiState.editorFocused = false;
-      uiState.mobileTagsOpen = false;
       uiState.editorTapScroll = null;
       syncMobileTagDock();
     }
@@ -1083,9 +1083,10 @@ function bindEvents() {
   refs.editorRoot.addEventListener("focusout", (event) => {
     if (!getEditorFromEventTarget(event.target)) return;
     window.setTimeout(() => {
+      const wasFocused = uiState.editorFocused;
       uiState.editorFocused = Boolean(document.activeElement?.closest?.("#notepad-editor"));
       if (!uiState.editorFocused) {
-        uiState.mobileTagsOpen = false;
+        if (wasFocused) uiState.mobileTagsOpen = false;
         applyPendingRemoteStateIfReady();
       }
       syncMobileTagDock();
@@ -5820,7 +5821,13 @@ function handleMobileTagDockAction(event) {
       open: !uiState.mobileTagsOpen
     });
     uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
-    restoreEditorFocusAndSelection();
+    // Browsing tags does not require opening the keyboard. Insertion restores
+    // the bookmarked caret when the user chooses a tag.
+    if (editor?.contains(document.activeElement)) {
+      restoreEditorFocusAndSelection();
+    } else {
+      uiState.editorFocused = false;
+    }
     if (uiState.mobileTagsOpen) {
       uiState.mobileTagMenuSelection = {
         noteId: getCurrentNote()?.id,
@@ -5948,6 +5955,7 @@ function syncMobileTagDock() {
   if (!shouldShow) {
     uiState.mobileTagsOpen = false;
     clearPendingTagChoice();
+    document.documentElement.style.removeProperty("--iphone-accessory-clearance");
   }
   const isOpen = shouldShow && uiState.mobileTagsOpen;
   if (!isOpen) uiState.mobileTagMenuSelection = null;
@@ -6021,7 +6029,6 @@ function positionMobileTagDock() {
   const width = Math.max(0, visualWidth - marginX * 2);
   const trayMaxHeight = Math.max(44, visualHeight - dockHeight - marginBottom - 28);
 
-  dock.dataset.mobileTagMode = "visual-viewport";
   setDockStyleValue(dock, "--mobile-tag-x", `${x}px`);
   setDockStyleValue(dock, "--mobile-tag-width", `${width}px`);
   setDockStyleValue(dock, "--mobile-tag-tray-max-height", `${trayMaxHeight}px`);
@@ -6030,11 +6037,23 @@ function positionMobileTagDock() {
     // Let Safari's compositor keep the fixed button pinned during page scroll.
     // Its fixed-layer rect can lag scrolling; feeding that rect back into the
     // transform makes the button chase the page and accumulate corrections.
-    // Small viewport differences belong to browser chrome/overscroll, not the
-    // keyboard. For keyboard or pinch zoom, use viewport geometry directly.
-    const keyboardOrZoom = window.innerHeight - visualHeight > 120 || (viewport?.scale || 1) > 1.01;
-    const offset = keyboardOrZoom ? visualTop + visualHeight - window.innerHeight : 0;
-    dock.dataset.mobileTagMode = keyboardOrZoom ? "visual-viewport" : "native-fixed";
+    const heightLoss = window.innerHeight - visualHeight;
+    const keyboardOrZoom = heightLoss > 120 || (viewport?.scale || 1) > 1.01;
+    const root = document.documentElement;
+    const needsAccessoryClearance = !keyboardOrZoom && isStandaloneApp() &&
+      document.activeElement?.id === "notepad-editor";
+    let offset = keyboardOrZoom ? visualTop - heightLoss : 0;
+    if (needsAccessoryClearance) {
+      // The standalone iPhone text-input accessory can cover the bottom of
+      // the screen while reporting no change to the visual viewport.
+      offset = Math.min(0, marginBottom - 64, visualTop - heightLoss);
+      const clearance = marginBottom + dockHeight - offset + 8;
+      setDockStyleValue(root, "--iphone-accessory-clearance", `${clearance}px`);
+      dock.dataset.mobileTagMode = "input-accessory";
+    } else {
+      root.style.removeProperty("--iphone-accessory-clearance");
+      dock.dataset.mobileTagMode = keyboardOrZoom ? "visual-viewport" : "native-fixed";
+    }
     setDockStyleValue(dock, "--mobile-tag-y", `${Math.round(offset)}px`);
     return;
   }
@@ -6042,6 +6061,7 @@ function positionMobileTagDock() {
   // Correct from the currently rendered position. Resetting the transform to
   // zero on every frame can put the layer behind the keyboard during Safari's
   // asynchronous fixed-layer updates.
+  dock.dataset.mobileTagMode = "visual-viewport";
   const currentTop = dock.getBoundingClientRect().top;
   const currentOffset = Number.parseFloat(dock.style.getPropertyValue("--mobile-tag-y")) || 0;
   const targetTop = visualTop + visualHeight - marginBottom - dockHeight;
@@ -6071,6 +6091,10 @@ function isLikelyIpadDevice() {
 
 function isLikelyIphoneDevice() {
   return /iPhone|iPod/i.test(navigator.userAgent || "");
+}
+
+function isStandaloneApp() {
+  return navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
 }
 
 function isIpadSplitViewLayout() {
@@ -6238,7 +6262,8 @@ function getCompactShortNoteScrollMetrics() {
     return Math.max(bottom, rect.bottom);
   }, editorRect.top + (Number.parseFloat(getComputedStyle(editor).lineHeight) || 28));
   const contentBottomAtPageTop = lineBottom + window.scrollY;
-  const viewportBottom = window.innerHeight - 18;
+  const accessoryClearance = Number.parseFloat(document.documentElement.style.getPropertyValue("--iphone-accessory-clearance")) || 0;
+  const viewportBottom = window.innerHeight - Math.max(18, accessoryClearance);
   const documentScrollHeight = document.documentElement.scrollHeight;
   return {
     editor,
@@ -7526,8 +7551,7 @@ function getNotificationSupport() {
   }
 
   const isLikelyIos = isLikelyIpadDevice() || isLikelyIphoneDevice();
-  const isStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true;
-  if (isLikelyIos && !isStandalone) {
+  if (isLikelyIos && !isStandaloneApp()) {
     return {
       apiSupported: true,
       supported: false,
@@ -10271,7 +10295,7 @@ function captureDeviceDebugSnapshot() {
     isLikelyIpad: isLikelyIpadDevice(),
     isIpadSplitView: isIpadSplitViewLayout(),
     isLikelyIphone: isLikelyIphoneDevice(),
-    standalone: Boolean(window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true),
+    standalone: isStandaloneApp(),
     screenWidth: window.screen?.width || 0,
     screenHeight: window.screen?.height || 0,
     devicePixelRatio: window.devicePixelRatio || 1

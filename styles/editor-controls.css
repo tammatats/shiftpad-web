@@ -8,7 +8,7 @@
 .mobile-editor-toolbar .editor-history-controls { margin: 0; gap: 2px; }
 .mobile-editor-toolbar .editor-history-controls button { width: 44px; height: 44px; border: 0; background: transparent; font-size: 22px; }
 @media (max-width: 860px) { .mobile-tag-dock { height: 52px; } .mobile-tag-tray { bottom: 60px; } }
-#tag-choice-root { position: fixed; z-index: 130; left: max(10px, env(safe-area-inset-left)); right: max(10px, env(safe-area-inset-right)); bottom: calc(var(--keyboard-offset) + 64px); pointer-events: none; }
+#tag-choice-root { position: fixed; z-index: 130; left: max(10px, env(safe-area-inset-left)); right: max(10px, env(safe-area-inset-right)); bottom: max(calc(var(--keyboard-offset) + 64px), var(--iphone-accessory-clearance, 0px)); pointer-events: none; }
 .tag-choice-card { width: min(100%, 440px); margin-left: auto; padding: 14px; border: 1px solid var(--line-strong); border-radius: 18px; background: #fffaf4; box-shadow: var(--shadow-md); pointer-events: auto; }
 .tag-choice-card p { margin: 7px 0 12px; color: var(--muted); font-size: 14px; line-height: 1.4; }
 .tag-choice-card > div { display: flex; gap: 6px; flex-wrap: wrap; }

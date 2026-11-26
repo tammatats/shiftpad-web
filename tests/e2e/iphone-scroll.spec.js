@@ -121,3 +121,58 @@ test("iPhone keyboard offset does not accumulate during scroll or dismissal", as
   await expect.poll(() => dock.evaluate(el => parseFloat(el.style.getPropertyValue("--mobile-tag-y")))).toBe(0);
   expect((await scrollAndMeasure(page, 500)).every(sample => sample.y === 0)).toBe(true);
 });
+
+test("standalone iPhone keeps the toolbar above an unreported input accessory", async ({ page }, info) => {
+  const editor = page.locator("#notepad-editor");
+  const toggle = page.locator("[data-mobile-tag-toggle]");
+  const dock = page.locator("[data-mobile-tag-dock]");
+  await page.evaluate(() => Object.defineProperty(navigator, "standalone", { value: true }));
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(editor).not.toBeFocused();
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+  const line = editor.locator(":scope > div").first();
+  await line.tap({ position: { x: 56, y: 8 } });
+  await expect(editor).toBeFocused();
+  await page.evaluate(() => {
+    const strip = document.createElement("div");
+    strip.id = "test-input-accessory";
+    strip.textContent = "Simulated iOS keyboard controls";
+    Object.assign(strip.style, {
+      position: "fixed", left: "10px", right: "10px", bottom: "8px", height: "48px",
+      background: "#dedfe3", borderRadius: "24px", display: "grid", placeItems: "center", zIndex: "9999"
+    });
+    document.body.appendChild(strip);
+  });
+  await expect(dock).toHaveAttribute("data-mobile-tag-mode", "input-accessory");
+  const toolbar = await page.locator(".mobile-editor-toolbar").boundingBox();
+  const strip = await page.locator("#test-input-accessory").boundingBox();
+  expect(toolbar.y + toolbar.height).toBeLessThanOrEqual(strip.y - 6);
+
+  const offset = await dock.evaluate(el => parseFloat(el.style.getPropertyValue("--mobile-tag-y")));
+  await expect.poll(() => page.evaluate(() => uiState.editorTapScroll)).toBeNull();
+  const dockTop = (await dock.boundingBox()).y;
+  expect((await scrollAndMeasure(page, 400)).every(sample =>
+    sample.y === offset && Math.abs(sample.top - dockTop) <= 1
+  )).toBe(true);
+  await scrollAndMeasure(page, 0);
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".mobile-tag-tray")).toHaveCSS("opacity", "1");
+  await page.screenshot({ path: info.outputPath("iphone-input-accessory.png"), scale: "css" });
+  await page.locator('[data-mobile-tag="io"]').tap();
+  await expect(line.locator('[data-tag="io"]')).toHaveCount(1);
+  await page.locator(".mobile-editor-toolbar [data-editor-undo]").tap();
+  await expect(line).toHaveText("Sample note line 1");
+  await page.locator(".mobile-editor-toolbar [data-editor-redo]").tap();
+  await expect(line.locator('[data-tag="io"]')).toHaveCount(1);
+
+  await editor.evaluate(el => {
+    el.blur();
+    document.querySelector("#test-input-accessory").remove();
+  });
+  await expect(dock).toHaveAttribute("data-mobile-tag-mode", "native-fixed");
+  expect((await scrollAndMeasure(page, 500)).every(sample => sample.y === 0)).toBe(true);
+});
