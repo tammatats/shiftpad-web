@@ -45,7 +45,7 @@ const SHORT_NOTE_SCROLL_STALL_FRAMES = 3;
 const SHORT_NOTE_SCROLL_SETTLE_DURATION_MS = 260;
 const NOTE_DOCUMENT_CLIENT_ID_KEY = "shiftpad-note-client-id-v1";
 const CLOUD_OUTBOX_NAMESPACE = "shiftpad-cloud-outbox-v1";
-const APP_BUILD = "2026-11-26-iphone-toolbar";
+const APP_BUILD = "2026-11-26-iphone-toolbar-bed-index";
 window.SHIFTPAD_APP_BUILD = APP_BUILD;
 const IS_LOCAL_E2E = ["127.0.0.1", "localhost"].includes(window.location.hostname) && new URLSearchParams(window.location.search).get("e2e") === "1";
 const WORKSPACE_KEYS = ["shift", "day"];
@@ -1299,16 +1299,16 @@ function bindEvents() {
     if (uiState.mobileTagSelection) return;
     settleToolbarCaret();
     cancelToolbarCaretSettle();
-    if (uiState.mobileTagMenuSelection) {
-      uiState.mobileTagSelection = uiState.mobileTagMenuSelection;
-      return;
+    const editor = refs.editorRoot.querySelector("#notepad-editor");
+    if (!uiState.mobileTagMenuSelection) {
+      rememberEditorSelection(editor);
     }
-    rememberEditorSelection(refs.editorRoot.querySelector("#notepad-editor"));
-    uiState.mobileTagSelection = {
+    const saved = uiState.mobileTagMenuSelection || {
       noteId: getCurrentNote()?.id,
       range: uiState.savedSelection?.cloneRange() || null,
       bookmark: uiState.savedSelectionBookmark
     };
+    uiState.mobileTagSelection = { ...saved, editorWasFocused: Boolean(editor?.contains(document.activeElement)) };
   };
   refs.mobileTagRoot?.addEventListener("pointerdown", (event) => {
     if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag], [data-mobile-direct-tag]")) return;
@@ -1319,7 +1319,10 @@ function bindEvents() {
     if (!event.target.closest("[data-mobile-tag-toggle], [data-mobile-tag], [data-mobile-direct-tag]")) return;
     mobileTagTouchStart = getEditorPointerPoint(event);
     rememberMobileTagSelection();
-  }, { passive: true });
+    if (event.target.closest("[data-mobile-tag-toggle]") && uiState.mobileTagSelection?.editorWasFocused) {
+      event.preventDefault();
+    }
+  }, { passive: false });
   refs.mobileTagRoot?.addEventListener("touchend", (event) => {
     const start = mobileTagTouchStart;
     mobileTagTouchStart = null;
@@ -5803,10 +5806,12 @@ function focusEditorFromTap(editor, target) {
 }
 
 function handleMobileTagDockAction(event) {
-  const saved = uiState.mobileTagMenuSelection || uiState.mobileTagSelection;
+  const press = uiState.mobileTagSelection;
+  const saved = uiState.mobileTagMenuSelection || press;
   uiState.mobileTagSelection = null;
   uiState.mobileTagMenuSelection = null;
-  if (saved?.noteId === getCurrentNote()?.id) {
+  const noteId = getCurrentNote()?.id;
+  if (saved && saved.noteId === noteId) {
     // DOM replacement collapses a live Range to the editor's start while it
     // still appears connected. Stable line bookmarks survive that replacement.
     uiState.savedSelection = saved.bookmark ? null : saved.range;
@@ -5821,9 +5826,9 @@ function handleMobileTagDockAction(event) {
       open: !uiState.mobileTagsOpen
     });
     uiState.mobileTagsOpen = !uiState.mobileTagsOpen;
-    // Browsing tags does not require opening the keyboard. Insertion restores
-    // the bookmarked caret when the user chooses a tag.
-    if (editor?.contains(document.activeElement)) {
+    // iOS can blur the editor between press and release. Restore its focus
+    // only if the user was already editing when they pressed More.
+    if (editor?.contains(document.activeElement) || (press?.editorWasFocused && press.noteId === noteId)) {
       restoreEditorFocusAndSelection();
     } else {
       uiState.editorFocused = false;
@@ -11517,6 +11522,8 @@ function setBedIndexActiveState(rail, index, { bubbleY = null, labels = null } =
   const label = bedLabels[index];
   if (!label) return;
   rail.dataset.activeIndex = String(index);
+  rail.dataset.activeBed = label.toUpperCase();
+  if (rail.classList.contains("is-scrubbing")) window.ShiftPadNavigation?.refreshCurrentBed?.();
   const closestSampledIndex = getClosestSampledBedIndex(rail, index);
   rail.querySelectorAll("[data-bed-index]").forEach((button) => {
     button.classList.toggle("is-active", Number(button.dataset.bedIndex) === closestSampledIndex);

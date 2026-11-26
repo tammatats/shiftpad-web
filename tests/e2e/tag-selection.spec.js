@@ -48,6 +48,20 @@ for (const [name, profile] of [
       expect(await page.locator('#notepad-editor').innerHTML()).toBe(before);
     });
 
+    test('More restores the same caret if iOS blurs the editor during the press', async ({ page }) => {
+      const toggle = page.locator('[data-mobile-tag-toggle]');
+      const editor = page.locator('#notepad-editor');
+      const original = await caret(page);
+      await toggle.dispatchEvent('pointerdown', { pointerType: 'touch', button: 0 });
+      await editor.evaluate(el => el.blur());
+      await expect.poll(() => page.evaluate(() => uiState.editorFocused)).toBe(false);
+      await toggle.dispatchEvent('click');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(await caret(page)).toEqual(original);
+      await toggle.tap();
+      expect(await caret(page)).toEqual(original);
+    });
+
     test('I/O inserts at the remembered caret and typing continues immediately after it', async ({ page }, info) => {
       await page.locator('[data-mobile-tag-toggle]').tap();
       await page.locator('[data-mobile-tag="io"]').tap();

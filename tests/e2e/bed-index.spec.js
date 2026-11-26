@@ -15,7 +15,7 @@ async function prepare(page, count = 40) {
   await expect(page.locator('#notepad-editor')).toBeVisible();
   await page.evaluate(count => {
     const html = Array.from({ length: count }, (_, i) =>
-      `<div><span class="tag-token tag-bed" data-tag="bed" data-token-id="sample-${i}" contenteditable="false">Bed ${i + 1}</span></div>` +
+      `<div><span class="tag-token tag-bed" data-tag="bed" data-token-id="sample-${i}" data-editing="false" contenteditable="false">Bed ${i + 1}</span></div>` +
       Array.from({ length: 3 + i % 7 }, (_, j) => `<div>Sample bed ${i + 1}, detail ${j + 1}</div>`).join('') + '<div><br></div>'
     ).join('');
     setNoteDocumentHtml(getCurrentNote(), html);
@@ -28,6 +28,7 @@ async function prepare(page, count = 40) {
       borderRadius: '50%', zIndex: '9999', pointerEvents: 'none', transform: 'translate(-50%, -50%)' });
     document.body.appendChild(dot);
   }, count);
+  await expect(page.locator('[data-current-bed] option')).toHaveCount(count + 1);
   await expect(page.locator('.bed-index-rail')).toHaveCSS('opacity', '1');
 }
 
@@ -68,6 +69,7 @@ async function touch(page, type, p, extra = {}) {
     const railRect = rail.getBoundingClientRect();
     const bubble = rail.querySelector('.bed-index-bubble').getBoundingClientRect();
     return { active: rail.dataset.activeIndex, label: rail.querySelector('.bed-index-bubble').textContent,
+      currentBed: document.querySelector('[data-current-bed]').value,
       scroll: window.scrollY, tokenY: token?.getBoundingClientRect().top,
       bubbleY: bubble.y + bubble.height / 2, scrubbing: rail.classList.contains('is-scrubbing'),
       railTop: railRect.top, railBottom: railRect.bottom };
@@ -101,6 +103,7 @@ for (const profile of profiles) {
         await expect(page.locator(`[data-token-id="sample-${index}"]`)).toBeInViewport();
         await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 160)));
         await expect(page.locator('.bed-index-rail')).toHaveAttribute('data-active-index', String(index));
+        await expect(page.locator('[data-current-bed]')).toHaveValue(p.label);
       }
       await page.evaluate(() => window.scrollBy(0, innerHeight));
       await expect(page.locator('.bed-index-rail')).not.toHaveAttribute('data-active-index', '0');
@@ -130,6 +133,7 @@ for (const profile of profiles) {
         const hi = geometry.marks[upper];
         const position = lo.index + (hi.index - lo.index) * (p.y - lo.y) / (hi.y - lo.y);
         expect(Number(last.active)).toBe(Math.round(position));
+        expect(last.currentBed).toBe(String(Math.round(position) + 1));
         const lowerIndex = Math.floor(position), upperIndex = Math.ceil(position);
         const docTop = geometry.tops[lowerIndex] + (geometry.tops[upperIndex] - geometry.tops[lowerIndex]) * (position - lowerIndex);
         const wanted = Math.max(0, Math.min(geometry.maxScroll, initial.scroll + docTop - geometry.tops[10]));
@@ -155,6 +159,7 @@ for (const profile of profiles) {
       const to = await point(page, 29);
       const end = await touch(page, 'end', to, { expectedIndex: 29 });
       expect(end.label).toBe(`Bed ${to.label}`);
+      expect(end.currentBed).toBe(to.label);
       expect(end.scrubbing).toBe(false);
       expect(end.tokenY).toBeGreaterThan(200);
       expect(end.tokenY).toBeLessThan(profile.options.viewport.height - 100);
